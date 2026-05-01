@@ -458,3 +458,125 @@ CREATE POLICY "matches_delete" ON matches FOR DELETE USING (is_team_admin(team_i
 ALTER TABLE events ADD COLUMN IF NOT EXISTS att_member_ids UUID[] DEFAULT NULL;
 
 -- END MATCHES MIGRATION
+
+-- =============================================
+-- V3 ADDITIONS
+-- =============================================
+
+-- TOURNAMENTS
+CREATE TABLE IF NOT EXISTS tournaments (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  season TEXT,
+  description TEXT,
+  status TEXT DEFAULT 'active' CHECK (status IN ('active','finished','cancelled')),
+  created_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS tournament_id UUID REFERENCES tournaments(id) ON DELETE SET NULL;
+
+-- BEST PLAYER POLLS
+CREATE TABLE IF NOT EXISTS best_player_polls (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  status TEXT DEFAULT 'open' CHECK (status IN ('open','closed')),
+  winner_id UUID REFERENCES profiles(id),
+  points_awarded INTEGER DEFAULT 5,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  closed_at TIMESTAMPTZ,
+  UNIQUE(event_id)
+);
+
+CREATE TABLE IF NOT EXISTS best_player_votes (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  poll_id UUID NOT NULL REFERENCES best_player_polls(id) ON DELETE CASCADE,
+  voter_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  nominee_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(poll_id, voter_id)
+);
+
+-- PERMISSIONS (per user, per team, per permission key)
+CREATE TABLE IF NOT EXISTS team_permissions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL,
+  granted_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(team_id, user_id, permission)
+);
+
+-- Add position_label to team_members
+ALTER TABLE team_members ADD COLUMN IF NOT EXISTS position_label TEXT;
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_tournaments_team ON tournaments(team_id);
+CREATE INDEX IF NOT EXISTS idx_bpp_event ON best_player_polls(event_id);
+CREATE INDEX IF NOT EXISTS idx_bpv_poll ON best_player_votes(poll_id);
+CREATE INDEX IF NOT EXISTS idx_perms_team_user ON team_permissions(team_id, user_id);
+
+-- RLS
+ALTER TABLE tournaments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE best_player_polls ENABLE ROW LEVEL SECURITY;
+ALTER TABLE best_player_votes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE team_permissions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "tourn_select" ON tournaments FOR SELECT USING (is_team_member(team_id,auth.uid()));
+CREATE POLICY "tourn_insert" ON tournaments FOR INSERT WITH CHECK (is_team_admin(team_id,auth.uid()));
+CREATE POLICY "tourn_update" ON tournaments FOR UPDATE USING (is_team_admin(team_id,auth.uid()));
+CREATE POLICY "tourn_delete" ON tournaments FOR DELETE USING (is_team_admin(team_id,auth.uid()));
+
+CREATE POLICY "bpp_select" ON best_player_polls FOR SELECT USING (is_team_member(team_id,auth.uid()));
+CREATE POLICY "bpp_insert" ON best_player_polls FOR INSERT WITH CHECK (is_team_member(team_id,auth.uid()));
+CREATE POLICY "bpp_update" ON best_player_polls FOR UPDATE USING (is_team_admin(team_id,auth.uid()));
+
+CREATE POLICY "bpv_select" ON best_player_votes FOR SELECT USING (true);
+CREATE POLICY "bpv_insert" ON best_player_votes FOR INSERT WITH CHECK (auth.uid()=voter_id);
+
+CREATE POLICY "perms_select" ON team_permissions FOR SELECT USING (is_team_member(team_id,auth.uid()));
+CREATE POLICY "perms_insert" ON team_permissions FOR INSERT WITH CHECK (is_team_admin(team_id,auth.uid()));
+CREATE POLICY "perms_delete" ON team_permissions FOR DELETE USING (is_team_admin(team_id,auth.uid()));
+
+
+-- Add sender_name and team_logo to notifications
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS sender_name TEXT;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS team_logo TEXT;
+
+-- =============================================
+-- V4: TEAM ARCHIVE & SWITCHER
+-- Run this block in Supabase SQL Editor
+-- =============================================
+
+-- Allow users to see their OWN team_members rows even after removal
+DROP POLICY IF EXISTS "tm_select" ON team_members;
+CREATE POLICY "tm_select" ON team_members FOR SELECT USING (
+  is_team_member(team_id, auth.uid()) OR auth.uid() = user_id
+);
+
+-- Allow players to see their OWN attendance records even after team removal (for archived stats)
+DROP POLICY IF EXISTS "att_select" ON attendance;
+CREATE POLICY "att_select" ON attendance FOR SELECT USING (
+  is_team_member(team_id, auth.uid()) OR auth.uid() = user_id
+);
+
+-- Allow players to see events they attended (so attendance join works for archived teams)
+DROP POLICY IF EXISTS "ev_select" ON events;
+CREATE POLICY "ev_select" ON events FOR SELECT USING (
+  is_team_member(team_id, auth.uid())
+  OR EXISTS (SELECT 1 FROM attendance WHERE event_id = id AND user_id = auth.uid())
+);
+
+-- =============================================
+-- V5: Match details merged into events
+-- =============================================
+ALTER TABLE events ADD COLUMN IF NOT EXISTS opponent TEXT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS home_away TEXT DEFAULT 'home' CHECK (home_away IN ('home','away','neutral'));
+ALTER TABLE events ADD COLUMN IF NOT EXISTS match_category TEXT DEFAULT 'friendly' CHECK (match_category IN ('friendly','tournament'));
+ALTER TABLE events ADD COLUMN IF NOT EXISTS tournament_name TEXT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS goals_for INTEGER;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS goals_against INTEGER;

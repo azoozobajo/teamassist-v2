@@ -82,7 +82,7 @@ export default function FinancePage() {
   }
 
   const isAdmin = canManageFinance(myRole)
-  const isPlayer = myRole === 'player'
+  const isPlayer = !isAdmin && myRole !== ''
 
   // Stats
   const totalReq = obs.reduce((s, o) => s + o.amount * getTargetMembers(o).length, 0)
@@ -97,6 +97,8 @@ export default function FinancePage() {
 
   const memberItems = members.map(m => ({ value: m.user_id, label: m.profile?.full_name || '?', sub: ROLE_LABELS[m.role] || m.role }))
 
+  const collectPct = totalReq > 0 ? Math.round(totalPaid / totalReq * 100) : 0
+
   return (
     <div>
       <PageHeader title="المالية"
@@ -104,37 +106,68 @@ export default function FinancePage() {
           <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}><Plus size={14}/>التزام جديد</button>
         )}/>
 
+      {/* Admin hero stats */}
       {isAdmin && (
-        <div className="grid grid-cols-3 gap-3 mb-5">
-          <StatCard label="إجمالي المطلوب" value={`${totalReq.toLocaleString()} ${RIYAL}`}/>
-          <StatCard label="المحصّل" value={`${totalPaid.toLocaleString()} ${RIYAL}`} color="text-emerald-600"/>
-          <StatCard label="المتبقي" value={`${(totalReq - totalPaid).toLocaleString()} ${RIYAL}`} color="text-red-600"/>
+        <div className="hero-card mb-5">
+          {/* decorative circle */}
+          <div className="absolute top-0 left-0 w-40 h-40 rounded-full opacity-10 bg-white -translate-x-16 -translate-y-12"/>
+          <div className="relative">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-10 h-10 bg-white/20 rounded-2xl flex items-center justify-center">
+                <DollarSign size={20} className="text-white"/>
+              </div>
+              <div>
+                <div className="text-white/70 text-xs font-bold">نسبة التحصيل</div>
+                <div className="text-white text-2xl font-extrabold leading-none">{collectPct}%</div>
+              </div>
+            </div>
+            <div className="h-2 bg-white/20 rounded-full overflow-hidden mb-4">
+              <div className="h-full bg-white rounded-full transition-all duration-700" style={{ width: `${collectPct}%` }}/>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-white/15 rounded-2xl p-3 text-center">
+                <div className="text-white text-base font-extrabold leading-none mb-1">{totalReq.toLocaleString()}</div>
+                <div className="text-white/70 text-xs">المطلوب {RIYAL}</div>
+              </div>
+              <div className="bg-white/15 rounded-2xl p-3 text-center">
+                <div className="text-emerald-200 text-base font-extrabold leading-none mb-1">{totalPaid.toLocaleString()}</div>
+                <div className="text-white/70 text-xs">المحصّل {RIYAL}</div>
+              </div>
+              <div className="bg-white/15 rounded-2xl p-3 text-center">
+                <div className="text-red-300 text-base font-extrabold leading-none mb-1">{(totalReq - totalPaid).toLocaleString()}</div>
+                <div className="text-white/70 text-xs">المتبقي {RIYAL}</div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
       {/* Player view - only my obligations */}
       {isPlayer && (
         <div>
-          <h3 className="text-sm font-bold mb-3">مستحقاتي المالية</h3>
+          <p className="text-sm font-extrabold text-slate-600 mb-3">مستحقاتي المالية</p>
           {myObs.length === 0
             ? <div className="card"><EmptyState icon={<DollarSign size={24}/>} title="لا توجد مستحقات"/></div>
             : myObs.map((o: any) => {
                 const pct = Math.round(o.myPaid / o.amount * 100)
                 const status = o.myPaid >= o.amount ? 'مسدد' : o.myPaid > 0 ? 'جزئي' : 'غير مسدد'
                 const sc = o.myPaid >= o.amount ? 'bg-emerald-100 text-emerald-700' : o.myPaid > 0 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
+                const borderCl = o.myPaid >= o.amount ? 'border-r-4 border-emerald-400' : o.myPaid > 0 ? 'border-r-4 border-amber-400' : 'border-r-4 border-red-400'
                 return (
-                  <div key={o.id} className="card mb-3">
+                  <div key={o.id} className={`card mb-3 ${borderCl}`}>
                     <div className="flex justify-between mb-2">
-                      <div className="font-bold text-sm">{o.title}</div>
+                      <div className="font-extrabold text-sm text-slate-800">{o.title}</div>
                       <span className={`badge ${sc}`}>{status}</span>
                     </div>
                     <div className="flex justify-between text-xs text-slate-500 mb-2">
                       <span>المطلوب: {o.amount} {RIYAL}</span>
                       <span>المسدد: {o.myPaid} {RIYAL}</span>
-                      <span>المتبقي: {(o.amount - o.myPaid).toFixed(0)} {RIYAL}</span>
                     </div>
                     <ProgressBar value={pct} color={o.myPaid >= o.amount ? 'bg-emerald-500' : 'bg-amber-400'}/>
-                    {o.due_date && <div className="text-xs text-slate-400 mt-1">الاستحقاق: {o.due_date}</div>}
+                    <div className="flex justify-between text-xs text-slate-400 mt-1.5">
+                      <span>{pct}% مسدد</span>
+                      {o.due_date && <span>الاستحقاق: {o.due_date}</span>}
+                    </div>
                   </div>
                 )
               })}
@@ -143,7 +176,7 @@ export default function FinancePage() {
 
       {/* Admin view */}
       {isAdmin && (
-        loading ? <div className="flex justify-center py-10"><Spinner/>  </div>
+        loading ? <div className="flex justify-center py-10"><Spinner/></div>
         : obs.length === 0
           ? <div className="card"><EmptyState icon={<DollarSign size={24}/>} title="لا توجد التزامات" description="اضغط + لإضافة التزام مالي"/></div>
           : <div className="space-y-4">
@@ -154,31 +187,34 @@ export default function FinancePage() {
                 const pct = totalOb ? Math.round(paidOb / totalOb * 100) : 0
                 return (
                   <div key={ob.id} className="card mb-0">
-                    <div className="flex justify-between mb-1">
-                      <div className="font-bold text-sm">{ob.title}</div>
-                      <div className="text-sm font-bold">{ob.amount} {RIYAL}</div>
+                    <div className="flex justify-between items-start mb-1">
+                      <div className="font-extrabold text-sm text-slate-800">{ob.title}</div>
+                      <div className="text-sm font-extrabold text-brand-600">{ob.amount} {RIYAL}</div>
                     </div>
                     <div className="flex justify-between text-xs text-slate-400 mb-3">
-                      <span>
+                      <span className="flex items-center gap-1">
+                        <span>👥</span>
                         {ob.target_type === 'all' ? 'الكل' : ob.target_type === 'role' ? ROLE_LABELS[ob.target_role] || ob.target_role : `${targets.length} أشخاص محددون`}
                         · {targets.length} شخص
                       </span>
-                      <span>{ob.due_date ? `الاستحقاق: ${ob.due_date}` : '—'}</span>
+                      {ob.due_date && <span className="text-amber-600 font-bold">الاستحقاق: {ob.due_date}</span>}
                     </div>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-slate-500">التحصيل الكلي</span>
-                      <span className="font-bold">{paidOb.toFixed(0)}/{totalOb} {RIYAL} ({pct}%)</span>
+                    <div className="flex justify-between text-xs mb-1.5">
+                      <span className="text-slate-500 font-bold">التحصيل الكلي</span>
+                      <span className="font-extrabold text-slate-700">{paidOb.toFixed(0)}/{totalOb} {RIYAL}
+                        <span className={`mr-1.5 ${pct >= 100 ? 'text-emerald-600' : pct > 50 ? 'text-amber-600' : 'text-red-500'}`}>({pct}%)</span>
+                      </span>
                     </div>
                     <ProgressBar value={pct} color={pct >= 100 ? 'bg-emerald-500' : pct > 50 ? 'bg-amber-400' : 'bg-red-400'}/>
-                    <div className="mt-3 space-y-1.5">
+                    <div className="mt-3 space-y-2">
                       {targets.map((m: any) => {
                         const paid = getPaid(ob.id, m.user_id)
                         const p = Math.round(paid / ob.amount * 100)
                         const st = paid >= ob.amount ? 'مسدد' : paid > 0 ? 'جزئي' : 'غير مسدد'
                         const sc = paid >= ob.amount ? 'bg-emerald-100 text-emerald-700' : paid > 0 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
                         return (
-                          <div key={m.id} className="flex items-center gap-2">
-                            <div className="w-6 h-6 bg-brand-100 text-brand-700 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">
+                          <div key={m.id} className="flex items-center gap-2 py-1.5 border-b border-slate-50 last:border-0">
+                            <div className="w-7 h-7 bg-brand-100 text-brand-700 rounded-xl flex items-center justify-center text-xs font-extrabold flex-shrink-0">
                               {m.profile?.full_name?.[0]}
                             </div>
                             <div className="flex-1 min-w-0">
@@ -186,11 +222,11 @@ export default function FinancePage() {
                                 <span className="font-bold truncate">{m.profile?.full_name}</span>
                                 <span className="text-slate-400">{paid}/{ob.amount} {RIYAL}</span>
                               </div>
-                              <ProgressBar value={p} height="h-1"/>
+                              <ProgressBar value={p} height="h-1.5"/>
                             </div>
                             <span className={`badge text-xs ${sc}`}>{st}</span>
                             <button onClick={() => setShowPay({ ob, userId: m.user_id, name: m.profile?.full_name })}
-                              className="text-xs bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded-lg transition-colors border-none cursor-pointer">
+                              className="text-xs bg-brand-50 hover:bg-brand-100 text-brand-700 font-bold px-2.5 py-1.5 rounded-xl transition-colors border-none cursor-pointer">
                               دفعة
                             </button>
                           </div>

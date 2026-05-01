@@ -79,3 +79,34 @@ export const RIYAL = '﷼'
 export const isEventLocked = (startDatetime: string): boolean => {
   return new Date(startDatetime) <= new Date()
 }
+
+// ── PERMISSIONS ────────────────────────────────────────────────────────
+export const PERMISSIONS = [
+  { key: 'view_attendance',      label: 'عرض الحضور والغياب' },
+  { key: 'manage_attendance',    label: 'تعديل الحضور والغياب' },
+  { key: 'add_training',         label: 'إضافة مواعيد التدريب' },
+  { key: 'add_matches',          label: 'إضافة المباريات' },
+  { key: 'add_tournaments',      label: 'إضافة البطولات' },
+  { key: 'view_reports',         label: 'عرض التقارير السرية' },
+  { key: 'add_reports',          label: 'إضافة تقارير سرية' },
+  { key: 'manage_leaves',        label: 'الموافقة على الإجازات' },
+  { key: 'invite_members',       label: 'دعوة أعضاء وقبولهم' },
+  { key: 'grant_points',         label: 'منح النقاط' },
+  { key: 'manage_points_system', label: 'إدارة نظام النقاط' },
+  { key: 'manage_finance_add',   label: 'إضافة الالتزامات المالية' },
+  { key: 'manage_finance_pay',   label: 'تسجيل المدفوعات' },
+  { key: 'make_announcements',   label: 'نشر الإعلانات والتذكيرات' },
+  { key: 'manage_permissions',   label: 'إدارة صلاحيات الأعضاء' },
+] as const
+
+export type PermissionKey = typeof PERMISSIONS[number]['key']
+
+// Owner always has all permissions
+export function hasPermission(
+  perms: string[],
+  role: string,
+  perm: PermissionKey
+): boolean {
+  if (role === 'owner') return true
+  return perms.includes(perm)
+}

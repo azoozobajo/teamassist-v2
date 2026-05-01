@@ -18,7 +18,9 @@ export default function LeavesPage() {
   const [showApprove, setShowApprove] = useState<any>(null)
   const [partialDays, setPartialDays] = useState<string[]>([])
   const [approveMode, setApproveMode] = useState<'full'|'partial'>('full')
-  const [form, setForm] = useState({ reason:'', from_date:'', to_date:'', notes:'' })
+  const [partialRange, setPartialRange] = useState({ from: '', to: '' })
+  const [form, setForm] = useState({ reason:'', from_date:'', to_date:'', note:'' })
+  const [submitError, setSubmitError] = useState('')
   const [saving, setSaving] = useState(false)
   const set = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }))
 
@@ -38,11 +40,17 @@ export default function LeavesPage() {
   async function submitLeave() {
     if (!form.reason || !form.from_date || !form.to_date || !teamId || !user) return
     setSaving(true)
-    await leaveService.create({ ...form, team_id: teamId, user_id: user.id, status: 'pending' })
+    setSubmitError('')
+    const { error } = await leaveService.create({ ...form, team_id: teamId, user_id: user.id, status: 'pending' })
+    if (error) {
+      setSubmitError('حدث خطأ أثناء الإرسال، حاول مجدداً')
+      setSaving(false)
+      return
+    }
     await notificationService.createForTeam(teamId, `طلب إجازة من ${profile?.full_name || user.email}`,
       `${form.from_date} ← ${form.to_date}`, 'leave', user.id)
     await load()
-    setShowReq(false); setForm({ reason:'', from_date:'', to_date:'', notes:'' }); setSaving(false)
+    setShowReq(false); setForm({ reason:'', from_date:'', to_date:'', note:'' }); setSaving(false)
   }
 
   async function approveLeave(leaf: any) {
@@ -102,6 +110,13 @@ export default function LeavesPage() {
   const statusLabel: Record<string,string> = {
     pending:'معلق', approved:'مقبول كامل', rejected:'مرفوض', partial:'موافقة جزئية'
   }
+  const statusIcon: Record<string,string> = {
+    pending:'⏳', approved:'✅', rejected:'❌', partial:'✂️'
+  }
+  const statusBorder: Record<string,string> = {
+    pending:'border-r-4 border-amber-400', approved:'border-r-4 border-emerald-400',
+    rejected:'border-r-4 border-red-400', partial:'border-r-4 border-blue-400'
+  }
 
   // Generate days between dates
   const getDays = (from: string, to: string) => {
@@ -111,13 +126,29 @@ export default function LeavesPage() {
     } catch { return [] }
   }
 
+  const pendingCount = leaves.filter(l => l.status === 'pending').length
+
   return (
     <div>
       <PageHeader title="الإجازات والاعتذارات"
         action={<button className="btn btn-primary btn-sm" onClick={() => setShowReq(true)}><Plus size={14}/>طلب إجازة</button>}/>
+
+      {/* Pending alert banner */}
+      {isAdmin && pendingCount > 0 && (
+        <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 mb-4">
+          <div className="w-9 h-9 bg-amber-100 rounded-xl flex items-center justify-center text-xl flex-shrink-0">⏳</div>
+          <p className="text-sm font-bold text-amber-700">
+            {pendingCount} طلب إجازة بانتظار مراجعتك
+          </p>
+          <button onClick={() => setTab('pending')} className="btn btn-sm mr-auto text-amber-700 border-amber-300 hover:bg-amber-100 bg-white">
+            عرض
+          </button>
+        </div>
+      )}
+
       <Tabs
         tabs={[
-          {key:'all',label:'الكل'}, {key:'pending',label:'معلقة'},
+          {key:'all',label:'الكل'}, {key:'pending',label:'معلقة', badge: pendingCount || undefined},
           {key:'approved',label:'مقبولة'}, {key:'partial',label:'جزئية'}, {key:'rejected',label:'مرفوضة'}
         ]}
         active={tab} onChange={setTab}/>
@@ -125,30 +156,40 @@ export default function LeavesPage() {
         : filtered.length === 0 ? <div className="card"><EmptyState icon={<Umbrella size={28}/>} title="لا توجد طلبات"/></div>
         : <div className="space-y-3">
             {filtered.map(l => (
-              <div key={l.id} className="card mb-0">
+              <div key={l.id} className={`card mb-0 ${statusBorder[l.status] || ''}`}>
                 <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 bg-brand-100 text-brand-700 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0">
-                    {l.profile?.full_name?.[0] || '?'}
+                  {/* Avatar + status icon */}
+                  <div className="relative flex-shrink-0">
+                    <div className="w-11 h-11 bg-brand-100 text-brand-700 rounded-2xl flex items-center justify-center font-extrabold text-base">
+                      {l.profile?.full_name?.[0] || '?'}
+                    </div>
+                    <div className="absolute -bottom-1 -left-1 text-sm leading-none">{statusIcon[l.status]}</div>
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="font-bold text-sm">{l.profile?.full_name}</div>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <div className="font-extrabold text-sm text-slate-800">{l.profile?.full_name}</div>
                       <span className={`badge ${statusStyle[l.status]}`}>{statusLabel[l.status]}</span>
                     </div>
-                    <div className="text-xs text-slate-500 mt-1">السبب: {l.reason}</div>
-                    <div className="text-xs text-slate-400">من {l.from_date} إلى {l.to_date}</div>
+                    {/* Date range pill */}
+                    <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-xl px-3 py-1.5 mb-2">
+                      <span className="text-xs text-slate-500">📅</span>
+                      <span className="text-xs font-bold text-slate-600">{l.from_date}</span>
+                      <span className="text-xs text-slate-400">←</span>
+                      <span className="text-xs font-bold text-slate-600">{l.to_date}</span>
+                    </div>
+                    <div className="text-xs text-slate-500">السبب: {l.reason}</div>
                     {l.note && (
-                      <div className="text-xs bg-brand-50 text-brand-700 px-2 py-1 rounded-lg mt-2">{l.note}</div>
+                      <div className="text-xs bg-brand-50 border border-brand-100 text-brand-700 px-3 py-1.5 rounded-xl mt-2">{l.note}</div>
                     )}
                     {l.partial_days?.length > 0 && (
-                      <div className="text-xs text-slate-400 mt-1">الأيام المعتمدة: {l.partial_days.join('، ')}</div>
+                      <div className="text-xs text-blue-600 mt-1.5 font-bold">الأيام المعتمدة: {l.partial_days.length} أيام</div>
                     )}
                     {isAdmin && l.status === 'pending' && (
                       <div className="flex gap-2 mt-3">
                         <button onClick={() => { setShowApprove(l); setApproveMode('full'); setPartialDays([]) }}
                           className="btn btn-primary btn-sm">مراجعة الطلب</button>
                         <button onClick={() => rejectLeave(l)}
-                          className="btn btn-ghost btn-sm text-red-600 border-red-200">رفض</button>
+                          className="btn btn-ghost btn-sm text-red-600 border-red-200 hover:bg-red-50">رفض</button>
                       </div>
                     )}
                   </div>
@@ -158,7 +199,7 @@ export default function LeavesPage() {
           </div>}
 
       {/* Request Leave Modal */}
-      <Modal open={showReq} onClose={() => setShowReq(false)} title="طلب إجازة">
+      <Modal open={showReq} onClose={() => { setShowReq(false); setSubmitError('') }} title="طلب إجازة">
         <FormField label="السبب" required>
           <input className="form-input" value={form.reason} onChange={e => set('reason', e.target.value)} placeholder="سفر عائلي..."/>
         </FormField>
@@ -171,8 +212,11 @@ export default function LeavesPage() {
           </FormField>
         </div>
         <FormField label="ملاحظات إضافية">
-          <textarea className="form-input" rows={2} value={form.notes} onChange={e => set('notes', e.target.value)}/>
+          <textarea className="form-input" rows={2} value={form.note} onChange={e => set('note', e.target.value)}/>
         </FormField>
+        {submitError && (
+          <p className="text-xs text-red-600 font-bold bg-red-50 rounded-xl px-3 py-2">{submitError}</p>
+        )}
         <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowReq(false)}>إلغاء</button>
           <button className="btn btn-primary" onClick={submitLeave} disabled={saving}>{saving ? <Spinner size="sm"/> : 'إرسال'}</button>
@@ -180,7 +224,7 @@ export default function LeavesPage() {
       </Modal>
 
       {/* Approve Modal */}
-      <Modal open={!!showApprove} onClose={() => setShowApprove(null)} title="مراجعة طلب الإجازة">
+      <Modal open={!!showApprove} onClose={() => { setShowApprove(null); setPartialRange({ from: '', to: '' }) }} title="مراجعة طلب الإجازة">
         {showApprove && (
           <div>
             <div className="bg-slate-50 rounded-xl p-3 mb-5">
@@ -194,27 +238,89 @@ export default function LeavesPage() {
                 className={`p-3 rounded-xl border text-sm font-bold transition-all text-center ${approveMode==='full' ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>
                 ✅ موافقة كاملة<br/><span className="text-xs font-normal opacity-75">غياب تلقائي للكل</span>
               </button>
-              <button onClick={() => { setApproveMode('partial'); setPartialDays([]) }}
+              <button onClick={() => { setApproveMode('partial'); setPartialDays([]); setPartialRange({ from: '', to: '' }) }}
                 className={`p-3 rounded-xl border text-sm font-bold transition-all text-center ${approveMode==='partial' ? 'bg-blue-500 text-white border-blue-500' : 'border-slate-200 hover:bg-slate-50'}`}>
                 ✂️ موافقة جزئية<br/><span className="text-xs font-normal opacity-75">اختر أيام محددة</span>
               </button>
             </div>
+
             {/* Partial day picker */}
             {approveMode === 'partial' && (
-              <div className="mb-5">
-                <p className="text-xs font-bold text-slate-500 mb-2">اختر الأيام المعتمدة:</p>
-                <div className="space-y-1.5 max-h-48 overflow-y-auto">
-                  {getDays(showApprove.from_date, showApprove.to_date).map(day => (
-                    <label key={day} className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-slate-50 cursor-pointer">
-                      <input type="checkbox" checked={partialDays.includes(day)}
-                        onChange={e => setPartialDays(p => e.target.checked ? [...p, day] : p.filter(d => d !== day))}
-                        className="w-4 h-4 accent-brand-500"/>
-                      <span className="text-sm">{day}</span>
-                    </label>
-                  ))}
+              <div className="mb-5 space-y-3">
+
+                {/* Range selector */}
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+                  <p className="text-xs font-bold text-blue-700 mb-2.5">📅 حدد نطاق التاريخ المعتمد</p>
+                  <div className="grid grid-cols-2 gap-2 mb-2.5">
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-500 block mb-1">من</label>
+                      <input
+                        type="date"
+                        className="form-input text-sm"
+                        value={partialRange.from}
+                        min={showApprove.from_date}
+                        max={partialRange.to || showApprove.to_date}
+                        onChange={e => setPartialRange(p => ({ ...p, from: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-500 block mb-1">إلى</label>
+                      <input
+                        type="date"
+                        className="form-input text-sm"
+                        value={partialRange.to}
+                        min={partialRange.from || showApprove.from_date}
+                        max={showApprove.to_date}
+                        onChange={e => setPartialRange(p => ({ ...p, to: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={!partialRange.from || !partialRange.to}
+                      onClick={() => {
+                        const days = getDays(partialRange.from, partialRange.to)
+                          .filter(d => d >= showApprove.from_date && d <= showApprove.to_date)
+                        setPartialDays(days)
+                      }}
+                      className="btn btn-sm flex-1 justify-center"
+                      style={{ background: '#3b82f6', color: '#fff', opacity: (!partialRange.from || !partialRange.to) ? 0.5 : 1 }}>
+                      تطبيق النطاق
+                    </button>
+                    {partialDays.length > 0 && (
+                      <button onClick={() => setPartialDays([])}
+                        className="btn btn-ghost btn-sm text-red-500 border-red-200">
+                        مسح
+                      </button>
+                    )}
+                  </div>
+                  {partialRange.from && partialRange.to && partialRange.from <= partialRange.to && (
+                    <p className="text-[11px] text-blue-600 font-bold mt-2">
+                      {getDays(partialRange.from, partialRange.to).filter(d => d >= showApprove.from_date && d <= showApprove.to_date).length} يوم في هذا النطاق
+                    </p>
+                  )}
                 </div>
+
+                {/* Individual checkboxes */}
+                <div>
+                  <p className="text-xs font-bold text-slate-500 mb-1.5">أو اختر الأيام يدوياً:</p>
+                  <div className="space-y-1 max-h-44 overflow-y-auto border border-slate-100 rounded-xl p-1">
+                    {getDays(showApprove.from_date, showApprove.to_date).map(day => (
+                      <label key={day} className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg cursor-pointer transition-colors ${partialDays.includes(day) ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+                        <input type="checkbox" checked={partialDays.includes(day)}
+                          onChange={e => setPartialDays(p => e.target.checked ? [...p, day] : p.filter(d => d !== day))}
+                          className="w-4 h-4 accent-blue-500 flex-shrink-0"/>
+                        <span className={`text-sm ${partialDays.includes(day) ? 'font-bold text-blue-700' : 'text-slate-600'}`}>{day}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
                 {partialDays.length > 0 && (
-                  <div className="mt-2 text-xs text-brand-600 font-bold">{partialDays.length} أيام محددة</div>
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl px-3 py-2 flex items-center justify-between">
+                    <span className="text-xs font-bold text-blue-700">✅ {partialDays.length} أيام معتمدة</span>
+                    <span className="text-[11px] text-blue-500">{partialDays[0]} ← {partialDays[partialDays.length - 1]}</span>
+                  </div>
                 )}
               </div>
             )}

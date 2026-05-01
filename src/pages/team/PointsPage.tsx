@@ -115,24 +115,38 @@ export default function PointsPage() {
         <>
           {tab === 'leaderboard' && (
             lb.length === 0
-              ? <div className="card"><EmptyState icon={<Star size={24}/>} title="لا توجد نقاط بعد" description="أضف نقاطاً للأعضاء للبدء"/></div>
-              : <div className="space-y-3">
-                  {lb.map((p,i) => (
-                    <div key={p.userId} className="card mb-0 flex items-center gap-3">
-                      <div className="text-2xl w-9 text-center flex-shrink-0">{MEDALS[i] || <span className="text-sm font-bold text-slate-400">#{i+1}</span>}</div>
-                      <div className="w-9 h-9 bg-brand-100 text-brand-700 rounded-full flex items-center justify-center font-bold flex-shrink-0">
-                        {p.init}
+              ? <div className="card"><EmptyState icon={<Star size={28}/>} title="لا توجد نقاط بعد" description="أضف نقاطاً للأعضاء للبدء"/></div>
+              : <div className="space-y-2.5">
+                  {lb.map((p, i) => {
+                    const isTop = i < 3
+                    const topBg  = ['bg-yellow-50 border-yellow-200','bg-slate-50 border-slate-200','bg-orange-50 border-orange-200'][i] || ''
+                    const ptColor= ['text-yellow-600','text-slate-500','text-orange-500'][i] || 'text-amber-600'
+                    return (
+                      <div key={p.userId}
+                        className={`card flex items-center gap-3 transition-all ${isTop ? topBg : ''}`}>
+                        {/* Rank */}
+                        <div className="text-2xl w-9 text-center flex-shrink-0 leading-none">
+                          {MEDALS[i] || <span className="text-sm font-bold text-slate-400">#{i+1}</span>}
+                        </div>
+                        {/* Avatar */}
+                        <div className={`w-10 h-10 rounded-2xl flex items-center justify-center font-extrabold text-sm flex-shrink-0 ${isTop ? 'bg-white shadow-sm' : 'bg-brand-100 text-brand-700'}`}>
+                          {p.init}
+                        </div>
+                        {/* Name + bar */}
+                        <div className="flex-1 min-w-0">
+                          <div className="font-extrabold text-sm text-slate-900 truncate">{p.name}</div>
+                          <div className="mt-1.5">
+                            <ProgressBar value={Math.round(p.pts/maxPts*100)} color={isTop ? 'bg-yellow-400' : 'bg-brand-400'} height="h-2"/>
+                          </div>
+                        </div>
+                        {/* Points */}
+                        <div className={`text-center px-3 py-2 rounded-2xl flex-shrink-0 ${isTop ? 'bg-white shadow-sm' : 'bg-slate-50'}`}>
+                          <div className={`text-xl font-extrabold leading-none ${ptColor}`}>{p.pts}</div>
+                          <div className="text-[11px] text-slate-400 mt-0.5">نقطة</div>
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-bold text-sm">{p.name}</div>
-                        <ProgressBar value={Math.round(p.pts/maxPts*100)} color="bg-yellow-400"/>
-                      </div>
-                      <div className="text-center bg-yellow-50 px-3 py-1.5 rounded-xl">
-                        <div className="text-lg font-bold text-yellow-600">{p.pts}</div>
-                        <div className="text-xs text-slate-400">نقطة</div>
-                      </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
           )}
           {tab === 'history' && (

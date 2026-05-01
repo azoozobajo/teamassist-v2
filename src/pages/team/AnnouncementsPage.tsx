@@ -110,6 +110,13 @@ export default function AnnouncementsPage() {
   const typeLabel: Record<string, string> = {
     general: 'عام', reminder: 'تذكير', news: 'خبر', update: 'تحديث', poll: 'تصويت'
   }
+  const typeIcon: Record<string, string> = {
+    general: '📢', reminder: '🔔', news: '📰', update: '🔄', poll: '🗳️'
+  }
+  const typeBorder: Record<string, string> = {
+    general: 'border-r-4 border-slate-300', reminder: 'border-r-4 border-blue-400',
+    news: 'border-r-4 border-emerald-400', update: 'border-r-4 border-amber-400', poll: 'border-r-4 border-purple-400'
+  }
 
   return (
     <div>
@@ -121,52 +128,75 @@ export default function AnnouncementsPage() {
           </div>
         )}/>
       {loading ? <div className="flex justify-center py-10"><Spinner/></div>
-        : anns.length === 0 ? <div className="card"><EmptyState title="لا توجد إعلانات"/></div>
+        : anns.length === 0 ? (
+          <div className="card">
+            <div className="flex flex-col items-center justify-center py-10 text-center">
+              <div className="w-16 h-16 bg-slate-100 rounded-3xl flex items-center justify-center mb-4 text-3xl">📢</div>
+              <p className="font-extrabold text-slate-600 text-base">لا توجد إعلانات</p>
+              <p className="text-sm text-slate-400 mt-1">ستظهر هنا الإعلانات والتصويتات</p>
+            </div>
+          </div>
+        )
         : <div className="space-y-3">
             {anns.map(a => (
-              <div key={a.id} className="card mb-0">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className={`badge ${typeStyle[a.announcement_type] || 'bg-slate-100 text-slate-600'}`}>
-                    {typeLabel[a.announcement_type] || a.announcement_type}
-                  </span>
-                  <span className="text-xs text-slate-400">{formatTimeAgo(a.created_at)}</span>
+              <div key={a.id} className={`card mb-0 ${typeBorder[a.announcement_type] || 'border-r-4 border-slate-300'}`}>
+                <div className="flex items-start gap-3 mb-3">
+                  {/* Type icon */}
+                  <div className={`w-10 h-10 rounded-2xl flex items-center justify-center text-xl flex-shrink-0 ${
+                    a.announcement_type === 'news' ? 'bg-emerald-50' :
+                    a.announcement_type === 'reminder' ? 'bg-blue-50' :
+                    a.announcement_type === 'update' ? 'bg-amber-50' :
+                    a.is_poll ? 'bg-purple-50' : 'bg-slate-50'
+                  }`}>
+                    {typeIcon[a.announcement_type] || '📢'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className={`badge ${typeStyle[a.announcement_type] || 'bg-slate-100 text-slate-600'}`}>
+                        {typeLabel[a.announcement_type] || a.announcement_type}
+                      </span>
+                      <span className="text-xs text-slate-400">{formatTimeAgo(a.created_at)}</span>
+                    </div>
+                    <div className="font-extrabold text-sm text-slate-800">{a.title}</div>
+                  </div>
                   {isAdmin && (
-                    <button onClick={() => deleteAnn(a.id)} className="mr-auto text-slate-300 hover:text-red-500 p-1">
-                      <Trash2 size={13}/>
+                    <button onClick={() => deleteAnn(a.id)} className="text-slate-200 hover:text-red-500 p-1.5 hover:bg-red-50 rounded-xl transition-colors flex-shrink-0">
+                      <Trash2 size={14}/>
                     </button>
                   )}
                 </div>
-                <div className="font-bold text-sm mb-1">{a.title}</div>
-                {a.content && <div className="text-xs text-slate-500 leading-relaxed mb-3">{a.content}</div>}
+
+                {a.content && <div className="text-sm text-slate-600 leading-relaxed mb-3 mr-13">{a.content}</div>}
 
                 {/* Poll */}
                 {a.is_poll && a.poll_options && (
-                  <div className="space-y-2">
+                  <div className="space-y-2 mb-3">
                     {a.poll_options.map((opt: any, i: number) => {
                       const total = a.poll_options.reduce((s: number, o: any) => s + (o.votes || 0), 0)
                       const pct = total ? Math.round((opt.votes || 0) / total * 100) : 0
                       const voted = (userVotes[a.id] || []).includes(i)
                       return (
                         <div key={i} onClick={() => vote(a.id, i, a.poll_options, a.poll_limit || 1)}
-                          className={`p-2.5 rounded-xl border cursor-pointer transition-all ${voted ? 'border-brand-400 bg-brand-50' : 'border-slate-100 hover:border-slate-200'}`}>
-                          <div className="flex justify-between text-xs mb-1">
-                            <span className={`font-medium ${voted ? 'text-brand-700' : ''}`}>{opt.text}</span>
-                            <span className="text-slate-400">{opt.votes || 0} · {pct}%</span>
+                          className={`p-3 rounded-xl border cursor-pointer transition-all ${voted ? 'border-brand-400 bg-brand-50' : 'border-slate-100 hover:border-slate-200 hover:bg-slate-50'}`}>
+                          <div className="flex justify-between text-sm mb-1.5">
+                            <span className={`font-bold ${voted ? 'text-brand-700' : 'text-slate-700'}`}>{opt.text}</span>
+                            <span className={`text-xs font-bold ${voted ? 'text-brand-500' : 'text-slate-400'}`}>{pct}%</span>
                           </div>
-                          <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                            <div className="h-full bg-brand-400 rounded-full transition-all" style={{ width: `${pct}%` }}/>
+                          <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full transition-all duration-500 ${voted ? 'bg-brand-500' : 'bg-slate-300'}`} style={{ width: `${pct}%` }}/>
                           </div>
+                          <div className="text-xs text-slate-400 mt-1">{opt.votes || 0} صوت</div>
                         </div>
                       )
                     })}
-                    <div className="text-xs text-slate-400">
-                      الاختيار: {a.poll_limit === 0 ? 'غير محدود' : a.poll_limit === 1 ? 'واحد فقط' : `حتى ${a.poll_limit}`}
+                    <div className="text-xs text-slate-400 flex items-center gap-1 mt-1">
+                      🗳️ الاختيار المسموح: {a.poll_limit === 0 ? 'غير محدود' : a.poll_limit === 1 ? 'واحد فقط' : `حتى ${a.poll_limit}`}
                     </div>
                   </div>
                 )}
 
-                <div className="flex items-center gap-2 mt-3">
-                  <div className="w-5 h-5 bg-brand-100 text-brand-700 rounded-full flex items-center justify-center text-xs font-bold">
+                <div className="flex items-center gap-2 pt-2 border-t border-slate-50">
+                  <div className="w-6 h-6 bg-brand-100 text-brand-700 rounded-full flex items-center justify-center text-xs font-bold">
                     {a.profile?.full_name?.[0] || '?'}
                   </div>
                   <span className="text-xs text-slate-400">{a.profile?.full_name}</span>

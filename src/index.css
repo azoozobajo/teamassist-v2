@@ -16,7 +16,7 @@
 
 body {
   direction: rtl;
-  background: #F8FAFC;
+  background: #F0F4F8;
   color: #0F172A;
   min-height: 100vh;
 }
@@ -27,94 +27,147 @@ body {
 ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 4px; }
 
 @layer components {
-  /* Buttons */
-  .btn { @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold cursor-pointer transition-all duration-150 border-none outline-none select-none; }
-  .btn-primary { @apply btn bg-brand-500 text-white hover:bg-brand-600 active:scale-95; }
-  .btn-ghost { @apply btn bg-transparent border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300; }
-  .btn-danger { @apply btn bg-red-600 text-white hover:bg-red-700; }
-  .btn-gold { @apply btn bg-yellow-500 text-white hover:bg-yellow-600; }
-  .btn-sm { @apply px-3 py-1.5 text-xs rounded-lg; }
-  .btn-xs { @apply px-2 py-1 text-xs rounded-md; }
-  .btn-icon { @apply w-9 h-9 p-0 justify-center rounded-xl; }
 
-  /* Cards */
-  .card { @apply bg-white border border-slate-100 rounded-2xl p-4 shadow-sm; }
-  .card-hover { @apply card cursor-pointer hover:border-brand-300 hover:shadow-md transition-all; }
+  /* ─── Buttons ──────────────────────────────────────────────────────── */
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold cursor-pointer
+           transition-all duration-150 border-none outline-none select-none;
+  }
+  .btn-primary {
+    @apply btn bg-brand-500 text-white hover:bg-brand-600 active:scale-95;
+    box-shadow: 0 2px 8px rgba(29,158,117,0.30);
+  }
+  .btn-ghost {
+    @apply btn bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300;
+  }
+  .btn-danger  { @apply btn bg-red-600 text-white hover:bg-red-700; box-shadow: 0 2px 8px rgba(220,38,38,0.20); }
+  .btn-gold    { @apply btn bg-amber-500 text-white hover:bg-amber-600; }
+  .btn-sm      { @apply px-3 py-2 text-sm rounded-xl; }
+  .btn-xs      { @apply px-2.5 py-1.5 text-xs rounded-lg; }
+  .btn-icon    { @apply w-10 h-10 p-0 justify-center rounded-2xl; }
+  .btn-lg      { @apply px-6 py-4 text-base rounded-2xl; }
 
-  /* Form */
-  .form-input { @apply w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 bg-white transition-all; }
-  .form-label { @apply block text-xs font-bold text-slate-500 mb-1.5; }
+  /* ─── Cards ────────────────────────────────────────────────────────── */
+  .card       { @apply bg-white border border-slate-100 rounded-2xl p-4; box-shadow: 0 1px 6px rgba(15,23,42,0.06); }
+  .card-hover { @apply card cursor-pointer hover:border-brand-200 transition-all duration-200; }
+  .card-hover:hover { box-shadow: 0 4px 16px rgba(15,23,42,0.10); transform: translateY(-1px); }
+
+  /* ─── Hero / Gradient cards ────────────────────────────────────────── */
+  .hero-card {
+    @apply rounded-3xl p-5 text-white relative overflow-hidden;
+    background: linear-gradient(135deg, #0f766e 0%, #1D9E75 55%, #10b981 100%);
+    box-shadow: 0 6px 24px rgba(29,158,117,0.30);
+  }
+  .hero-card-blue {
+    @apply rounded-3xl p-5 text-white relative overflow-hidden;
+    background: linear-gradient(135deg, #1e40af 0%, #2563eb 55%, #3b82f6 100%);
+    box-shadow: 0 6px 24px rgba(37,99,235,0.28);
+  }
+  .hero-card-dark {
+    @apply rounded-3xl p-5 text-white relative overflow-hidden;
+    background: linear-gradient(135deg, #1e293b 0%, #334155 55%, #475569 100%);
+    box-shadow: 0 6px 24px rgba(15,23,42,0.25);
+  }
+
+  /* ─── Form ──────────────────────────────────────────────────────────── */
+  .form-input {
+    @apply w-full border border-slate-200 rounded-2xl px-4 py-3 text-sm outline-none
+           focus:border-brand-400 focus:ring-2 focus:ring-brand-100 bg-white transition-all;
+  }
+  .form-label { @apply block text-sm font-bold text-slate-600 mb-1.5; }
   .form-group { @apply mb-4; }
 
-  /* Badges */
-  .badge { @apply inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full whitespace-nowrap; }
-  .badge-green { @apply badge bg-emerald-100 text-emerald-700; }
-  .badge-blue { @apply badge bg-blue-100 text-blue-700; }
-  .badge-amber { @apply badge bg-amber-100 text-amber-700; }
-  .badge-red { @apply badge bg-red-100 text-red-700; }
-  .badge-gray { @apply badge bg-slate-100 text-slate-600; }
+  /* ─── Badges ────────────────────────────────────────────────────────── */
+  .badge        { @apply inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full whitespace-nowrap; }
+  .badge-green  { @apply badge bg-emerald-100 text-emerald-700; }
+  .badge-blue   { @apply badge bg-blue-100 text-blue-700; }
+  .badge-amber  { @apply badge bg-amber-100 text-amber-700; }
+  .badge-red    { @apply badge bg-red-100 text-red-700; }
+  .badge-gray   { @apply badge bg-slate-100 text-slate-600; }
   .badge-purple { @apply badge bg-purple-100 text-purple-700; }
-  .badge-gold { @apply badge bg-yellow-50 text-yellow-700; }
+  .badge-gold   { @apply badge bg-yellow-50 text-yellow-700; }
 
-  /* Nav */
-  .nav-item { @apply flex items-center gap-2.5 px-3 py-2 text-sm rounded-xl cursor-pointer text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-all select-none border-r-0; }
-  .nav-item.active { @apply bg-emerald-50 text-emerald-700 font-bold; }
+  /* ─── Nav ───────────────────────────────────────────────────────────── */
+  .nav-item { @apply flex items-center gap-3 px-3 py-2.5 text-sm rounded-xl cursor-pointer text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition-all select-none; }
+  .nav-item.active { @apply bg-brand-50 text-brand-700 font-bold; }
 
-  /* Tabs */
-  .tab-btn { @apply px-4 py-2 text-sm cursor-pointer text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-colors font-medium; }
+  /* ─── Tabs ──────────────────────────────────────────────────────────── */
+  .tab-btn        { @apply px-4 py-2.5 text-sm cursor-pointer text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-colors font-medium whitespace-nowrap; }
   .tab-btn.active { @apply text-brand-600 border-brand-500 font-bold; }
 
-  /* Stats */
-  .stat-box { @apply bg-slate-50 rounded-2xl p-4 text-center; }
-  .stat-value { @apply text-2xl font-bold text-slate-800; }
-  .stat-label { @apply text-xs text-slate-400 mt-1; }
+  /* ─── Stats ─────────────────────────────────────────────────────────── */
+  .stat-box {
+    @apply bg-white rounded-2xl p-4 text-center border border-slate-100;
+    box-shadow: 0 1px 6px rgba(15,23,42,0.06);
+  }
+  .stat-value { @apply text-2xl font-bold text-slate-800 leading-none; }
+  .stat-label { @apply text-xs text-slate-500 mt-1.5; }
 
-  /* Page */
+  /* ─── Page ──────────────────────────────────────────────────────────── */
   .page-header { @apply flex items-center justify-between mb-5; }
-  .page-title { @apply text-base font-bold text-slate-800; }
+  .page-title  { @apply text-lg font-bold text-slate-900; }
 
-  /* Progress */
-  .progress { @apply h-2 bg-slate-100 rounded-full overflow-hidden; }
-  .progress-fill { @apply h-full rounded-full transition-all; }
+  /* ─── Progress ──────────────────────────────────────────────────────── */
+  .progress      { @apply h-2.5 bg-slate-100 rounded-full overflow-hidden; }
+  .progress-fill { @apply h-full rounded-full transition-all duration-500; }
 
-  /* Attendance status colors */
-  .att-present { @apply bg-emerald-500; }
-  .att-absent { @apply bg-red-500; }
-  .att-uncertain { @apply bg-amber-400; }
-  .att-late { @apply bg-orange-400; }
+  /* ─── Attendance colors ─────────────────────────────────────────────── */
+  .att-present  { @apply bg-emerald-500; }
+  .att-absent   { @apply bg-red-500; }
+  .att-uncertain{ @apply bg-amber-400; }
+  .att-late     { @apply bg-orange-400; }
 
-  /* Modal */
-  .modal-overlay { @apply fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm; }
-  .modal-box { @apply bg-white rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl; }
-  .modal-title { @apply text-base font-bold text-slate-800 mb-4; }
+  /* ─── Modal ─────────────────────────────────────────────────────────── */
+  .modal-overlay { @apply fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm; }
+  .modal-box     { @apply bg-white rounded-3xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto; box-shadow: 0 24px 64px rgba(15,23,42,0.20); }
+  .modal-title   { @apply text-base font-bold text-slate-800 mb-4; }
 
-  /* Chat */
-  .chat-bubble-me { @apply bg-brand-500 text-white rounded-2xl rounded-bl-md px-4 py-2.5 text-sm; }
+  /* ─── Chat ──────────────────────────────────────────────────────────── */
+  .chat-bubble-me    { @apply bg-brand-500 text-white rounded-2xl rounded-bl-md px-4 py-2.5 text-sm; }
   .chat-bubble-other { @apply bg-slate-100 text-slate-800 rounded-2xl rounded-br-md px-4 py-2.5 text-sm; }
 
-  /* Event type colors */
+  /* ─── Event type accent borders ─────────────────────────────────────── */
   .event-training { @apply border-r-4 border-emerald-500; }
-  .event-match { @apply border-r-4 border-blue-500; }
-  .event-meeting { @apply border-r-4 border-amber-500; }
-  .event-camp { @apply border-r-4 border-purple-500; }
-  .event-other { @apply border-r-4 border-slate-400; }
+  .event-match    { @apply border-r-4 border-blue-500; }
+  .event-meeting  { @apply border-r-4 border-amber-500; }
+  .event-camp     { @apply border-r-4 border-purple-500; }
+  .event-other    { @apply border-r-4 border-slate-400; }
+
+  /* ─── Icon container helpers ────────────────────────────────────────── */
+  .icon-box-green  { @apply w-10 h-10 bg-emerald-100 rounded-2xl flex items-center justify-center flex-shrink-0 text-emerald-600; }
+  .icon-box-blue   { @apply w-10 h-10 bg-blue-100 rounded-2xl flex items-center justify-center flex-shrink-0 text-blue-600; }
+  .icon-box-orange { @apply w-10 h-10 bg-orange-100 rounded-2xl flex items-center justify-center flex-shrink-0 text-orange-600; }
+  .icon-box-red    { @apply w-10 h-10 bg-red-100 rounded-2xl flex items-center justify-center flex-shrink-0 text-red-600; }
+  .icon-box-purple { @apply w-10 h-10 bg-purple-100 rounded-2xl flex items-center justify-center flex-shrink-0 text-purple-600; }
+  .icon-box-brand  { @apply w-10 h-10 bg-brand-100 rounded-2xl flex items-center justify-center flex-shrink-0 text-brand-600; }
 }
 
-/* Animations */
-@keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
-@keyframes slideIn { from { transform:translateX(100%); } to { transform:translateX(0); } }
-.animate-fade { animation: fadeIn 0.2s ease; }
-.animate-slide { animation: slideIn 0.25s ease; }
+/* ─── Animations ─────────────────────────────────────────────────────── */
+@keyframes fadeIn    { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+@keyframes slideIn   { from { transform:translateX(100%); }           to { transform:translateX(0); } }
+@keyframes bounceSm  { 0%,100% { transform:scale(1); } 50% { transform:scale(1.05); } }
+@keyframes pulseSoft { 0%,100% { opacity:1; } 50% { opacity:0.65; } }
+@keyframes scaleIn   { from { opacity:0; transform:scale(0.92); } to { opacity:1; transform:scale(1); } }
 
-/* Print styles for seasonal report */
+.animate-fade       { animation: fadeIn 0.25s ease; }
+.animate-slide      { animation: slideIn 0.3s cubic-bezier(0.32,0.72,0,1); }
+.animate-bounce-sm  { animation: bounceSm 0.4s ease; }
+.animate-pulse-soft { animation: pulseSoft 2s ease-in-out infinite; }
+.animate-scale-in   { animation: scaleIn 0.2s ease; }
+
+/* ─── iOS safe-area bottom padding ──────────────────────────────────── */
+.pb-safe { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
+
+/* ─── Print ──────────────────────────────────────────────────────────── */
 @media print {
   .no-print { display: none !important; }
-  .card { break-inside: avoid; box-shadow: none; border: 1px solid #e2e8f0; }
+  .card     { break-inside: avoid; box-shadow: none; border: 1px solid #e2e8f0; }
 }
 
-/* Fix RTL for number inputs */
-input[type="number"], input[type="date"], input[type="time"], input[type="datetime-local"], input[type="email"], input[type="password"] {
-  direction: ltr;
-  text-align: right;
-}
-input[type="email"] { text-align: left; }
+/* ─── RTL fixes for typed inputs ────────────────────────────────────── */
+input[type="number"],
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"],
+input[type="password"] { direction: ltr; text-align: right; }
+input[type="email"]    { direction: ltr; text-align: left; }

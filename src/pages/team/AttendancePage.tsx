@@ -5,6 +5,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { eventService, teamService } from '../../services'
 import { Spinner, PageHeader, AttendanceButton, Modal, FormField, Avatar } from '../../components/ui'
 import { ATT_CONFIG, EVENT_CONFIG, formatDate, canManageEvents, isEventLocked } from '../../utils/helpers'
+import { supabase } from '../../lib/supabase'
 
 export default function AttendancePage() {
   const { teamId } = useParams()
@@ -20,7 +21,11 @@ export default function AttendancePage() {
   const [lateMinutes, setLateMinutes] = useState('')
   const [lateExcuse, setLateExcuse] = useState('')
   const [hasExcuse, setHasExcuse] = useState(false)
-  const [expandedSection, setExpandedSection] = useState<string | null>('present')
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(
+    new Set(['present', 'late', 'uncertain', 'absent'])
+  )
+  const toggleSection = (key: string) =>
+    setExpandedSections(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
 
   useEffect(() => {
     if (!teamId || !user) return
@@ -34,6 +39,28 @@ export default function AttendancePage() {
       else setLoading(false)
     })
   }, [teamId, user])
+
+  useEffect(() => {
+    if (!selEv || !teamId) return
+    // Filter by team_id (reliable for INSERTs); client-side check narrows to selected event
+    const ch = supabase.channel(`att:${teamId}:${selEv.id}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'attendance',
+        filter: `team_id=eq.${teamId}`
+      }, async (payload: any) => {
+        const evId = (payload.new as any)?.event_id || (payload.old as any)?.event_id
+        if (evId === selEv.id) {
+          const a = await eventService.getAttendance(selEv.id)
+          setAtt(a)
+        }
+      }).subscribe()
+    // Polling fallback every 8s in case realtime misses UPDATE events
+    const poll = setInterval(async () => {
+      const a = await eventService.getAttendance(selEv.id)
+      setAtt(a)
+    }, 8000)
+    return () => { ch.unsubscribe(); clearInterval(poll) }
+  }, [selEv?.id, teamId])
 
   async function selectEvent(ev: any) {
     setSelEv(ev); setAttLoading(true)
@@ -105,24 +132,28 @@ export default function AttendancePage() {
   return (
     <div>
       <PageHeader title="سجل الحضور" />
-      <div className="grid md:grid-cols-[200px_1fr] gap-4">
+      <div className="grid md:grid-cols-[220px_1fr] gap-4">
         {/* Event selector */}
         <div>
-          <p className="text-xs font-bold text-slate-400 mb-2">اختر حدثاً</p>
+          <p className="text-xs font-extrabold text-slate-400 uppercase tracking-wider mb-2">اختر حدثاً</p>
           <div className="space-y-1.5 max-h-[500px] overflow-y-auto">
             {events.map(e => {
               const c = EVENT_CONFIG[e.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
               const lk = isEventLocked(e.start_datetime)
               return (
                 <button key={e.id} onClick={() => selectEvent(e)}
-                  className={`w-full text-right px-3 py-2.5 rounded-xl border text-xs transition-colors ${selEv?.id === e.id ? 'bg-brand-50 border-brand-400 font-bold text-brand-800' : 'bg-white border-slate-100 hover:border-slate-200'}`}>
-                  <div className="flex items-center gap-1.5">
-                    <span>{c.icon}</span>
+                  className={`w-full text-right px-3 py-2.5 rounded-2xl border text-xs transition-all ${
+                    selEv?.id === e.id
+                      ? 'bg-brand-50 border-brand-300 font-extrabold text-brand-800 shadow-sm'
+                      : 'bg-white border-slate-100 hover:border-brand-200 hover:bg-brand-50/30'
+                  }`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">{c.icon}</span>
                     <div className="flex-1 min-w-0">
                       <div className="truncate font-bold">{e.title}</div>
                       <div className="text-slate-400 mt-0.5">{formatDate(e.start_datetime)}</div>
                     </div>
-                    {lk && <Lock size={10} className="text-slate-400 flex-shrink-0" />}
+                    {lk && <Lock size={10} className="text-slate-300 flex-shrink-0" />}
                   </div>
                 </button>
               )
@@ -134,36 +165,41 @@ export default function AttendancePage() {
         <div>
           {selEv && (
             <>
-              {/* Summary card */}
-              <div className="card bg-brand-50 border-brand-200 mb-4">
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <div className="font-bold text-sm text-brand-800">{selEv.title}</div>
-                    <div className="text-xs text-brand-600 mt-0.5">{selEv.att_group || 'الكل'}</div>
+              {/* Summary hero card */}
+              <div className="hero-card mb-4">
+                <div className="absolute top-0 left-0 w-32 h-32 rounded-full opacity-10 bg-white -translate-x-12 -translate-y-10"/>
+                <div className="relative">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <div className="font-extrabold text-white text-base">{selEv.title}</div>
+                      <div className="text-white/70 text-xs mt-0.5">
+                        {EVENT_CONFIG[selEv.event_type as keyof typeof EVENT_CONFIG]?.label || selEv.event_type}
+                        {selEv.att_group ? ` · ${selEv.att_group}` : ''}
+                      </div>
+                    </div>
+                    {locked && (
+                      <div className="flex items-center gap-1 text-xs text-white/80 bg-white/15 px-2.5 py-1.5 rounded-xl">
+                        <Lock size={11} /> مغلق
+                      </div>
+                    )}
                   </div>
-                  {locked && (
-                    <div className="flex items-center gap-1 text-xs text-slate-500 bg-white border border-slate-200 px-2 py-1 rounded-lg">
-                      <Lock size={10} /> مغلق
+                  {total > 0 && (
+                    <div className="grid grid-cols-4 gap-2">
+                      {[
+                        { label:'حاضر', n: present.length, pct: Math.round(present.length/total*100), bg:'bg-emerald-500/30' },
+                        { label:'متأخر', n: late.length, pct: Math.round(late.length/total*100), bg:'bg-orange-500/30' },
+                        { label:'غير متأكد', n: uncertain.length, pct: Math.round(uncertain.length/total*100), bg:'bg-amber-400/30' },
+                        { label:'غائب', n: absent.length, pct: Math.round(absent.length/total*100), bg:'bg-red-500/30' },
+                      ].map(s => (
+                        <div key={s.label} className={`${s.bg} rounded-2xl p-2.5 text-center`}>
+                          <div className="text-white text-xl font-extrabold leading-none">{s.pct}%</div>
+                          <div className="text-white/80 text-xs mt-1">{s.label}</div>
+                          <div className="text-white/60 text-xs">({s.n})</div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
-                {/* Stats bar */}
-                {total > 0 && (
-                  <div className="grid grid-cols-4 gap-2">
-                    {[
-                      { label:'حاضر',      n: present.length,   pct: Math.round(present.length/total*100),   color:'text-emerald-700', bg:'bg-white' },
-                      { label:'متأخر',     n: late.length,      pct: Math.round(late.length/total*100),      color:'text-orange-600',  bg:'bg-white' },
-                      { label:'غير متأكد', n: uncertain.length, pct: Math.round(uncertain.length/total*100), color:'text-amber-700',   bg:'bg-white' },
-                      { label:'غائب',      n: absent.length,    pct: Math.round(absent.length/total*100),    color:'text-red-700',     bg:'bg-white' },
-                    ].map(s => (
-                      <div key={s.label} className={`${s.bg} rounded-xl p-2 text-center shadow-sm`}>
-                        <div className={`text-lg font-bold ${s.color}`}>{s.pct}%</div>
-                        <div className={`text-xs font-medium ${s.color}`}>{s.label}</div>
-                        <div className="text-xs text-slate-400">({s.n})</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
 
               {attLoading ? <div className="flex justify-center py-8"><Spinner /></div> : (
@@ -172,18 +208,20 @@ export default function AttendancePage() {
                     <div key={sec.key} className={`rounded-2xl ${sec.bg} p-3`}>
                       {/* Collapsible header */}
                       <button
-                        className="w-full flex items-center justify-between text-left"
-                        onClick={() => setExpandedSection(expandedSection === sec.key ? null : sec.key)}>
-                        <div className={`text-xs font-bold ${sec.tc}`}>
-                          {sec.icon} {sec.label} ({sec.list.length})
+                        className="w-full flex items-center justify-between"
+                        onClick={() => toggleSection(sec.key)}>
+                        <div className={`text-sm font-extrabold ${sec.tc} flex items-center gap-2`}>
+                          <span className="text-base">{sec.icon}</span>
+                          {sec.label}
+                          <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-white/60">{sec.list.length}</span>
                         </div>
-                        {expandedSection === sec.key
-                          ? <ChevronUp size={14} className={sec.tc} />
-                          : <ChevronDown size={14} className={sec.tc} />}
+                        {expandedSections.has(sec.key)
+                          ? <ChevronUp size={15} className={sec.tc} />
+                          : <ChevronDown size={15} className={sec.tc} />}
                       </button>
-                      {expandedSection === sec.key && (
+                      {expandedSections.has(sec.key) && (
                         sec.list.length === 0
-                          ? <div className="text-xs text-slate-400 text-center py-2 mt-1">لا يوجد</div>
+                          ? <div className="text-xs text-slate-400 text-center py-3 mt-1">لا يوجد</div>
                           : <AvatarSection members={sec.list} />
                       )}
                     </div>
@@ -191,9 +229,9 @@ export default function AttendancePage() {
 
                   {/* Not recorded */}
                   {notRecorded.length > 0 && (
-                    <div className="card">
-                      <div className="text-xs font-bold text-slate-400 mb-2">
-                        لم يُسجّل بعد ({notRecorded.length})
+                    <div className="card border-dashed border-slate-200">
+                      <div className="text-xs font-extrabold text-slate-400 mb-2 flex items-center gap-1.5">
+                        <span>⏳</span> لم يُسجّل بعد ({notRecorded.length})
                       </div>
                       <div className="space-y-1.5">
                         {notRecorded.map(m => (
@@ -217,7 +255,10 @@ export default function AttendancePage() {
             </>
           )}
           {!selEv && !loading && (
-            <div className="card text-center text-slate-400 py-8 text-sm">اختر حدثاً من القائمة</div>
+            <div className="card text-center py-12">
+              <div className="text-4xl mb-3">📋</div>
+              <p className="font-bold text-slate-500 text-sm">اختر حدثاً لعرض الحضور</p>
+            </div>
           )}
           {loading && <div className="flex justify-center py-10"><Spinner /></div>}
         </div>

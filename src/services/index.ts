@@ -6,11 +6,11 @@ export const teamService = {
   async getMyTeams(userId: string) {
     const { data } = await supabase
       .from('team_members')
-      .select('team_id, role, teams(*)')
+      .select('team_id, role, joined_at, teams(*)')
       .eq('user_id', userId)
       .eq('status', 'active')
       .is('removed_at', null)
-    return (data ?? []).map((r: any) => ({ ...r.teams, myRole: r.role }))
+    return (data ?? []).map((r: any) => ({ ...r.teams, myRole: r.role, joinedAt: r.joined_at }))
   },
   async getTeam(id: string) {
     const { data } = await supabase.from('teams').select('*').eq('id', id).single()
@@ -66,6 +66,17 @@ export const teamService = {
     const { data } = await supabase.from('team_members').select('role')
       .eq('team_id', teamId).eq('user_id', userId).eq('status', 'active').single()
     return data?.role ?? null
+  },
+  async getMyArchivedTeams(userId: string) {
+    const { data } = await supabase
+      .from('team_members')
+      .select('team_id, role, removed_at, joined_at, teams(*)')
+      .eq('user_id', userId)
+      .neq('status', 'active')
+    return (data ?? []).map((r: any) => ({
+      ...r.teams, myRole: r.role,
+      removedAt: r.removed_at, joinedAt: r.joined_at, archived: true
+    }))
   },
   async regenerateCode(teamId: string) {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase()
@@ -183,16 +194,34 @@ export const eventService = {
   },
   async getAttendance(eventId: string) {
     const { data } = await supabase.from('attendance')
-      .select('*, profile:profiles(*)').eq('event_id', eventId)
+      .select('*, profile:profiles!user_id(id, full_name, avatar_url)').eq('event_id', eventId)
     return data ?? []
   },
-  async setAttendance(data: any) {
+  async setAttendance(record: any) {
     return supabase.from('attendance')
-      .upsert({ ...data, updated_at: new Date().toISOString() }, { onConflict: 'event_id,user_id' })
+      .upsert({ ...record, updated_at: new Date().toISOString() }, { onConflict: 'event_id,user_id' })
   },
   async getMyAttendance(teamId: string, userId: string) {
     const { data } = await supabase.from('attendance')
       .select('*, event:events(*)').eq('team_id', teamId).eq('user_id', userId)
+    return data ?? []
+  },
+  async getMatchResults(teamId: string) {
+    const { data } = await supabase.from('events')
+      .select('id, title, start_datetime, goals_for, goals_against, opponent, home_away, tournament_name, match_category')
+      .eq('team_id', teamId).eq('event_type', 'match')
+      .not('goals_for', 'is', null)
+      .order('start_datetime', { ascending: false })
+    return data ?? []
+  },
+  async getWeekEvents(teamId: string) {
+    const now = new Date()
+    const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+    const { data } = await supabase.from('events').select('*')
+      .eq('team_id', teamId)
+      .gte('start_datetime', now.toISOString())
+      .lte('start_datetime', weekLater.toISOString())
+      .order('start_datetime', { ascending: true })
     return data ?? []
   },
   async getTeamAttendanceStats(teamId: string) {
@@ -218,13 +247,19 @@ export const notificationService = {
   async create(data: any) {
     return supabase.from('notifications').insert(data)
   },
-  async createForTeam(teamId: string, title: string, body: string, type: string, excludeUserId?: string) {
+  async createForTeam(teamId: string, title: string, body: string, type: string, excludeUserId?: string, senderName?: string) {
     const { data: members } = await supabase.from('team_members')
       .select('user_id').eq('team_id', teamId).eq('status', 'active')
     if (!members) return
+    // Get team logo
+    const { data: team } = await supabase.from('teams').select('logo_url').eq('id', teamId).single()
     const notifs = members
       .filter((m: any) => m.user_id !== excludeUserId)
-      .map((m: any) => ({ user_id: m.user_id, team_id: teamId, title, body, type, is_read: false }))
+      .map((m: any) => ({
+        user_id: m.user_id, team_id: teamId, title, body, type, is_read: false,
+        sender_name: senderName || null,
+        team_logo: team?.logo_url || null
+      }))
     if (notifs.length) await supabase.from('notifications').insert(notifs)
   }
 }
@@ -286,10 +321,16 @@ export const financeService = {
 // ── LEAVES ────────────────────────────────────────────────────────────
 export const leaveService = {
   async getAll(teamId: string) {
-    const { data } = await supabase.from('leaves')
-      .select('*, profile:profiles(*)')
+    const { data, error } = await supabase.from('leaves').select('*')
       .eq('team_id', teamId).order('created_at', { ascending: false })
-    return data ?? []
+    if (error) { console.error('[leaveService.getAll]', error); return [] }
+    if (!data?.length) return []
+    const ids = [...new Set(data.map((l: any) => l.user_id))]
+    const { data: profs } = await supabase.from('profiles')
+      .select('id, full_name, avatar_url').in('id', ids)
+    const pm: Record<string, any> = {}
+    ;(profs ?? []).forEach((p: any) => { pm[p.id] = p })
+    return data.map((l: any) => ({ ...l, profile: pm[l.user_id] ?? null }))
   },
   async getMyLeaves(teamId: string, userId: string) {
     const { data } = await supabase.from('leaves').select('*')
@@ -512,5 +553,86 @@ export const matchService = {
   },
   async delete(id: string) {
     return supabase.from('matches').delete().eq('id', id)
+  }
+}
+
+// ── TOURNAMENTS ────────────────────────────────────────────────────────
+export const tournamentService = {
+  async getAll(teamId: string) {
+    const { data } = await supabase.from('tournaments').select('*')
+      .eq('team_id', teamId).order('created_at', { ascending: false })
+    return data ?? []
+  },
+  async create(data: any) {
+    return supabase.from('tournaments').insert(data).select().single()
+  },
+  async update(id: string, data: any) {
+    return supabase.from('tournaments').update(data).eq('id', id)
+  },
+  async delete(id: string) {
+    return supabase.from('tournaments').delete().eq('id', id)
+  }
+}
+
+// ── BEST PLAYER ────────────────────────────────────────────────────────
+export const bestPlayerService = {
+  async getPollForEvent(eventId: string) {
+    const { data } = await supabase.from('best_player_polls').select('*').eq('event_id', eventId).single()
+    return data
+  },
+  async createPoll(data: any) {
+    return supabase.from('best_player_polls').insert(data).select().single()
+  },
+  async closePoll(pollId: string, winnerId: string, teamId: string, pts: number) {
+    await supabase.from('best_player_polls').update({ status: 'closed', winner_id: winnerId, closed_at: new Date().toISOString() }).eq('id', pollId)
+    // Award points
+    await supabase.from('points_transactions').insert({ team_id: teamId, user_id: winnerId, points: pts, category: 'مكافأة', reason: 'أفضل لاعب', is_auto: true })
+  },
+  async vote(pollId: string, voterId: string, nomineeId: string) {
+    return supabase.from('best_player_votes').upsert({ poll_id: pollId, voter_id: voterId, nominee_id: nomineeId }, { onConflict: 'poll_id,voter_id' })
+  },
+  async getVotes(pollId: string) {
+    const { data } = await supabase.from('best_player_votes').select('*, nominee:profiles!nominee_id(id,full_name)').eq('poll_id', pollId)
+    return data ?? []
+  },
+  async getMyVote(pollId: string, voterId: string) {
+    const { data } = await supabase.from('best_player_votes').select('nominee_id').eq('poll_id', pollId).eq('voter_id', voterId).single()
+    return data?.nominee_id ?? null
+  },
+  async getPlayerAwards(teamId: string, userId: string) {
+    const { data } = await supabase.from('best_player_polls')
+      .select('*').eq('team_id', teamId).eq('winner_id', userId).eq('status', 'closed')
+    return data ?? []
+  },
+  async getTeamAwards(teamId: string) {
+    const { data } = await supabase.from('best_player_polls')
+      .select('*, winner:profiles!winner_id(id,full_name), event:events(title,event_type)')
+      .eq('team_id', teamId).eq('status', 'closed').order('closed_at', { ascending: false })
+    return data ?? []
+  }
+}
+
+// ── PERMISSIONS ────────────────────────────────────────────────────────
+export const permissionService = {
+  async getTeamPermissions(teamId: string) {
+    const { data } = await supabase.from('team_permissions').select('*, profile:profiles(id,full_name)').eq('team_id', teamId)
+    return data ?? []
+  },
+  async getUserPermissions(teamId: string, userId: string) {
+    const { data } = await supabase.from('team_permissions').select('permission').eq('team_id', teamId).eq('user_id', userId)
+    return (data ?? []).map((p: any) => p.permission) as string[]
+  },
+  async grant(teamId: string, userId: string, permission: string, grantedBy: string) {
+    return supabase.from('team_permissions').upsert({ team_id: teamId, user_id: userId, permission, granted_by: grantedBy }, { onConflict: 'team_id,user_id,permission' })
+  },
+  async revoke(teamId: string, userId: string, permission: string) {
+    return supabase.from('team_permissions').delete().eq('team_id', teamId).eq('user_id', userId).eq('permission', permission)
+  },
+  async setUserPermissions(teamId: string, userId: string, permissions: string[], grantedBy: string) {
+    // Delete all existing then insert new
+    await supabase.from('team_permissions').delete().eq('team_id', teamId).eq('user_id', userId)
+    if (permissions.length > 0) {
+      await supabase.from('team_permissions').insert(permissions.map(p => ({ team_id: teamId, user_id: userId, permission: p, granted_by: grantedBy })))
+    }
   }
 }

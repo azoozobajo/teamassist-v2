@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, LogIn, Shield, Calendar, CheckSquare, DollarSign } from 'lucide-react'
+import { Plus, LogIn, Shield, Calendar, DollarSign, Users, Zap, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { teamService, eventService, financeService } from '../services'
 import { Spinner, EmptyState, AttendanceButton, Avatar } from '../components/ui'
-import { formatDate, EVENT_CONFIG, isEventLocked } from '../utils/helpers'
+import { formatDate, EVENT_CONFIG, isEventLocked, ROLE_LABELS, cn } from '../utils/helpers'
 import { format } from 'date-fns'
 import { arSA } from 'date-fns/locale'
 
@@ -12,50 +12,61 @@ export default function DashboardPage() {
   const { user, profile } = useAuth()
   const navigate = useNavigate()
   const [teams, setTeams] = useState<any[]>([])
+  const [teamIdx, setTeamIdx] = useState(0)
   const [loading, setLoading] = useState(true)
   const [nextEvents, setNextEvents] = useState<{ team: any; event: any; myAtt: string }[]>([])
-  const [myStats, setMyStats] = useState({ matchAttPct: 0, trainingAttPct: 0, matchTotal: 0, trainingTotal: 0, teamCount: 0, upcomingCount: 0, unpaidCount: 0 })
+  const [attFeedback, setAttFeedback] = useState<{ idx: number; ok: boolean } | null>(null)
+  const [myStats, setMyStats] = useState({ teamCount: 0, upcomingCount: 0, unpaidCount: 0 })
+  const [statsPerTeam, setStatsPerTeam] = useState<any[]>([])
+  const [selStatTeam, setSelStatTeam] = useState<string | null>(null)
 
-  const monthLabel = format(new Date(), 'MMMM yyyy', { locale: arSA })
+  const monthLabel = format(new Date(), 'MMMM', { locale: arSA })
+
+  const greeting = (() => {
+    const h = new Date().getHours()
+    if (h < 12) return 'صباح الخير'
+    if (h < 17) return 'مساء الخير'
+    return 'مساء النور'
+  })()
 
   useEffect(() => {
     if (!user) return
     teamService.getMyTeams(user.id).then(async ts => {
       setTeams(ts)
-      let matchTotal = 0, matchPresent = 0
-      let trainingTotal = 0, trainingPresent = 0
       let upcomingThisMonth = 0, unpaidCount = 0
-      const evData: any[] = []
+      const allEvData: any[] = []
+      const perTeam: any[] = []
 
       for (const t of ts) {
-        // Next event for quick attendance
-        const next = await eventService.getNextEvent(t.id)
-        if (next) {
-          const att = await eventService.getAttendance(next.id)
-          const myAtt = att.find((a: any) => a.user_id === user.id)
-          evData.push({ team: t, event: next, myAtt: myAtt?.status || 'present' })
+        // Next 3 upcoming events for quick attendance
+        const upcomingEvs = await eventService.getUpcomingEvents(t.id, 3)
+        for (const ev of upcomingEvs) {
+          const attList = await eventService.getAttendance(ev.id)
+          const myAttRec = attList.find((a: any) => a.user_id === user.id)
+          allEvData.push({ team: t, event: ev, myAtt: myAttRec?.status || '' })
         }
-        // Upcoming this month
+
+        // Upcoming count this month
         const allEvs = await eventService.getTeamEvents(t.id)
         const now = new Date()
         const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-        upcomingThisMonth += allEvs.filter(e =>
+        upcomingThisMonth += allEvs.filter((e: any) =>
           new Date(e.start_datetime) >= now && new Date(e.start_datetime) <= monthEnd
         ).length
-        // Split attendance: matches vs trainings
+
+        // Per-team attendance stats (uses joined event type)
         const myAtt = await eventService.getMyAttendance(t.id, user.id)
+        let mT = 0, mP = 0, trT = 0, trP = 0
         myAtt.forEach((a: any) => {
-          const ev = allEvs.find((e: any) => e.id === a.event_id)
           const isPresent = a.status === 'present' || a.status === 'late'
-          if (ev?.event_type === 'match') {
-            matchTotal++
-            if (isPresent) matchPresent++
-          } else if (ev?.event_type === 'training') {
-            trainingTotal++
-            if (isPresent) trainingPresent++
-          }
+          if (a.event?.event_type === 'match')     { mT++; if (isPresent) mP++ }
+          else if (a.event?.event_type === 'training') { trT++; if (isPresent) trP++ }
         })
-        // Finance
+        perTeam.push({
+          teamId: t.id, teamName: t.name, myRole: t.myRole, logo_url: t.logo_url,
+          matchTotal: mT, matchPresent: mP, trainingTotal: trT, trainingPresent: trP, archived: false
+        })
+
         try {
           const fin = await financeService.getPlayerFinance(t.id, user.id)
           fin.obligations.forEach((o: any) => {
@@ -65,161 +76,383 @@ export default function DashboardPage() {
         } catch {}
       }
 
-      setNextEvents(evData)
-      setMyStats({
-        matchAttPct: matchTotal ? Math.round(matchPresent / matchTotal * 100) : 0,
-        trainingAttPct: trainingTotal ? Math.round(trainingPresent / trainingTotal * 100) : 0,
-        matchTotal, trainingTotal,
-        teamCount: ts.length,
-        upcomingCount: upcomingThisMonth,
-        unpaidCount
-      })
+      // Archived teams stats (requires V4 migration for RLS)
+      try {
+        const archivedTs = await teamService.getMyArchivedTeams(user.id)
+        for (const t of archivedTs) {
+          try {
+            const myAtt = await eventService.getMyAttendance(t.id, user.id)
+            let mT = 0, mP = 0, trT = 0, trP = 0
+            myAtt.forEach((a: any) => {
+              const isPresent = a.status === 'present' || a.status === 'late'
+              if (a.event?.event_type === 'match')     { mT++; if (isPresent) mP++ }
+              else if (a.event?.event_type === 'training') { trT++; if (isPresent) trP++ }
+            })
+            if (mT > 0 || trT > 0)
+              perTeam.push({
+                teamId: t.id, teamName: t.name, myRole: t.myRole, logo_url: t.logo_url,
+                matchTotal: mT, matchPresent: mP, trainingTotal: trT, trainingPresent: trP, archived: true
+              })
+          } catch {}
+        }
+      } catch {}
+
+      setStatsPerTeam(perTeam)
+
+      allEvData.sort((a, b) => new Date(a.event.start_datetime).getTime() - new Date(b.event.start_datetime).getTime())
+      setNextEvents(allEvData.slice(0, 3))
+      setMyStats({ teamCount: ts.length, upcomingCount: upcomingThisMonth, unpaidCount })
       setLoading(false)
     })
   }, [user])
 
   async function setAttendance(teamId: string, eventId: string, status: string, idx: number) {
     if (!user) return
-    await eventService.setAttendance({ event_id: eventId, team_id: teamId, user_id: user.id, status })
+    const prevStatus = nextEvents[idx]?.myAtt ?? ''
     setNextEvents(prev => prev.map((e, i) => i === idx ? { ...e, myAtt: status } : e))
+    const { error } = await eventService.setAttendance({ event_id: eventId, team_id: teamId, user_id: user.id, status })
+    if (error) {
+      setNextEvents(prev => prev.map((e, i) => i === idx ? { ...e, myAtt: prevStatus } : e))
+      setAttFeedback({ idx, ok: false })
+    } else {
+      setAttFeedback({ idx, ok: true })
+    }
+    setTimeout(() => setAttFeedback(null), 2500)
   }
 
-  const roleColor: Record<string, string> = {
-    owner: 'bg-emerald-100 text-emerald-800', head_coach: 'bg-blue-100 text-blue-800',
-    player: 'bg-slate-100 text-slate-600', administrator: 'bg-purple-100 text-purple-800',
-    assistant_coach: 'bg-sky-100 text-sky-800'
-  }
-  const roleLabel: Record<string, string> = {
-    owner: 'مالك', head_coach: 'مدرب رئيسي', player: 'لاعب',
-    administrator: 'إداري', assistant_coach: 'مساعد مدرب'
-  }
+  const derivedStats = useMemo(() => {
+    const playerTeams = statsPerTeam.filter(s => s.myRole === 'player')
+    const rel = selStatTeam ? playerTeams.filter(s => s.teamId === selStatTeam) : playerTeams
+    const mT = rel.reduce((s, r) => s + r.matchTotal, 0)
+    const mP = rel.reduce((s, r) => s + r.matchPresent, 0)
+    const trT = rel.reduce((s, r) => s + r.trainingTotal, 0)
+    const trP = rel.reduce((s, r) => s + r.trainingPresent, 0)
+    return {
+      matchAttPct: mT ? Math.round(mP / mT * 100) : 0,
+      trainingAttPct: trT ? Math.round(trP / trT * 100) : 0,
+      matchTotal: mT, trainingTotal: trT,
+      playerTeams
+    }
+  }, [statsPerTeam, selStatTeam])
+
+  const currentTeam = teams[teamIdx]
 
   return (
-    <div>
-      {/* Welcome hero */}
-      <div className="bg-gradient-to-l from-brand-600 to-brand-800 rounded-2xl p-5 mb-5 text-white">
-        <div className="flex items-center gap-4">
-          <Avatar name={profile?.full_name || 'U'} src={profile?.avatar_url} size="lg"
-            className="ring-4 ring-white/30 flex-shrink-0" />
+    <div className="animate-fade space-y-5">
+
+      {/* ── Hero Greeting ── */}
+      <div className="hero-card">
+        <div className="absolute -top-8 -left-8 w-32 h-32 bg-white/10 rounded-full pointer-events-none" />
+        <div className="absolute -bottom-6 left-10 w-20 h-20 bg-white/10 rounded-full pointer-events-none" />
+        <div className="relative flex items-center gap-4">
+          <Avatar name={profile?.full_name || 'U'} src={profile?.avatar_url} size="xl"
+            className="ring-4 ring-white/40 flex-shrink-0" />
           <div className="flex-1 min-w-0">
-            <p className="text-sm opacity-75">مرحباً بك</p>
-            <h1 className="text-xl font-bold truncate">{profile?.full_name}</h1>
+            <p className="text-sm text-white/80 font-medium">{greeting} 👋</p>
+            <h1 className="text-2xl font-extrabold mt-0.5 truncate leading-tight">{profile?.full_name}</h1>
+            {!loading && teams.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 mt-2">
+                <span className="inline-flex items-center gap-1 bg-white/20 rounded-xl px-2.5 py-1 text-xs font-bold">
+                  <Users size={12} /> {teams.length} فريق
+                </span>
+                {myStats.upcomingCount > 0 && (
+                  <span className="inline-flex items-center gap-1 bg-white/20 rounded-xl px-2.5 py-1 text-xs font-bold">
+                    <Calendar size={12} /> {myStats.upcomingCount} موعد في {monthLabel}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Personal Stats */}
-      {!loading && teams.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-          <div className="stat-box">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-lg">🏆</span>
-              <span className="text-xs text-slate-400">{myStats.matchTotal} مباراة</span>
-            </div>
-            <div className="stat-value text-blue-600">{myStats.matchAttPct}%</div>
-            <div className="stat-label">حضور المباريات</div>
+      {/* ── Team Picker ── */}
+      {loading ? (
+        <div className="flex justify-center py-12"><Spinner size="lg" /></div>
+      ) : teams.length === 0 ? (
+        /* No teams — show join/create */
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <div className="icon-box-brand"><Shield size={18} /></div>
+            <h2 className="text-base font-extrabold text-slate-800">ابدأ الآن</h2>
           </div>
-          <div className="stat-box">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-lg">⚽</span>
-              <span className="text-xs text-slate-400">{myStats.trainingTotal} تدريب</span>
-            </div>
-            <div className="stat-value text-brand-600">{myStats.trainingAttPct}%</div>
-            <div className="stat-label">حضور التدريبات</div>
+          <div className="grid grid-cols-1 gap-3">
+            <button onClick={() => navigate('/create-team')} className="hero-card text-right">
+              <div className="absolute top-0 right-0 w-24 h-24 rounded-full opacity-10 bg-white -translate-y-8 translate-x-8"/>
+              <div className="relative flex items-center gap-4">
+                <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center flex-shrink-0">
+                  <Plus size={28} className="text-white" />
+                </div>
+                <div>
+                  <div className="font-extrabold text-white text-lg">إنشاء فريق جديد</div>
+                  <div className="text-white/70 text-sm mt-0.5">أنشئ فريقك وكن المؤسس</div>
+                </div>
+              </div>
+            </button>
+            <button onClick={() => navigate('/join-team')} className="card-hover flex items-center gap-4 p-4">
+              <div className="icon-box-blue flex-shrink-0"><LogIn size={22} /></div>
+              <div className="text-right">
+                <div className="font-extrabold text-slate-800">الانضمام لفريق</div>
+                <div className="text-sm text-slate-400 mt-0.5">بكود الدعوة</div>
+              </div>
+            </button>
           </div>
+        </div>
+      ) : (
+        /* Team carousel */
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <div className="icon-box-brand"><Users size={18} /></div>
+            <h2 className="text-base font-extrabold text-slate-800">فرقي</h2>
+          </div>
+
+          {/* Team card */}
+          <div className="relative">
+            <div
+              onClick={() => navigate(`/team/${currentTeam.id}`)}
+              className="hero-card cursor-pointer active:scale-[0.99] transition-transform select-none">
+              <div className="absolute top-0 left-0 w-40 h-40 rounded-full opacity-10 bg-white -translate-x-16 -translate-y-12"/>
+              <div className="relative flex items-center gap-4">
+                {/* Team logo */}
+                <div className="w-16 h-16 rounded-2xl overflow-hidden flex-shrink-0 bg-white/20 flex items-center justify-center text-2xl font-extrabold text-white border-2 border-white/30">
+                  {currentTeam.logo_url
+                    ? <img src={currentTeam.logo_url} className="w-full h-full object-cover" alt={currentTeam.name} />
+                    : currentTeam.name?.[0]}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-white/70 text-xs font-bold mb-0.5">
+                    {ROLE_LABELS[currentTeam.myRole] || currentTeam.myRole}
+                  </div>
+                  <div className="font-extrabold text-white text-xl leading-tight truncate">{currentTeam.name}</div>
+                  <div className="text-white/70 text-sm mt-0.5">
+                    {currentTeam.sport_type}{currentTeam.city ? ` · ${currentTeam.city}` : ''}
+                  </div>
+                  {currentTeam.joinedAt && (
+                    <div className="text-white/50 text-xs mt-1.5 flex items-center gap-1">
+                      <Calendar size={11} />
+                      انضممت {new Date(currentTeam.joinedAt).toLocaleDateString('ar-SA')}
+                    </div>
+                  )}
+                </div>
+                <ChevronLeft size={22} className="text-white/50 flex-shrink-0" />
+              </div>
+              {/* Enter button */}
+              <div className="relative mt-4 flex items-center justify-between">
+                <span className="text-white/60 text-xs font-bold">اضغط للدخول →</span>
+                {teams.length > 1 && (
+                  <div className="flex gap-1">
+                    {teams.map((_, i) => (
+                      <div key={i} className={`w-1.5 h-1.5 rounded-full transition-all ${i === teamIdx ? 'bg-white' : 'bg-white/30'}`} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Navigation arrows — only if multiple teams */}
+            {teams.length > 1 && (
+              <>
+                <button
+                  onClick={e => { e.stopPropagation(); setTeamIdx(i => (i + 1) % teams.length) }}
+                  className="absolute top-1/2 -left-4 -translate-y-1/2 w-9 h-9 bg-white shadow-card rounded-2xl flex items-center justify-center text-slate-600 hover:bg-brand-50 hover:text-brand-700 transition-colors z-10">
+                  <ChevronLeft size={18} />
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); setTeamIdx(i => (i - 1 + teams.length) % teams.length) }}
+                  className="absolute top-1/2 -right-4 -translate-y-1/2 w-9 h-9 bg-white shadow-card rounded-2xl flex items-center justify-center text-slate-600 hover:bg-brand-50 hover:text-brand-700 transition-colors z-10">
+                  <ChevronRight size={18} />
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Small actions below */}
+          <div className="grid grid-cols-2 gap-2.5 mt-3">
+            <button onClick={() => navigate('/create-team')}
+              className="card-hover flex items-center gap-2.5 p-3">
+              <div className="icon-box-brand flex-shrink-0 w-9 h-9"><Plus size={18} /></div>
+              <div className="text-right min-w-0">
+                <div className="font-bold text-sm text-slate-800">إنشاء فريق</div>
+                <div className="text-xs text-slate-400">فريق جديد</div>
+              </div>
+            </button>
+            <button onClick={() => navigate('/join-team')}
+              className="card-hover flex items-center gap-2.5 p-3">
+              <div className="icon-box-blue flex-shrink-0 w-9 h-9"><LogIn size={18} /></div>
+              <div className="text-right min-w-0">
+                <div className="font-bold text-sm text-slate-800">انضمام</div>
+                <div className="text-xs text-slate-400">بكود الدعوة</div>
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Quick attendance (next 3 events) ── */}
+      {nextEvents.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <div className="icon-box-brand"><Zap size={18} /></div>
+            <h2 className="text-base font-extrabold text-slate-800">سجّل حضورك</h2>
+            <span className="badge badge-gray text-xs">الأحداث القادمة</span>
+          </div>
+          <div className="space-y-3">
+            {nextEvents.map((item, i) => {
+              const cfg    = EVENT_CONFIG[item.event.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
+              const locked = isEventLocked(item.event.start_datetime)
+              return (
+                <div key={i} className={`card border-r-4 ${cfg.borderClass} animate-scale-in`}>
+                  <div className="flex items-start justify-between gap-3 mb-4">
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                      <div className="text-3xl flex-shrink-0 mt-0.5">{cfg.icon}</div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-extrabold text-base text-slate-900 truncate">{item.event.title}</span>
+                          {locked && <span className="badge badge-red">مغلق</span>}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-sm text-slate-500 mt-1">
+                          <Calendar size={13} className="flex-shrink-0" />
+                          <span>{formatDate(item.event.start_datetime)}</span>
+                          <span className="text-slate-300">·</span>
+                          <span className="font-bold text-slate-700">{item.event.start_datetime.slice(11, 16)}</span>
+                        </div>
+                        <div className="text-sm text-slate-400 mt-0.5">📍 {item.team.name}</div>
+                      </div>
+                    </div>
+                    <span className="badge flex-shrink-0 py-1.5 px-3" style={{ background: cfg.bg, color: cfg.color }}>
+                      {cfg.label}
+                    </span>
+                  </div>
+                  <div className="bg-slate-50 rounded-2xl p-3">
+                    <p className="text-sm font-bold text-slate-600 mb-2.5">هل ستحضر هذا الموعد؟</p>
+                    <AttendanceButton status={item.myAtt} locked={locked}
+                      onSelect={s => setAttendance(item.team.id, item.event.id, s, i)} />
+                    {attFeedback?.idx === i && (
+                      <p className={`text-xs font-bold mt-2 text-center ${attFeedback.ok ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {attFeedback.ok ? '✓ تم حفظ حضورك بنجاح' : '✗ خطأ في الحفظ، تحقق من الاتصال وحاول مجدداً'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Player Attendance Stats ── */}
+      {!loading && derivedStats.playerTeams.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <div className="icon-box-brand"><span className="text-base leading-none">📊</span></div>
+            <h2 className="text-base font-extrabold text-slate-800">إحصائياتي</h2>
+            <span className="badge badge-gray text-xs">كلاعب</span>
+          </div>
+
+          {/* Team filter chips */}
+          {derivedStats.playerTeams.length > 1 && (
+            <div className="flex gap-2 overflow-x-auto pb-1 mb-3">
+              <button
+                onClick={() => setSelStatTeam(null)}
+                className={cn(
+                  'flex-shrink-0 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors',
+                  !selStatTeam ? 'bg-brand-600 text-white shadow-sm' : 'bg-white text-slate-500 border border-slate-200'
+                )}>
+                الكل
+              </button>
+              {derivedStats.playerTeams.map(t => (
+                <button
+                  key={t.teamId}
+                  onClick={() => setSelStatTeam(t.teamId === selStatTeam ? null : t.teamId)}
+                  className={cn(
+                    'flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors',
+                    selStatTeam === t.teamId ? 'bg-brand-600 text-white shadow-sm' : 'bg-white text-slate-500 border border-slate-200'
+                  )}>
+                  {t.logo_url && <img src={t.logo_url} className="w-4 h-4 rounded-full object-cover" alt="" />}
+                  {t.teamName}
+                  {t.archived && <span className="opacity-60 text-[10px]">📦</span>}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Attendance stats with progress bars */}
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div className="stat-box">
+              <div className="w-10 h-10 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-2">
+                <span className="text-xl">🏆</span>
+              </div>
+              <div className="stat-value text-blue-600">{derivedStats.matchAttPct}%</div>
+              <div className="stat-label">حضور المباريات</div>
+              <div className="text-[11px] text-slate-400 mt-1">{derivedStats.matchTotal} مباراة</div>
+              <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-500 rounded-full transition-all duration-500"
+                  style={{ width: `${derivedStats.matchAttPct}%` }} />
+              </div>
+            </div>
+            <div className="stat-box">
+              <div className="w-10 h-10 bg-emerald-100 rounded-2xl flex items-center justify-center mx-auto mb-2">
+                <span className="text-xl">⚽</span>
+              </div>
+              <div className="stat-value text-brand-600">{derivedStats.trainingAttPct}%</div>
+              <div className="stat-label">حضور التدريبات</div>
+              <div className="text-[11px] text-slate-400 mt-1">{derivedStats.trainingTotal} تدريب</div>
+              <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                <div className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                  style={{ width: `${derivedStats.trainingAttPct}%` }} />
+              </div>
+            </div>
+          </div>
+
+          {/* Quick counters */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="stat-box">
+              <div className="w-10 h-10 bg-purple-100 rounded-2xl flex items-center justify-center mx-auto mb-2">
+                <Calendar size={20} className="text-purple-600" />
+              </div>
+              <div className="stat-value text-purple-600">{myStats.upcomingCount}</div>
+              <div className="stat-label">مواعيد {monthLabel}</div>
+            </div>
+            <div className="stat-box">
+              <div className={`w-10 h-10 rounded-2xl flex items-center justify-center mx-auto mb-2 ${
+                myStats.unpaidCount > 0 ? 'bg-red-100' : 'bg-emerald-100'}`}>
+                <DollarSign size={20} className={myStats.unpaidCount > 0 ? 'text-red-500' : 'text-emerald-600'} />
+              </div>
+              <div className={`stat-value ${myStats.unpaidCount > 0 ? 'text-red-500' : 'text-emerald-600'}`}>
+                {myStats.unpaidCount}
+              </div>
+              <div className="stat-label">
+                {myStats.unpaidCount > 0 ? 'مستحقات متأخرة' : 'لا مستحقات'}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quick counters for non-player roles */}
+      {!loading && teams.length > 0 && derivedStats.playerTeams.length === 0 && (
+        <div className="grid grid-cols-2 gap-3">
           <div className="stat-box">
-            <div className="stat-value">{myStats.upcomingCount}</div>
+            <div className="w-10 h-10 bg-purple-100 rounded-2xl flex items-center justify-center mx-auto mb-2">
+              <Calendar size={20} className="text-purple-600" />
+            </div>
+            <div className="stat-value text-purple-600">{myStats.upcomingCount}</div>
             <div className="stat-label">مواعيد {monthLabel}</div>
           </div>
           <div className="stat-box">
-            <div className={`stat-value ${myStats.unpaidCount > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center mx-auto mb-2 ${
+              myStats.unpaidCount > 0 ? 'bg-red-100' : 'bg-emerald-100'}`}>
+              <DollarSign size={20} className={myStats.unpaidCount > 0 ? 'text-red-500' : 'text-emerald-600'} />
+            </div>
+            <div className={`stat-value ${myStats.unpaidCount > 0 ? 'text-red-500' : 'text-emerald-600'}`}>
               {myStats.unpaidCount}
             </div>
-            <div className="stat-label">مستحقات غير مدفوعة</div>
+            <div className="stat-label">
+              {myStats.unpaidCount > 0 ? 'مستحقات متأخرة' : 'لا مستحقات'}
+            </div>
           </div>
         </div>
       )}
-
-      {/* Quick Attendance - next upcoming events */}
-      {nextEvents.length > 0 && (
-        <div className="mb-5">
-          <h2 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
-            <Calendar size={15} className="text-brand-500" />
-            أقرب موعد — سجّل حضورك
-          </h2>
-          {nextEvents.map((item, i) => {
-            const cfg = EVENT_CONFIG[item.event.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
-            const locked = isEventLocked(item.event.start_datetime)
-            return (
-              <div key={i} className={`card mb-3 border-r-4 ${cfg.borderClass}`}>
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xl">{cfg.icon}</span>
-                      <span className="font-bold text-sm">{item.event.title}</span>
-                      {locked && <span className="badge badge-red text-xs">مغلق</span>}
-                    </div>
-                    <div className="text-xs text-slate-400">
-                      {formatDate(item.event.start_datetime)} · {item.event.start_datetime.slice(11, 16)}
-                    </div>
-                    <div className="text-xs text-slate-400 mt-0.5">{item.team.name}</div>
-                  </div>
-                  <span className="badge flex-shrink-0" style={{ background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
-                </div>
-                <div>
-                  <p className="text-xs text-slate-500 mb-2">حالتك في هذا الموعد:</p>
-                  <AttendanceButton status={item.myAtt} locked={locked}
-                    onSelect={s => setAttendance(item.team.id, item.event.id, s, i)} />
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {/* Actions */}
-      <div className="grid grid-cols-2 gap-3 mb-5">
-        <button onClick={() => navigate('/create-team')} className="card-hover flex items-center gap-3 mb-0">
-          <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center flex-shrink-0">
-            <Plus size={20} className="text-brand-600" />
-          </div>
-          <div className="text-right">
-            <div className="font-bold text-sm">إنشاء فريق</div>
-            <div className="text-xs text-slate-400">فريق جديد</div>
-          </div>
-        </button>
-        <button onClick={() => navigate('/join-team')} className="card-hover flex items-center gap-3 mb-0">
-          <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center flex-shrink-0">
-            <LogIn size={20} className="text-blue-600" />
-          </div>
-          <div className="text-right">
-            <div className="font-bold text-sm">الانضمام</div>
-            <div className="text-xs text-slate-400">بكود الدعوة</div>
-          </div>
-        </button>
-      </div>
-
-      {/* Teams list */}
-      <h2 className="text-sm font-bold text-slate-700 mb-3">فرقي ({teams.length})</h2>
-      {loading ? <div className="flex justify-center py-10"><Spinner /></div>
-        : teams.length === 0
-          ? <div className="card"><EmptyState icon={<Shield size={28} />} title="لا توجد فرق" description="أنشئ فريقاً أو انضم لفريق موجود" /></div>
-          : <div className="space-y-3">
-              {teams.map((t: any) => (
-                <div key={t.id} onClick={() => navigate(`/team/${t.id}`)} className="card-hover flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-brand-100 flex items-center justify-center text-xl font-bold text-brand-600">
-                    {t.logo_url ? <img src={t.logo_url} className="w-full h-full object-cover" /> : t.name[0]}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-bold truncate">{t.name}</div>
-                    <div className="text-xs text-slate-400">{t.sport_type} · {t.city || '—'}</div>
-                  </div>
-                  <span className={`badge ${roleColor[t.myRole] || 'bg-slate-100 text-slate-600'}`}>
-                    {roleLabel[t.myRole] || t.myRole}
-                  </span>
-                </div>
-              ))}
-            </div>}
     </div>
   )
 }

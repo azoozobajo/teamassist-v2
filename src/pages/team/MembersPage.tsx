@@ -106,34 +106,38 @@ export default function MembersPage() {
           <SearchBox placeholder="ابحث عن عضو..." value={q} onChange={setQ} />
           {loading ? <div className="flex justify-center py-10"><Spinner/></div>
             : filtered.length === 0 ? <div className="card"><EmptyState title="لا يوجد أعضاء"/></div>
-            : <div className="card p-0 divide-y divide-slate-50">
+            : <div className="card p-0 overflow-hidden divide-y divide-slate-50">
                 {filtered.map(m => (
-                  <div key={m.id} className="flex items-center gap-3 p-3 hover:bg-slate-50">
+                  <div key={m.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50/70 transition-colors">
                     <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md"/>
                     <div className="flex-1 min-w-0">
-                      <div className="font-bold text-sm truncate">{m.profile?.full_name || 'مجهول'}</div>
-                      <div className="text-xs text-slate-400">{m.profile?.phone || '—'}</div>
+                      <div className="font-extrabold text-sm text-slate-800 truncate">{m.profile?.full_name || 'مجهول'}</div>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className={`badge text-xs ${roleColor[m.role] || 'bg-slate-100 text-slate-600'}`}>
+                          {ROLE_LABELS[m.role] || m.role}
+                        </span>
+                        {m.position_label && (
+                          <span className="text-xs text-slate-400">{m.position_label}</span>
+                        )}
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <span className={`badge text-xs ${roleColor[m.role] || 'bg-slate-100 text-slate-600'}`}>
-                        {ROLE_LABELS[m.role] || m.role}
-                      </span>
-                      {m.position_label && (
-                        <div className="text-xs text-slate-400 mt-0.5 text-right">{m.position_label}</div>
+                    <div className="flex items-center gap-1">
+                      {m.profile?.phone && (
+                        <span className="text-xs text-slate-400 hidden sm:inline">{m.profile.phone}</span>
+                      )}
+                      {isAdmin && m.user_id !== user?.id && (
+                        <>
+                          <button onClick={() => { setEditMember(m); setEditRole(m.role) }}
+                            className="p-2 text-slate-300 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors">
+                            <Edit2 size={14}/>
+                          </button>
+                          <button onClick={() => setConfirmRemove(m)}
+                            className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors">
+                            <Trash2 size={14}/>
+                          </button>
+                        </>
                       )}
                     </div>
-                    {isAdmin && m.user_id !== user?.id && (
-                      <div className="flex gap-1">
-                        <button onClick={() => { setEditMember(m); setEditRole(m.role) }}
-                          className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg">
-                          <Edit2 size={13}/>
-                        </button>
-                        <button onClick={() => setConfirmRemove(m)}
-                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg">
-                          <Trash2 size={13}/>
-                        </button>
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>}
@@ -145,21 +149,25 @@ export default function MembersPage() {
           ? <div className="card"><EmptyState title="لا توجد طلبات معلقة"/></div>
           : <div className="space-y-3">
               {requests.map(r => (
-                <div key={r.id} className="card mb-0 flex items-center gap-3">
-                  <Avatar name={r.profile?.full_name || '?'} src={r.profile?.avatar_url} size="md"/>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-bold text-sm">{r.profile?.full_name}</div>
-                    <div className="text-xs text-slate-400">{formatDate(r.created_at)}</div>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => reviewRequest(r,'approved')}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-emerald-500 text-white text-xs font-bold rounded-xl border-none cursor-pointer hover:bg-emerald-600">
-                      <CheckCircle size={13}/> قبول
-                    </button>
-                    <button onClick={() => reviewRequest(r,'rejected')}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-red-100 text-red-700 text-xs font-bold rounded-xl border-none cursor-pointer hover:bg-red-200">
-                      <XCircle size={13}/> رفض
-                    </button>
+                <div key={r.id} className="card mb-0 border-r-4 border-amber-400">
+                  <div className="flex items-center gap-3">
+                    <Avatar name={r.profile?.full_name || '?'} src={r.profile?.avatar_url} size="md"/>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-extrabold text-sm text-slate-800">{r.profile?.full_name}</div>
+                      <div className="text-xs text-slate-400 flex items-center gap-1">
+                        <span>⏳</span> {formatDate(r.created_at)}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => reviewRequest(r,'approved')}
+                        className="flex items-center gap-1 px-3 py-2 bg-emerald-500 text-white text-xs font-bold rounded-xl border-none cursor-pointer hover:bg-emerald-600 active:scale-95 transition-all">
+                        <CheckCircle size={13}/> قبول
+                      </button>
+                      <button onClick={() => reviewRequest(r,'rejected')}
+                        className="flex items-center gap-1 px-3 py-2 bg-red-50 text-red-700 text-xs font-bold rounded-xl border border-red-200 cursor-pointer hover:bg-red-100 transition-all">
+                        <XCircle size={13}/> رفض
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

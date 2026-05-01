@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check } from 'lucide-react'
+import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { eventService, teamService, notificationService } from '../../services'
 import { Spinner, PageHeader, EmptyState, Modal, FormField, Tabs } from '../../components/ui'
@@ -10,6 +10,7 @@ import { arSA } from 'date-fns/locale'
 
 const EVENT_TYPES = ['training','match','meeting','camp','other']
 const ATT_GROUPS = ['الكل','اللاعبون فقط','المدربون فقط','اللاعبون والمدربون','الإداريون فقط','مجموعة مخصصة']
+const HOME_AWAY_LABEL: Record<string, string> = { home: '🏟️ ملعبنا', away: '🚌 ملعب المنافس', neutral: '⚖️ أرض محايدة' }
 
 export default function EventsPage() {
   const { teamId } = useParams()
@@ -25,18 +26,19 @@ export default function EventsPage() {
   const [showRecurring, setShowRecurring] = useState(false)
   const [showDetail, setShowDetail] = useState<any>(null)
   const [confirmDelete, setConfirmDelete] = useState<any>(null)
+  const [showResult, setShowResult] = useState<any>(null)
+  const [resultForm, setResultForm] = useState({ goals_for: '', goals_against: '' })
   const [saving, setSaving] = useState(false)
 
-  // Single event form
   const defaultForm = {
     title: '', event_type: 'training', start_datetime: '', end_datetime: '',
     location: '', map_url: '', att_group: 'الكل', description: '',
-    selectedMembers: [] as string[]
+    selectedMembers: [] as string[],
+    opponent: '', home_away: 'home', match_category: 'friendly', tournament_name: ''
   }
   const [form, setForm] = useState(defaultForm)
   const setF = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }))
 
-  // Recurring form
   const defaultRecur = {
     title: '', event_type: 'training', days_of_week: [] as number[],
     start_date: '', end_date: '', start_time: '18:00', end_time: '20:00',
@@ -70,7 +72,13 @@ export default function EventsPage() {
       start_datetime: form.start_datetime, end_datetime: form.end_datetime || null,
       location: form.location, map_url: form.map_url,
       att_group: form.att_group, description: form.description,
-      att_member_ids: memberIds, team_id: teamId, created_by: user!.id
+      att_member_ids: memberIds, team_id: teamId, created_by: user!.id,
+      ...(form.event_type === 'match' ? {
+        opponent: form.opponent || null,
+        home_away: form.home_away,
+        match_category: form.match_category,
+        tournament_name: form.match_category === 'tournament' ? (form.tournament_name || null) : null
+      } : {})
     })
     await notificationService.createForTeam(teamId, `موعد جديد: ${form.title}`, formatDate(form.start_datetime), 'event', user!.id)
     await load()
@@ -101,6 +109,17 @@ export default function EventsPage() {
     await load(); setConfirmDelete(null); setShowDetail(null)
   }
 
+  async function saveResult() {
+    if (!showResult || resultForm.goals_for === '' || resultForm.goals_against === '') return
+    setSaving(true)
+    await eventService.updateEvent(showResult.id, {
+      goals_for: parseInt(resultForm.goals_for),
+      goals_against: parseInt(resultForm.goals_against)
+    })
+    await load()
+    setShowResult(null); setResultForm({ goals_for: '', goals_against: '' }); setSaving(false)
+  }
+
   const toggleDay = (d: number) =>
     setR('days_of_week', recurForm.days_of_week.includes(d)
       ? recurForm.days_of_week.filter(x => x !== d)
@@ -108,15 +127,13 @@ export default function EventsPage() {
 
   const toggleMember = (uid: string, which: 'form' | 'recur') => {
     if (which === 'form') {
-      const sel = form.selectedMembers.includes(uid)
+      setF('selectedMembers', form.selectedMembers.includes(uid)
         ? form.selectedMembers.filter(x => x !== uid)
-        : [...form.selectedMembers, uid]
-      setF('selectedMembers', sel)
+        : [...form.selectedMembers, uid])
     } else {
-      const sel = recurForm.selectedMembers.includes(uid)
+      setR('selectedMembers', recurForm.selectedMembers.includes(uid)
         ? recurForm.selectedMembers.filter(x => x !== uid)
-        : [...recurForm.selectedMembers, uid]
-      setR('selectedMembers', sel)
+        : [...recurForm.selectedMembers, uid])
     }
   }
 
@@ -126,13 +143,11 @@ export default function EventsPage() {
   const past = events.filter(e => new Date(e.start_datetime) < now).reverse()
   const list = tab === 'upcoming' ? upcoming : past
 
-  // Calendar helpers
   const monthDays = eachDayOfInterval({ start: startOfMonth(calMonth), end: endOfMonth(calMonth) })
   const firstDayOfWeek = getDay(startOfMonth(calMonth))
   const eventsOnDay = (day: Date) => events.filter(e => isSameDay(parseISO(e.start_datetime), day))
   const arDays = ['أح','إث','ثل','أر','خم','جم','سب']
 
-  // Member picker component (reused in both forms)
   const MemberPicker = ({ which }: { which: 'form' | 'recur' }) => {
     const selected = which === 'form' ? form.selectedMembers : recurForm.selectedMembers
     return (
@@ -181,6 +196,20 @@ export default function EventsPage() {
     </div>
   )
 
+  // Match result badge
+  const ResultBadge = ({ e }: { e: any }) => {
+    if (e.goals_for === null || e.goals_for === undefined) return null
+    const win = e.goals_for > e.goals_against
+    const draw = e.goals_for === e.goals_against
+    return (
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-extrabold ${
+        win ? 'bg-emerald-100 text-emerald-700' : draw ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-600'
+      }`}>
+        {win ? '🏆 فوز' : draw ? '🤝 تعادل' : '❌ خسارة'} · {e.goals_for}-{e.goals_against}
+      </span>
+    )
+  }
+
   return (
     <div>
       <PageHeader title="المواعيد"
@@ -190,7 +219,7 @@ export default function EventsPage() {
               <Repeat size={13}/> متكرر
             </button>
             <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}>
-              <Plus size={13}/> حدث
+              <Plus size={13}/> موعد
             </button>
           </div>
         )}/>
@@ -249,13 +278,15 @@ export default function EventsPage() {
                 : <div className="space-y-3">
                     {list.map(e => {
                       const c = EVENT_CONFIG[e.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
+                      const isPast = new Date(e.start_datetime) < now
+                      const hasResult = e.goals_for !== null && e.goals_for !== undefined
                       return (
                         <div key={e.id} className={`card mb-0 border-r-4 ${c.borderClass} cursor-pointer hover:shadow-md transition-all`}
                           onClick={() => setShowDetail({ date: parseISO(e.start_datetime), events: [e] })}>
                           <div className="flex items-center gap-3">
                             <span className="text-2xl flex-shrink-0">{c.icon}</span>
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <span className="font-bold text-sm truncate">{e.title}</span>
                                 {e.recurrence_group_id && <Repeat size={11} className="text-slate-400 flex-shrink-0"/>}
                                 {isEventLocked(e.start_datetime) && <span className="badge badge-red text-xs">مغلق</span>}
@@ -268,6 +299,30 @@ export default function EventsPage() {
                                   <MapPin size={10}/> {e.location}
                                   {e.map_url && <a href={e.map_url} target="_blank" rel="noreferrer" className="text-blue-500 underline mr-1" onClick={ev => ev.stopPropagation()}>خريطة</a>}
                                 </div>
+                              )}
+                              {/* Match-specific info */}
+                              {e.event_type === 'match' && e.opponent && (
+                                <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                  <span className="text-xs text-slate-600 font-bold">ضد: {e.opponent}</span>
+                                  <span className="text-slate-300">·</span>
+                                  <span className="text-xs text-slate-500">{HOME_AWAY_LABEL[e.home_away] || e.home_away}</span>
+                                  {e.tournament_name && (
+                                    <>
+                                      <span className="text-slate-300">·</span>
+                                      <span className="text-xs text-blue-600">🏆 {e.tournament_name}</span>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                              {/* Result badge */}
+                              {e.event_type === 'match' && <div className="mt-1"><ResultBadge e={e}/></div>}
+                              {/* Result entry button for past matches without result (admin) */}
+                              {e.event_type === 'match' && canManage && isPast && !hasResult && (
+                                <button
+                                  onClick={ev => { ev.stopPropagation(); setShowResult(e); setResultForm({ goals_for: '', goals_against: '' }) }}
+                                  className="text-xs text-brand-600 font-bold flex items-center gap-1 mt-1.5 hover:text-brand-800 transition-colors">
+                                  <Trophy size={11}/> سجّل نتيجة المباراة
+                                </button>
                               )}
                               <div className="flex gap-1 mt-1.5 flex-wrap">
                                 <span className="badge text-xs" style={{background:c.bg,color:c.color}}>{c.label}</span>
@@ -291,10 +346,12 @@ export default function EventsPage() {
         title={showDetail ? format(showDetail.date,'EEEE d MMMM yyyy',{locale:arSA}) : ''}>
         {showDetail?.events.map((e: any) => {
           const c = EVENT_CONFIG[e.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
+          const isPast = new Date(e.start_datetime) < now
+          const hasResult = e.goals_for !== null && e.goals_for !== undefined
           return (
             <div key={e.id} className={`card border-r-4 ${c.borderClass} mb-3`}>
               <div className="flex items-start justify-between">
-                <div>
+                <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-xl">{c.icon}</span>
                     <span className="font-bold">{e.title}</span>
@@ -307,6 +364,27 @@ export default function EventsPage() {
                       {e.map_url && <a href={e.map_url} target="_blank" rel="noreferrer" className="text-blue-500 underline mr-1">خريطة</a>}
                     </div>
                   )}
+                  {/* Match details */}
+                  {e.event_type === 'match' && (
+                    <div className="mt-2 bg-slate-50 rounded-xl p-2.5 space-y-1">
+                      {e.opponent && (
+                        <div className="text-xs font-bold text-slate-700">⚔️ ضد: {e.opponent}</div>
+                      )}
+                      <div className="text-xs text-slate-500">{HOME_AWAY_LABEL[e.home_away] || ''}</div>
+                      {e.tournament_name && (
+                        <div className="text-xs text-blue-600 font-bold">🏆 {e.tournament_name}</div>
+                      )}
+                      {hasResult
+                        ? <div className="pt-1"><ResultBadge e={e}/></div>
+                        : isPast && canManage && (
+                          <button
+                            onClick={() => { setShowResult(e); setResultForm({ goals_for: '', goals_against: '' }); setShowDetail(null) }}
+                            className="text-xs text-brand-600 font-bold flex items-center gap-1 hover:text-brand-800">
+                            <Trophy size={11}/> سجّل النتيجة
+                          </button>
+                        )}
+                    </div>
+                  )}
                   {e.att_member_ids?.length > 0 && (
                     <div className="text-xs text-blue-600 mt-1 flex items-center gap-1">
                       <Users size={10}/> هذا الموعد لـ {e.att_member_ids.length} عضو محدد
@@ -315,7 +393,7 @@ export default function EventsPage() {
                   {!e.att_member_ids && e.att_group && <div className="text-xs text-slate-400 mt-1">الحضور: {e.att_group}</div>}
                 </div>
                 {canManage && (
-                  <button onClick={() => setConfirmDelete(e)} className="text-slate-400 hover:text-red-500 p-1">
+                  <button onClick={() => setConfirmDelete(e)} className="text-slate-400 hover:text-red-500 p-1 flex-shrink-0">
                     <Trash2 size={14}/>
                   </button>
                 )}
@@ -353,6 +431,39 @@ export default function EventsPage() {
         <FormField label="النوع">
           <EventTypeSelector val={form.event_type} onChange={v => setF('event_type',v)}/>
         </FormField>
+
+        {/* Match-specific fields */}
+        {form.event_type === 'match' && (
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
+            <p className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
+              ⚽ <span>بيانات المباراة (اختياري — يمكن تعديلها لاحقاً)</span>
+            </p>
+            <FormField label="اسم المنافس">
+              <input className="form-input" value={form.opponent} onChange={e => setF('opponent',e.target.value)} placeholder="الهلال، النصر..."/>
+            </FormField>
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="الأرض">
+                <select className="form-input" value={form.home_away} onChange={e => setF('home_away',e.target.value)}>
+                  <option value="home">🏟️ ملعبنا</option>
+                  <option value="away">🚌 ملعب المنافس</option>
+                  <option value="neutral">⚖️ أرض محايدة</option>
+                </select>
+              </FormField>
+              <FormField label="نوع المباراة">
+                <select className="form-input" value={form.match_category} onChange={e => setF('match_category',e.target.value)}>
+                  <option value="friendly">ودية</option>
+                  <option value="tournament">بطولة</option>
+                </select>
+              </FormField>
+            </div>
+            {form.match_category === 'tournament' && (
+              <FormField label="اسم البطولة">
+                <input className="form-input" value={form.tournament_name} onChange={e => setF('tournament_name',e.target.value)} placeholder="دوري الأبطال"/>
+              </FormField>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-3">
           <FormField label="البداية" required>
             <input className="form-input" type="datetime-local" value={form.start_datetime} onChange={e => setF('start_datetime',e.target.value)}/>
@@ -449,6 +560,61 @@ export default function EventsPage() {
             {saving ? <Spinner size="sm"/> : <><Repeat size={13}/> إنشاء الجدول</>}
           </button>
         </div>
+      </Modal>
+
+      {/* ── RESULT ENTRY MODAL ── */}
+      <Modal open={!!showResult} onClose={() => setShowResult(null)} title="تسجيل نتيجة المباراة">
+        {showResult && (
+          <div>
+            <div className="bg-slate-50 rounded-xl p-3 mb-5 text-center">
+              <div className="font-bold text-sm text-slate-800">
+                {showResult.title}{showResult.opponent ? ` · ضد ${showResult.opponent}` : ''}
+              </div>
+              <div className="text-xs text-slate-400 mt-1">{formatDate(showResult.start_datetime)}</div>
+              {showResult.tournament_name && (
+                <div className="text-xs text-blue-600 mt-1">🏆 {showResult.tournament_name}</div>
+              )}
+            </div>
+            <div className="flex items-center gap-4 justify-center mb-6">
+              <div className="text-center">
+                <p className="text-xs text-slate-500 font-bold mb-2">فريقنا</p>
+                <input type="number" min="0" max="99"
+                  className="form-input w-20 text-center text-3xl font-extrabold p-2"
+                  value={resultForm.goals_for}
+                  onChange={e => setResultForm(p => ({...p, goals_for: e.target.value}))}
+                  placeholder="0"/>
+              </div>
+              <div className="text-3xl font-extrabold text-slate-300 mt-6">—</div>
+              <div className="text-center">
+                <p className="text-xs text-slate-500 font-bold mb-2">{showResult.opponent || 'المنافس'}</p>
+                <input type="number" min="0" max="99"
+                  className="form-input w-20 text-center text-3xl font-extrabold p-2"
+                  value={resultForm.goals_against}
+                  onChange={e => setResultForm(p => ({...p, goals_against: e.target.value}))}
+                  placeholder="0"/>
+              </div>
+            </div>
+            {resultForm.goals_for !== '' && resultForm.goals_against !== '' && (
+              <div className={`text-center text-sm font-extrabold mb-4 py-2 rounded-xl ${
+                parseInt(resultForm.goals_for) > parseInt(resultForm.goals_against)
+                  ? 'bg-emerald-50 text-emerald-700'
+                  : parseInt(resultForm.goals_for) < parseInt(resultForm.goals_against)
+                  ? 'bg-red-50 text-red-600'
+                  : 'bg-amber-50 text-amber-700'
+              }`}>
+                {parseInt(resultForm.goals_for) > parseInt(resultForm.goals_against) ? '🏆 فوز!' :
+                 parseInt(resultForm.goals_for) < parseInt(resultForm.goals_against) ? '❌ خسارة' : '🤝 تعادل'}
+              </div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button className="btn btn-ghost" onClick={() => setShowResult(null)}>إلغاء</button>
+              <button className="btn btn-primary" onClick={saveResult}
+                disabled={saving || resultForm.goals_for === '' || resultForm.goals_against === ''}>
+                {saving ? <Spinner size="sm"/> : '💾 حفظ النتيجة'}
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )
