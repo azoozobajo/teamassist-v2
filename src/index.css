@@ -1,0 +1,120 @@
+@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; font-family: 'Tajawal', sans-serif; }
+
+:root {
+  --brand: #1D9E75;
+  --brand-light: #E1F5EE;
+  --brand-dark: #085041;
+  --gold: #C9A227;
+  --gold-light: #FFF8E7;
+  --riyal: '﷼';
+}
+
+body {
+  direction: rtl;
+  background: #F8FAFC;
+  color: #0F172A;
+  min-height: 100vh;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 4px; }
+
+@layer components {
+  /* Buttons */
+  .btn { @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold cursor-pointer transition-all duration-150 border-none outline-none select-none; }
+  .btn-primary { @apply btn bg-brand-500 text-white hover:bg-brand-600 active:scale-95; }
+  .btn-ghost { @apply btn bg-transparent border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300; }
+  .btn-danger { @apply btn bg-red-600 text-white hover:bg-red-700; }
+  .btn-gold { @apply btn bg-yellow-500 text-white hover:bg-yellow-600; }
+  .btn-sm { @apply px-3 py-1.5 text-xs rounded-lg; }
+  .btn-xs { @apply px-2 py-1 text-xs rounded-md; }
+  .btn-icon { @apply w-9 h-9 p-0 justify-center rounded-xl; }
+
+  /* Cards */
+  .card { @apply bg-white border border-slate-100 rounded-2xl p-4 shadow-sm; }
+  .card-hover { @apply card cursor-pointer hover:border-brand-300 hover:shadow-md transition-all; }
+
+  /* Form */
+  .form-input { @apply w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 bg-white transition-all; }
+  .form-label { @apply block text-xs font-bold text-slate-500 mb-1.5; }
+  .form-group { @apply mb-4; }
+
+  /* Badges */
+  .badge { @apply inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full whitespace-nowrap; }
+  .badge-green { @apply badge bg-emerald-100 text-emerald-700; }
+  .badge-blue { @apply badge bg-blue-100 text-blue-700; }
+  .badge-amber { @apply badge bg-amber-100 text-amber-700; }
+  .badge-red { @apply badge bg-red-100 text-red-700; }
+  .badge-gray { @apply badge bg-slate-100 text-slate-600; }
+  .badge-purple { @apply badge bg-purple-100 text-purple-700; }
+  .badge-gold { @apply badge bg-yellow-50 text-yellow-700; }
+
+  /* Nav */
+  .nav-item { @apply flex items-center gap-2.5 px-3 py-2 text-sm rounded-xl cursor-pointer text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-all select-none border-r-0; }
+  .nav-item.active { @apply bg-emerald-50 text-emerald-700 font-bold; }
+
+  /* Tabs */
+  .tab-btn { @apply px-4 py-2 text-sm cursor-pointer text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-colors font-medium; }
+  .tab-btn.active { @apply text-brand-600 border-brand-500 font-bold; }
+
+  /* Stats */
+  .stat-box { @apply bg-slate-50 rounded-2xl p-4 text-center; }
+  .stat-value { @apply text-2xl font-bold text-slate-800; }
+  .stat-label { @apply text-xs text-slate-400 mt-1; }
+
+  /* Page */
+  .page-header { @apply flex items-center justify-between mb-5; }
+  .page-title { @apply text-base font-bold text-slate-800; }
+
+  /* Progress */
+  .progress { @apply h-2 bg-slate-100 rounded-full overflow-hidden; }
+  .progress-fill { @apply h-full rounded-full transition-all; }
+
+  /* Attendance status colors */
+  .att-present { @apply bg-emerald-500; }
+  .att-absent { @apply bg-red-500; }
+  .att-uncertain { @apply bg-amber-400; }
+  .att-late { @apply bg-orange-400; }
+
+  /* Modal */
+  .modal-overlay { @apply fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm; }
+  .modal-box { @apply bg-white rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl; }
+  .modal-title { @apply text-base font-bold text-slate-800 mb-4; }
+
+  /* Chat */
+  .chat-bubble-me { @apply bg-brand-500 text-white rounded-2xl rounded-bl-md px-4 py-2.5 text-sm; }
+  .chat-bubble-other { @apply bg-slate-100 text-slate-800 rounded-2xl rounded-br-md px-4 py-2.5 text-sm; }
+
+  /* Event type colors */
+  .event-training { @apply border-r-4 border-emerald-500; }
+  .event-match { @apply border-r-4 border-blue-500; }
+  .event-meeting { @apply border-r-4 border-amber-500; }
+  .event-camp { @apply border-r-4 border-purple-500; }
+  .event-other { @apply border-r-4 border-slate-400; }
+}
+
+/* Animations */
+@keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+@keyframes slideIn { from { transform:translateX(100%); } to { transform:translateX(0); } }
+.animate-fade { animation: fadeIn 0.2s ease; }
+.animate-slide { animation: slideIn 0.25s ease; }
+
+/* Print styles for seasonal report */
+@media print {
+  .no-print { display: none !important; }
+  .card { break-inside: avoid; box-shadow: none; border: 1px solid #e2e8f0; }
+}
+
+/* Fix RTL for number inputs */
+input[type="number"], input[type="date"], input[type="time"], input[type="datetime-local"], input[type="email"], input[type="password"] {
+  direction: ltr;
+  text-align: right;
+}
+input[type="email"] { text-align: left; }
