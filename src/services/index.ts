@@ -44,16 +44,25 @@ export const teamService = {
   },
   async getMembers(teamId: string) {
     const { data } = await supabase.from('team_members')
-      .select('*, profile:profiles(*)')
+      .select('*, profile:profiles!user_id(*)')
       .eq('team_id', teamId).eq('status', 'active').is('removed_at', null)
       .order('joined_at', { ascending: true })
     return data ?? []
   },
   async getVisibleMembers(teamId: string) {
     const { data } = await supabase.from('team_members')
-      .select('*, profile:profiles(*)')
+      .select('*, profile:profiles!user_id(*)')
       .eq('team_id', teamId).eq('status', 'active').eq('is_visible', true).is('removed_at', null)
     return data ?? []
+  },
+  async getParentMembers(teamId: string) {
+    const { data } = await supabase.from('team_members')
+      .select('*, profile:profiles!user_id(id, full_name, avatar_url), linked_player:profiles!linked_player_id(id, full_name)')
+      .eq('team_id', teamId).eq('role', 'parent').eq('status', 'active').is('removed_at', null)
+    return data ?? []
+  },
+  async setLinkedPlayer(memberId: string, linkedPlayerId: string | null) {
+    return supabase.from('team_members').update({ linked_player_id: linkedPlayerId }).eq('id', memberId)
   },
   async updateMemberRole(memberId: string, role: string) {
     return supabase.from('team_members').update({ role }).eq('id', memberId)
@@ -61,6 +70,9 @@ export const teamService = {
   async removeMember(memberId: string) {
     return supabase.from('team_members')
       .update({ status: 'inactive', removed_at: new Date().toISOString() }).eq('id', memberId)
+  },
+  async leaveSelf(teamId: string, _userId: string) {
+    return supabase.rpc('leave_team', { p_team_id: teamId })
   },
   async getMyRole(teamId: string, userId: string) {
     const { data } = await supabase.from('team_members').select('role')
@@ -91,11 +103,11 @@ export const teamService = {
       .order('created_at', { ascending: false })
     return data ?? []
   },
-  async reviewJoinRequest(id: string, status: 'approved' | 'rejected', teamId: string, userId: string, reviewerId: string) {
+  async reviewJoinRequest(id: string, status: 'approved' | 'rejected', teamId: string, userId: string, reviewerId: string, role = 'player') {
     await supabase.from('join_requests').update({ status, reviewed_by: reviewerId }).eq('id', id)
     if (status === 'approved') {
       await supabase.from('team_members')
-        .insert({ team_id: teamId, user_id: userId, role: 'player', status: 'active', is_visible: true })
+        .insert({ team_id: teamId, user_id: userId, role, status: 'active', is_visible: true })
     }
   },
   async getMyJoinRequests(userId: string) {
@@ -228,6 +240,14 @@ export const eventService = {
     const { data } = await supabase.from('attendance')
       .select('user_id, status, profiles(full_name)').eq('team_id', teamId)
     return data ?? []
+  },
+  async getAttendanceForEvents(eventIds: string[], userId: string) {
+    if (!eventIds.length) return {}
+    const { data } = await supabase.from('attendance')
+      .select('event_id, status').in('event_id', eventIds).eq('user_id', userId)
+    const map: Record<string, string> = {}
+    ;(data ?? []).forEach((a: any) => { map[a.event_id] = a.status })
+    return map
   }
 }
 
@@ -441,14 +461,14 @@ export const dmService = {
   },
   async getMessages(teamId: string, userId: string, otherId: string) {
     const { data } = await supabase.from('direct_messages')
-      .select('*, sender:profiles(*)')
+      .select('*, sender:profiles!sender_id(*)')
       .eq('team_id', teamId)
       .or(`and(sender_id.eq.${userId},receiver_id.eq.${otherId}),and(sender_id.eq.${otherId},receiver_id.eq.${userId})`)
       .order('created_at', { ascending: true })
     return data ?? []
   },
   async send(data: any) {
-    return supabase.from('direct_messages').insert(data).select().single()
+    return supabase.from('direct_messages').insert(data).select('*, sender:profiles!sender_id(*)').single()
   },
   async markRead(teamId: string, senderId: string, receiverId: string) {
     return supabase.from('direct_messages')
@@ -463,7 +483,20 @@ export const reportService = {
     const { data } = await supabase.from('secret_reports')
       .select('*, author:profiles(*)')
       .eq('team_id', teamId).order('created_at', { ascending: false })
-    return data ?? []
+    if (!data?.length) return data ?? []
+    const allIds: string[] = []
+    data.forEach((r: any) => { if (r.tagged_members?.length) allIds.push(...r.tagged_members) })
+    const uniqueIds = [...new Set(allIds)]
+    const pm: Record<string, any> = {}
+    if (uniqueIds.length > 0) {
+      const { data: profs } = await supabase.from('profiles')
+        .select('id, full_name, avatar_url').in('id', uniqueIds)
+      ;(profs ?? []).forEach((p: any) => { pm[p.id] = p })
+    }
+    return data.map((r: any) => ({
+      ...r,
+      tagged_profiles: (r.tagged_members ?? []).map((id: string) => pm[id]).filter(Boolean)
+    }))
   },
   async create(data: any) {
     return supabase.from('secret_reports').insert(data).select().single()
@@ -472,22 +505,23 @@ export const reportService = {
 
 // ── CHAT ──────────────────────────────────────────────────────────────
 export const chatService = {
-  async getMessages(teamId: string, limit = 100) {
+  async getMessages(teamId: string, chatType: 'general' | 'parents' = 'general', limit = 100) {
     const { data } = await supabase.from('chat_messages')
       .select('*, sender:profiles(*)')
-      .eq('team_id', teamId).order('created_at', { ascending: true }).limit(limit)
+      .eq('team_id', teamId).eq('chat_type', chatType)
+      .order('created_at', { ascending: true }).limit(limit)
     return data ?? []
   },
   async send(data: any) {
     return supabase.from('chat_messages').insert(data).select('*, sender:profiles(*)').single()
   },
-  subscribeToMessages(teamId: string, onMessage: (msg: any) => void) {
-    return supabase.channel(`chat:${teamId}`)
+  subscribeToMessages(teamId: string, chatType: 'general' | 'parents', onMessage: (msg: any) => void) {
+    return supabase.channel(`chat:${teamId}:${chatType}`)
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public', table: 'chat_messages',
         filter: `team_id=eq.${teamId}`
       }, async (payload) => {
-        // Fetch with profile
+        if (payload.new.chat_type !== chatType) return
         const { data } = await supabase.from('chat_messages')
           .select('*, sender:profiles(*)')
           .eq('id', payload.new.id).single()
@@ -629,10 +663,54 @@ export const permissionService = {
     return supabase.from('team_permissions').delete().eq('team_id', teamId).eq('user_id', userId).eq('permission', permission)
   },
   async setUserPermissions(teamId: string, userId: string, permissions: string[], grantedBy: string) {
-    // Delete all existing then insert new
     await supabase.from('team_permissions').delete().eq('team_id', teamId).eq('user_id', userId)
     if (permissions.length > 0) {
       await supabase.from('team_permissions').insert(permissions.map(p => ({ team_id: teamId, user_id: userId, permission: p, granted_by: grantedBy })))
     }
   }
+}
+
+// ── MONTHLY STAR ───────────────────────────────────────────────────────
+export const monthlyStarService = {
+  async getCurrent(teamId: string) {
+    const now = new Date()
+    const { data } = await supabase.from('monthly_stars')
+      .select('*, player:profiles!user_id(id, full_name, avatar_url)')
+      .eq('team_id', teamId)
+      .eq('month', now.getMonth() + 1)
+      .eq('year', now.getFullYear())
+      .maybeSingle()
+    return data ?? null
+  },
+  async set(teamId: string, userId: string, month: number, year: number, note: string, createdBy: string, announceNow: boolean) {
+    return supabase.from('monthly_stars').upsert({
+      team_id: teamId, user_id: userId, month, year,
+      note: note || null, created_by: createdBy,
+      announced_at: announceNow ? new Date().toISOString() : null
+    }, { onConflict: 'team_id,month,year' })
+      .select('*, player:profiles!user_id(id, full_name, avatar_url)').single()
+  },
+  async announce(id: string) {
+    return supabase.from('monthly_stars').update({ announced_at: new Date().toISOString() }).eq('id', id)
+  }
+}
+
+
+// ── REGULATIONS ────────────────────────────────────────────────────────
+export const regulationsService = {
+  async getAll(teamId: string) {
+    const { data } = await supabase.from('regulations')
+      .select('*, author:profiles!created_by(full_name)')
+      .eq('team_id', teamId).order('published_at', { ascending: false })
+    return data ?? []
+  },
+  async create(data: any) {
+    return supabase.from('regulations').insert(data).select().single()
+  },
+  async update(id: string, data: any) {
+    return supabase.from('regulations').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id)
+  },
+  async delete(id: string) {
+    return supabase.from('regulations').delete().eq('id', id)
+  },
 }

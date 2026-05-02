@@ -1,81 +1,140 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { ChevronDown, ChevronUp, Lock } from 'lucide-react'
+import { Lock, Search, X } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { eventService, teamService } from '../../services'
 import { Spinner, PageHeader, AttendanceButton, Modal, FormField, Avatar } from '../../components/ui'
-import { ATT_CONFIG, EVENT_CONFIG, formatDate, canManageEvents, isEventLocked } from '../../utils/helpers'
+import { EVENT_CONFIG, formatDate, canManageEvents, isEventLocked } from '../../utils/helpers'
 import { supabase } from '../../lib/supabase'
+
+const STATUS_CHIPS = [
+  { key: 'present',   label: 'حاضر',      cls: 'bg-emerald-100 text-emerald-700' },
+  { key: 'uncertain', label: 'غير متأكد', cls: 'bg-amber-100 text-amber-700' },
+  { key: 'absent',    label: 'غائب',      cls: 'bg-red-100 text-red-600' },
+  { key: 'late',      label: 'متأخر',     cls: 'bg-orange-100 text-orange-700' },
+]
+
+const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
+  present:   { label: 'حاضر',      cls: 'bg-emerald-100 text-emerald-700' },
+  uncertain: { label: 'غير متأكد', cls: 'bg-amber-100 text-amber-700' },
+  absent:    { label: 'غائب',      cls: 'bg-red-100 text-red-600' },
+  late:      { label: 'متأخر',     cls: 'bg-orange-100 text-orange-700' },
+}
+
+const SECTIONS = [
+  { key: 'present',   label: 'الحاضرون',    bg: 'bg-emerald-50', tc: 'text-emerald-700', icon: '✓' },
+  { key: 'late',      label: 'المتأخرون',    bg: 'bg-orange-50',  tc: 'text-orange-700',  icon: '⏱' },
+  { key: 'uncertain', label: 'غير متأكدون', bg: 'bg-amber-50',   tc: 'text-amber-700',   icon: '?' },
+  { key: 'absent',    label: 'الغائبون',    bg: 'bg-red-50',     tc: 'text-red-700',     icon: '✗' },
+]
 
 export default function AttendancePage() {
   const { teamId } = useParams()
   const { user } = useAuth()
-  const [events, setEvents] = useState<any[]>([])
-  const [selEv, setSelEv] = useState<any>(null)
-  const [attendance, setAtt] = useState<any[]>([])
+  const [events, setEvents]   = useState<any[]>([])
   const [members, setMembers] = useState<any[]>([])
+  const [myRole, setMyRole]   = useState('')
   const [loading, setLoading] = useState(true)
-  const [attLoading, setAttLoading] = useState(false)
-  const [myRole, setMyRole] = useState('')
-  const [showLate, setShowLate] = useState<any>(null)
-  const [lateMinutes, setLateMinutes] = useState('')
-  const [lateExcuse, setLateExcuse] = useState('')
-  const [hasExcuse, setHasExcuse] = useState(false)
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['present', 'late', 'uncertain', 'absent'])
-  )
-  const toggleSection = (key: string) =>
-    setExpandedSections(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
+  // { [eventId]: { present: N, absent: N, ... } }
+  const [summary, setSummary] = useState<Record<string, Record<string, number>>>({})
 
+  // Tabs: upcoming / past
+  const [tab, setTab] = useState<'upcoming' | 'past'>('upcoming')
+
+  // Filters
+  const [dateFrom, setDateFrom]           = useState('')
+  const [dateTo, setDateTo]               = useState('')
+  const [filterMemberId, setFilterMemberId] = useState('')
+  // { [eventId]: status } for selected member
+  const [memberAttMap, setMemberAttMap] = useState<Record<string, string>>({})
+
+  // Detail modal
+  const [modalEv, setModalEv]           = useState<any>(null)
+  const [modalAtt, setModalAtt]         = useState<any[]>([])
+  const [modalLoading, setModalLoading] = useState(false)
+  const channelRef = useRef<any>(null)
+
+  // Late modal
+  const [showLate, setShowLate]       = useState<any>(null)
+  const [lateMinutes, setLateMinutes] = useState('')
+  const [lateExcuse, setLateExcuse]   = useState('')
+  const [hasExcuse, setHasExcuse]     = useState(false)
+
+  // ── Load on mount ──
   useEffect(() => {
     if (!teamId || !user) return
     Promise.all([
       eventService.getTeamEvents(teamId),
       teamService.getMembers(teamId),
-      teamService.getMyRole(teamId, user.id)
-    ]).then(([evs, mems, role]) => {
-      setEvents(evs); setMembers(mems); setMyRole(role || '')
-      if (evs.length) selectEvent(evs[0])
-      else setLoading(false)
+      teamService.getMyRole(teamId, user.id),
+      fetchSummary(teamId),
+    ]).then(([evs, mems, role, sum]) => {
+      setEvents(evs); setMembers(mems); setMyRole(role || ''); setSummary(sum)
+      setLoading(false)
     })
   }, [teamId, user])
 
+  // ── Fetch member attendance map when member filter changes ──
   useEffect(() => {
-    if (!selEv || !teamId) return
-    // Filter by team_id (reliable for INSERTs); client-side check narrows to selected event
-    const ch = supabase.channel(`att:${teamId}:${selEv.id}`)
-      .on('postgres_changes', {
-        event: '*', schema: 'public', table: 'attendance',
-        filter: `team_id=eq.${teamId}`
-      }, async (payload: any) => {
-        const evId = (payload.new as any)?.event_id || (payload.old as any)?.event_id
-        if (evId === selEv.id) {
-          const a = await eventService.getAttendance(selEv.id)
-          setAtt(a)
-        }
-      }).subscribe()
-    // Polling fallback every 8s in case realtime misses UPDATE events
-    const poll = setInterval(async () => {
-      const a = await eventService.getAttendance(selEv.id)
-      setAtt(a)
-    }, 8000)
-    return () => { ch.unsubscribe(); clearInterval(poll) }
-  }, [selEv?.id, teamId])
+    if (!filterMemberId || !teamId) { setMemberAttMap({}); return }
+    supabase.from('attendance').select('event_id, status')
+      .eq('team_id', teamId).eq('user_id', filterMemberId)
+      .then(({ data }) => {
+        const m: Record<string, string> = {}
+        ;(data ?? []).forEach((r: any) => { m[r.event_id] = r.status })
+        setMemberAttMap(m)
+      })
+  }, [filterMemberId, teamId])
 
-  async function selectEvent(ev: any) {
-    setSelEv(ev); setAttLoading(true)
+  // ── Realtime for open modal ──
+  useEffect(() => {
+    channelRef.current?.unsubscribe()
+    if (!modalEv || !teamId) return
+    channelRef.current = supabase.channel(`att:${teamId}:${modalEv.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance', filter: `team_id=eq.${teamId}` },
+        async (payload: any) => {
+          const evId = (payload.new as any)?.event_id || (payload.old as any)?.event_id
+          if (evId !== modalEv.id) return
+          const a = await eventService.getAttendance(modalEv.id)
+          setModalAtt(a); refreshSummary(modalEv.id, a)
+        }).subscribe()
+    return () => { channelRef.current?.unsubscribe() }
+  }, [modalEv?.id, teamId])
+
+  async function fetchSummary(tid: string) {
+    const { data } = await supabase.from('attendance').select('event_id, status').eq('team_id', tid)
+    const s: Record<string, Record<string, number>> = {}
+    ;(data ?? []).forEach((r: any) => {
+      if (!s[r.event_id]) s[r.event_id] = {}
+      s[r.event_id][r.status] = (s[r.event_id][r.status] || 0) + 1
+    })
+    return s
+  }
+
+  function refreshSummary(eventId: string, att: any[]) {
+    const counts: Record<string, number> = {}
+    att.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1 })
+    setSummary(prev => ({ ...prev, [eventId]: counts }))
+  }
+
+  async function openEvent(ev: any) {
+    setModalEv(ev); setModalLoading(true)
     const a = await eventService.getAttendance(ev.id)
-    setAtt(a); setAttLoading(false); setLoading(false)
+    setModalAtt(a); setModalLoading(false)
   }
 
   async function setStatus(userId: string, status: string, extra?: any) {
-    if (!selEv || !teamId) return
+    if (!modalEv || !teamId) return
     await eventService.setAttendance({
-      event_id: selEv.id, team_id: teamId, user_id: userId,
+      event_id: modalEv.id, team_id: teamId, user_id: userId,
       status, ...extra, updated_at: new Date().toISOString()
     })
-    const updated = await eventService.getAttendance(selEv.id)
-    setAtt(updated)
+    const updated = await eventService.getAttendance(modalEv.id)
+    setModalAtt(updated); refreshSummary(modalEv.id, updated)
+    // Refresh member att map if filter active
+    if (filterMemberId === userId) {
+      setMemberAttMap(prev => ({ ...prev, [modalEv.id]: status }))
+    }
   }
 
   async function saveLate() {
@@ -87,199 +146,246 @@ export default function AttendancePage() {
     setShowLate(null); setLateMinutes(''); setLateExcuse(''); setHasExcuse(false)
   }
 
+  function clearFilters() {
+    setDateFrom(''); setDateTo(''); setFilterMemberId(''); setMemberAttMap({})
+  }
+
   const isCoach = canManageEvents(myRole)
-  const locked = selEv ? isEventLocked(selEv.start_datetime) : false
-  const present   = attendance.filter(a => a.status === 'present')
-  const late      = attendance.filter(a => a.status === 'late')
-  const uncertain = attendance.filter(a => a.status === 'uncertain')
-  const absent   = attendance.filter(a => a.status === 'absent')
-  const total   = attendance.length
-  const notRecorded = members.filter(m => !attendance.find(a => a.user_id === m.user_id))
+  const hasFilters = !!(dateFrom || dateTo || filterMemberId)
 
-  const sections = [
-    { key:'present',   label:'الحاضرون',    list: present,   bg:'bg-emerald-50', tc:'text-emerald-700', icon:'✓' },
-    { key:'late',     label:'المتأخرون',    list: late,      bg:'bg-orange-50',  tc:'text-orange-700',  icon:'⏱' },
-    { key:'uncertain',label:'غير متأكدون', list: uncertain, bg:'bg-amber-50',   tc:'text-amber-700',   icon:'?' },
-    { key:'absent',   label:'الغائبون',     list: absent,    bg:'bg-red-50',     tc:'text-red-700',     icon:'✗' },
-  ]
+  // ── Split events into upcoming / past ──
+  const now = new Date()
+  const upcomingBase = events.filter(e => new Date(e.start_datetime) >= now)
+  const pastBase     = [...events.filter(e => new Date(e.start_datetime) < now)].reverse()
+  const base         = tab === 'upcoming' ? upcomingBase : pastBase
 
-  const AvatarSection = ({ members: list }: { members: any[] }) => (
-    <div className="space-y-1.5 mt-2">
-      {list.map((a: any) => {
-        const m = members.find(x => x.user_id === a.user_id)
-        return (
-          <div key={a.id} className="flex items-center gap-2 bg-white rounded-xl p-2 shadow-sm">
-            <Avatar name={a.profile?.full_name || '?'} src={a.profile?.avatar_url} size="sm" />
-            <div className="flex-1 min-w-0">
-              <div className="text-xs font-bold truncate">{a.profile?.full_name}</div>
-              {a.status === 'late' && (
-                <div className="text-xs text-orange-600">
-                  {a.late_minutes > 0 && `${a.late_minutes} دقيقة `}
-                  {a.has_excuse ? '(بعذر)' : a.late_minutes > 0 ? '(بدون عذر)' : ''}
-                </div>
-              )}
+  // ── Apply date range + member filters ──
+  const filtered = base.filter(e => {
+    if (dateFrom && new Date(e.start_datetime) < new Date(dateFrom)) return false
+    if (dateTo   && new Date(e.start_datetime) > new Date(dateTo + 'T23:59:59')) return false
+    if (filterMemberId && !memberAttMap[e.id]) return false
+    return true
+  })
+
+  // Modal sections
+  const mPresent   = modalAtt.filter(a => a.status === 'present')
+  const mLate      = modalAtt.filter(a => a.status === 'late')
+  const mUncertain = modalAtt.filter(a => a.status === 'uncertain')
+  const mAbsent    = modalAtt.filter(a => a.status === 'absent')
+  const mNotRec    = members.filter(m => !modalAtt.find(a => a.user_id === m.user_id))
+  const mLists: Record<string, any[]> = { present: mPresent, late: mLate, uncertain: mUncertain, absent: mAbsent }
+
+  function MemberRow({ a, m }: { a?: any; m?: any }) {
+    const profile = a?.profile || m?.profile
+    const userId  = a?.user_id  || m?.user_id
+    return (
+      <div className="flex items-center gap-2 bg-white rounded-xl p-2 border border-slate-50">
+        <Avatar name={profile?.full_name || '?'} src={profile?.avatar_url} size="sm"/>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-bold truncate">{profile?.full_name}</div>
+          {a?.status === 'late' && a?.late_minutes > 0 && (
+            <div className="text-xs text-orange-600">
+              {a.late_minutes} دقيقة {a.has_excuse ? '(بعذر)' : ''}
             </div>
-            {isCoach && (
-              <AttendanceButton status={a.status} locked={false} compact
-                onSelect={s => { if (s === 'late') setShowLate(a); else setStatus(a.user_id, s) }} />
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
+          )}
+        </div>
+        {isCoach && (
+          <AttendanceButton status={a?.status || 'present'} locked={false} compact
+            onSelect={s => {
+              if (s === 'late') setShowLate({ user_id: userId, profile })
+              else setStatus(userId, s)
+            }}/>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div>
-      <PageHeader title="سجل الحضور" />
-      <div className="grid md:grid-cols-[220px_1fr] gap-4">
-        {/* Event selector */}
-        <div>
-          <p className="text-xs font-extrabold text-slate-400 uppercase tracking-wider mb-2">اختر حدثاً</p>
-          <div className="space-y-1.5 max-h-[500px] overflow-y-auto">
-            {events.map(e => {
-              const c = EVENT_CONFIG[e.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
-              const lk = isEventLocked(e.start_datetime)
-              return (
-                <button key={e.id} onClick={() => selectEvent(e)}
-                  className={`w-full text-right px-3 py-2.5 rounded-2xl border text-xs transition-all ${
-                    selEv?.id === e.id
-                      ? 'bg-brand-50 border-brand-300 font-extrabold text-brand-800 shadow-sm'
-                      : 'bg-white border-slate-100 hover:border-brand-200 hover:bg-brand-50/30'
-                  }`}>
-                  <div className="flex items-center gap-2">
-                    <span className="text-base">{c.icon}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="truncate font-bold">{e.title}</div>
-                      <div className="text-slate-400 mt-0.5">{formatDate(e.start_datetime)}</div>
-                    </div>
-                    {lk && <Lock size={10} className="text-slate-300 flex-shrink-0" />}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        </div>
+      <PageHeader title="سجل الحضور"/>
 
-        {/* Detail */}
-        <div>
-          {selEv && (
-            <>
-              {/* Summary hero card */}
-              <div className="hero-card mb-4">
-                <div className="absolute top-0 left-0 w-32 h-32 rounded-full opacity-10 bg-white -translate-x-12 -translate-y-10"/>
-                <div className="relative">
-                  <div className="flex justify-between items-start mb-3">
-                    <div>
-                      <div className="font-extrabold text-white text-base">{selEv.title}</div>
-                      <div className="text-white/70 text-xs mt-0.5">
-                        {EVENT_CONFIG[selEv.event_type as keyof typeof EVENT_CONFIG]?.label || selEv.event_type}
-                        {selEv.att_group ? ` · ${selEv.att_group}` : ''}
-                      </div>
-                    </div>
-                    {locked && (
-                      <div className="flex items-center gap-1 text-xs text-white/80 bg-white/15 px-2.5 py-1.5 rounded-xl">
-                        <Lock size={11} /> مغلق
-                      </div>
-                    )}
-                  </div>
-                  {total > 0 && (
-                    <div className="grid grid-cols-4 gap-2">
-                      {[
-                        { label:'حاضر', n: present.length, pct: Math.round(present.length/total*100), bg:'bg-emerald-500/30' },
-                        { label:'متأخر', n: late.length, pct: Math.round(late.length/total*100), bg:'bg-orange-500/30' },
-                        { label:'غير متأكد', n: uncertain.length, pct: Math.round(uncertain.length/total*100), bg:'bg-amber-400/30' },
-                        { label:'غائب', n: absent.length, pct: Math.round(absent.length/total*100), bg:'bg-red-500/30' },
-                      ].map(s => (
-                        <div key={s.label} className={`${s.bg} rounded-2xl p-2.5 text-center`}>
-                          <div className="text-white text-xl font-extrabold leading-none">{s.pct}%</div>
-                          <div className="text-white/80 text-xs mt-1">{s.label}</div>
-                          <div className="text-white/60 text-xs">({s.n})</div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {attLoading ? <div className="flex justify-center py-8"><Spinner /></div> : (
-                <div className="space-y-3">
-                  {sections.map(sec => (
-                    <div key={sec.key} className={`rounded-2xl ${sec.bg} p-3`}>
-                      {/* Collapsible header */}
-                      <button
-                        className="w-full flex items-center justify-between"
-                        onClick={() => toggleSection(sec.key)}>
-                        <div className={`text-sm font-extrabold ${sec.tc} flex items-center gap-2`}>
-                          <span className="text-base">{sec.icon}</span>
-                          {sec.label}
-                          <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-white/60">{sec.list.length}</span>
-                        </div>
-                        {expandedSections.has(sec.key)
-                          ? <ChevronUp size={15} className={sec.tc} />
-                          : <ChevronDown size={15} className={sec.tc} />}
-                      </button>
-                      {expandedSections.has(sec.key) && (
-                        sec.list.length === 0
-                          ? <div className="text-xs text-slate-400 text-center py-3 mt-1">لا يوجد</div>
-                          : <AvatarSection members={sec.list} />
-                      )}
-                    </div>
-                  ))}
-
-                  {/* Not recorded */}
-                  {notRecorded.length > 0 && (
-                    <div className="card border-dashed border-slate-200">
-                      <div className="text-xs font-extrabold text-slate-400 mb-2 flex items-center gap-1.5">
-                        <span>⏳</span> لم يُسجّل بعد ({notRecorded.length})
-                      </div>
-                      <div className="space-y-1.5">
-                        {notRecorded.map(m => (
-                          <div key={m.id} className="flex items-center gap-2 p-2 bg-slate-50 rounded-xl">
-                            <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="sm" />
-                            <div className="flex-1 text-xs font-bold">{m.profile?.full_name}</div>
-                            {(isCoach || (!locked && m.user_id === user?.id)) && (
-                              <AttendanceButton status="present" compact locked={false}
-                                onSelect={s => {
-                                  if (s === 'late') setShowLate({ user_id: m.user_id, profile: m.profile })
-                                  else setStatus(m.user_id, s)
-                                }} />
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-          {!selEv && !loading && (
-            <div className="card text-center py-12">
-              <div className="text-4xl mb-3">📋</div>
-              <p className="font-bold text-slate-500 text-sm">اختر حدثاً لعرض الحضور</p>
-            </div>
-          )}
-          {loading && <div className="flex justify-center py-10"><Spinner /></div>}
-        </div>
+      {/* ── Tabs: upcoming / past ── */}
+      <div className="flex gap-1 mb-4 bg-slate-100 p-1 rounded-2xl w-fit">
+        {([
+          { key: 'upcoming', label: `القادمة (${upcomingBase.length})` },
+          { key: 'past',     label: `السابقة (${pastBase.length})` },
+        ] as const).map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`px-5 py-2 rounded-xl text-sm font-bold transition-all ${
+              tab === t.key ? 'bg-white text-brand-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            }`}>
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      {/* Late Modal */}
+      {/* ── Filters ── */}
+      <div className="card p-3 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 items-end">
+          <div>
+            <label className="text-xs font-bold text-slate-500 block mb-1">من تاريخ</label>
+            <input type="date" className="form-input text-sm py-2"
+              value={dateFrom} onChange={e => setDateFrom(e.target.value)}/>
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500 block mb-1">إلى تاريخ</label>
+            <input type="date" className="form-input text-sm py-2"
+              value={dateTo} onChange={e => setDateTo(e.target.value)}/>
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500 block mb-1">العضو</label>
+            <select className="form-input text-sm py-2"
+              value={filterMemberId} onChange={e => setFilterMemberId(e.target.value)}>
+              <option value="">— كل الأعضاء —</option>
+              {members.filter(m => m.role === 'player' || m.role === 'head_coach' || m.role === 'assistant_coach').map(m => (
+                <option key={m.user_id} value={m.user_id}>{m.profile?.full_name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-end">
+            {hasFilters ? (
+              <button onClick={clearFilters}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold text-red-600 bg-red-50 hover:bg-red-100 transition-colors w-full justify-center">
+                <X size={14}/> مسح الفلتر
+              </button>
+            ) : (
+              <div className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm text-slate-400 bg-slate-50 w-full justify-center">
+                <Search size={14}/> بحث متقدم
+              </div>
+            )}
+          </div>
+        </div>
+        {filterMemberId && tab === 'upcoming' && (
+          <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
+            ⚠ فلتر العضو يظهر نتائج في السابقة فقط حيث تم تسجيل الحضور
+          </p>
+        )}
+      </div>
+
+      {/* ── Events list ── */}
+      {loading ? (
+        <div className="flex justify-center py-16"><Spinner size="lg"/></div>
+      ) : filtered.length === 0 ? (
+        <div className="card text-center py-12">
+          <div className="text-4xl mb-3">{hasFilters ? '🔍' : '📋'}</div>
+          <p className="font-bold text-slate-500 text-sm">
+            {hasFilters ? 'لا توجد نتائج بهذه المعايير' : tab === 'upcoming' ? 'لا توجد مواعيد قادمة' : 'لا توجد مواعيد سابقة'}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(e => {
+            const cfg    = EVENT_CONFIG[e.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
+            const lk     = isEventLocked(e.start_datetime)
+            const counts = summary[e.id] || {}
+            const total  = Object.values(counts).reduce((s, n) => s + n, 0)
+            const memStatus = filterMemberId ? memberAttMap[e.id] : null
+
+            return (
+              <button key={e.id} onClick={() => openEvent(e)}
+                className="w-full text-right card p-4 hover:border-brand-300 hover:shadow-md transition-all cursor-pointer group active:scale-[0.99]">
+                {/* Header */}
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-2xl">{cfg.icon}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-extrabold text-sm text-slate-800 truncate group-hover:text-brand-700 transition-colors">
+                      {e.title}
+                    </div>
+                    <div className="text-xs text-slate-400 mt-0.5">{formatDate(e.start_datetime)}</div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {/* If member filtered: show their status badge */}
+                    {memStatus && (
+                      <span className={`text-xs font-bold px-2.5 py-1 rounded-xl ${STATUS_BADGE[memStatus]?.cls || 'bg-slate-100 text-slate-500'}`}>
+                        {STATUS_BADGE[memStatus]?.label || memStatus}
+                      </span>
+                    )}
+                    {!filterMemberId && total > 0 && (
+                      <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full font-bold">
+                        {total} مسجّل
+                      </span>
+                    )}
+                    {lk && <Lock size={12} className="text-slate-300"/>}
+                  </div>
+                </div>
+
+                {/* 4 chips (only when no member filter) */}
+                {!filterMemberId && (
+                  <div className="grid grid-cols-4 gap-2">
+                    {STATUS_CHIPS.map(chip => (
+                      <div key={chip.key} className={`${chip.cls} rounded-xl py-2.5 text-center`}>
+                        <div className="text-xl font-black leading-none">{counts[chip.key] || 0}</div>
+                        <div className="text-xs mt-1 font-bold opacity-75">{chip.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {/* ── Attendance detail modal ── */}
+      <Modal open={!!modalEv} onClose={() => setModalEv(null)} width="max-w-lg"
+        title={modalEv ? `${EVENT_CONFIG[modalEv.event_type as keyof typeof EVENT_CONFIG]?.icon || '📋'} ${modalEv.title}` : ''}>
+        {modalEv && (
+          <>
+            <p className="text-xs text-slate-400 -mt-1 mb-4">{formatDate(modalEv.start_datetime)}</p>
+            {modalLoading ? (
+              <div className="flex justify-center py-10"><Spinner/></div>
+            ) : (
+              <div className="space-y-3 max-h-[62vh] overflow-y-auto -mx-1 px-1">
+                {SECTIONS.map(sec => {
+                  const list = mLists[sec.key]
+                  if (!list?.length) return null
+                  return (
+                    <div key={sec.key} className={`rounded-2xl ${sec.bg} p-3`}>
+                      <div className={`text-sm font-extrabold ${sec.tc} flex items-center gap-2 mb-2`}>
+                        <span>{sec.icon}</span> {sec.label}
+                        <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-white/60">{list.length}</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {list.map((a: any) => <MemberRow key={a.id} a={a}/>)}
+                      </div>
+                    </div>
+                  )
+                })}
+                {mNotRec.length > 0 && (
+                  <div className="rounded-2xl border-2 border-dashed border-slate-200 p-3">
+                    <div className="text-xs font-extrabold text-slate-400 mb-2">
+                      ⏳ لم يُسجّل بعد ({mNotRec.length})
+                    </div>
+                    <div className="space-y-1.5">
+                      {mNotRec.map(m => <MemberRow key={m.id} m={m}/>)}
+                    </div>
+                  </div>
+                )}
+                {!modalAtt.length && !mNotRec.length && (
+                  <div className="text-center py-10 text-slate-400 text-sm">لم يُسجّل حضور بعد</div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </Modal>
+
+      {/* ── Late modal ── */}
       <Modal open={!!showLate} onClose={() => setShowLate(null)}
         title={`تسجيل تأخر — ${showLate?.profile?.full_name}`}>
         <FormField label="مدة التأخير (دقيقة)">
           <input className="form-input" type="number" value={lateMinutes}
-            onChange={e => setLateMinutes(e.target.value)} placeholder="15" />
+            onChange={e => setLateMinutes(e.target.value)} placeholder="15"/>
         </FormField>
         <div className="flex items-center gap-3 mb-4">
           <input type="checkbox" id="hasExcuse" checked={hasExcuse}
-            onChange={e => setHasExcuse(e.target.checked)} className="w-4 h-4 accent-brand-500" />
+            onChange={e => setHasExcuse(e.target.checked)} className="w-4 h-4 accent-brand-500"/>
           <label htmlFor="hasExcuse" className="text-sm cursor-pointer">التأخير بعذر</label>
         </div>
         {hasExcuse && (
           <FormField label="سبب التأخير">
             <input className="form-input" value={lateExcuse}
-              onChange={e => setLateExcuse(e.target.value)} placeholder="اذكر السبب..." />
+              onChange={e => setLateExcuse(e.target.value)} placeholder="اذكر السبب..."/>
           </FormField>
         )}
         <div className="flex gap-2 justify-end">

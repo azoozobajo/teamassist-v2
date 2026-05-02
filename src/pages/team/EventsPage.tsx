@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy } from 'lucide-react'
+import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { eventService, teamService, notificationService } from '../../services'
-import { Spinner, PageHeader, EmptyState, Modal, FormField, Tabs } from '../../components/ui'
+import { Spinner, PageHeader, EmptyState, Modal, FormField, Tabs, AttendanceButton } from '../../components/ui'
 import { EVENT_CONFIG, WEEK_DAYS, canManageEvents, formatDate, isEventLocked } from '../../utils/helpers'
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay } from 'date-fns'
 import { arSA } from 'date-fns/locale'
@@ -28,6 +28,9 @@ export default function EventsPage() {
   const [confirmDelete, setConfirmDelete] = useState<any>(null)
   const [showResult, setShowResult] = useState<any>(null)
   const [resultForm, setResultForm] = useState({ goals_for: '', goals_against: '' })
+  const [detailAtts, setDetailAtts] = useState<Record<string, string>>({})
+  const [editEvent, setEditEvent] = useState<any>(null)
+  const [editForm, setEditForm] = useState<any>({})
   const [saving, setSaving] = useState(false)
 
   const defaultForm = {
@@ -54,6 +57,12 @@ export default function EventsPage() {
     teamService.getMembers(teamId).then(m => setMembers(m.filter((x: any) => x.role !== 'parent')))
     load()
   }, [teamId, user])
+
+  useEffect(() => {
+    if (!showDetail || !user) { setDetailAtts({}); return }
+    const ids = (showDetail.events as any[]).map((e: any) => e.id)
+    eventService.getAttendanceForEvents(ids, user.id).then(setDetailAtts)
+  }, [showDetail, user?.id])
 
   async function load() {
     if (!teamId) return
@@ -109,6 +118,59 @@ export default function EventsPage() {
     await load(); setConfirmDelete(null); setShowDetail(null)
   }
 
+  async function setDetailAtt(eventId: string, status: string) {
+    if (!user || !teamId) return
+    const prev = detailAtts[eventId] ?? ''
+    setDetailAtts(p => ({ ...p, [eventId]: status }))
+    const { error } = await eventService.setAttendance({
+      event_id: eventId, team_id: teamId, user_id: user.id, status
+    })
+    if (error) setDetailAtts(p => ({ ...p, [eventId]: prev }))
+  }
+
+  function openEdit(ev: any) {
+    setEditEvent(ev)
+    setEditForm({
+      title: ev.title,
+      event_type: ev.event_type,
+      start_datetime: ev.start_datetime?.slice(0, 16) || '',
+      end_datetime: ev.end_datetime?.slice(0, 16) || '',
+      location: ev.location || '',
+      map_url: ev.map_url || '',
+      description: ev.description || '',
+      att_group: ev.att_group || 'الكل',
+      opponent: ev.opponent || '',
+      home_away: ev.home_away || 'home',
+      match_category: ev.match_category || 'friendly',
+      tournament_name: ev.tournament_name || '',
+    })
+    setShowDetail(null)
+  }
+
+  async function saveEdit() {
+    if (!editEvent || !teamId || !user) return
+    setSaving(true)
+    await eventService.updateEvent(editEvent.id, {
+      title: editForm.title,
+      event_type: editForm.event_type,
+      start_datetime: editForm.start_datetime,
+      end_datetime: editForm.end_datetime || null,
+      location: editForm.location || null,
+      map_url: editForm.map_url || null,
+      description: editForm.description || null,
+      att_group: editForm.att_group,
+      ...(editForm.event_type === 'match' ? {
+        opponent: editForm.opponent || null,
+        home_away: editForm.home_away,
+        match_category: editForm.match_category,
+        tournament_name: editForm.match_category === 'tournament' ? (editForm.tournament_name || null) : null
+      } : {})
+    })
+    await notificationService.createForTeam(teamId, `تم تعديل الموعد: ${editForm.title}`, editForm.start_datetime, 'event', user.id)
+    await load()
+    setEditEvent(null); setSaving(false)
+  }
+
   async function saveResult() {
     if (!showResult || resultForm.goals_for === '' || resultForm.goals_against === '') return
     setSaving(true)
@@ -138,14 +200,33 @@ export default function EventsPage() {
   }
 
   const canManage = canManageEvents(myRole)
+  const isParent = myRole === 'parent'
   const now = new Date()
-  const upcoming = events.filter(e => new Date(e.start_datetime) >= now)
-  const past = events.filter(e => new Date(e.start_datetime) < now).reverse()
+
+  // Visibility: coaches/admins see all; others only see events relevant to them
+  const ROLE_GROUPS: Record<string, string[]> = {
+    'اللاعبون فقط': ['player'],
+    'المدربون فقط': ['head_coach','assistant_coach'],
+    'اللاعبون والمدربون': ['player','head_coach','assistant_coach'],
+    'الإداريون فقط': ['administrator','owner'],
+  }
+  function isEventVisible(e: any): boolean {
+    if (canManage) return true
+    if (e.att_member_ids?.length > 0) return e.att_member_ids.includes(user?.id)
+    const allowedRoles = ROLE_GROUPS[e.att_group]
+    if (allowedRoles) return allowedRoles.includes(myRole)
+    return true // 'الكل' or 'مجموعة مخصصة' with no ids = everyone
+  }
+  const visibleEvents = isParent
+    ? events.filter(e => e.event_type === 'match')
+    : events.filter(isEventVisible)
+  const upcoming = visibleEvents.filter(e => new Date(e.start_datetime) >= now)
+  const past = visibleEvents.filter(e => new Date(e.start_datetime) < now).reverse()
   const list = tab === 'upcoming' ? upcoming : past
 
   const monthDays = eachDayOfInterval({ start: startOfMonth(calMonth), end: endOfMonth(calMonth) })
   const firstDayOfWeek = getDay(startOfMonth(calMonth))
-  const eventsOnDay = (day: Date) => events.filter(e => isSameDay(parseISO(e.start_datetime), day))
+  const eventsOnDay = (day: Date) => visibleEvents.filter(e => isSameDay(parseISO(e.start_datetime), day))
   const arDays = ['أح','إث','ثل','أر','خم','جم','سب']
 
   const MemberPicker = ({ which }: { which: 'form' | 'recur' }) => {
@@ -316,14 +397,22 @@ export default function EventsPage() {
                               )}
                               {/* Result badge */}
                               {e.event_type === 'match' && <div className="mt-1"><ResultBadge e={e}/></div>}
-                              {/* Result entry button for past matches without result (admin) */}
-                              {e.event_type === 'match' && canManage && isPast && !hasResult && (
-                                <button
-                                  onClick={ev => { ev.stopPropagation(); setShowResult(e); setResultForm({ goals_for: '', goals_against: '' }) }}
-                                  className="text-xs text-brand-600 font-bold flex items-center gap-1 mt-1.5 hover:text-brand-800 transition-colors">
-                                  <Trophy size={11}/> سجّل نتيجة المباراة
-                                </button>
-                              )}
+                              {/* Edit + Result buttons */}
+                              <div className="flex items-center gap-2 mt-1.5">
+                                {canManage && (
+                                  <button onClick={ev => { ev.stopPropagation(); openEdit(e) }}
+                                    className="text-xs text-blue-500 font-bold flex items-center gap-1 hover:text-blue-700 transition-colors">
+                                    <Edit2 size={11}/> تعديل
+                                  </button>
+                                )}
+                                {e.event_type === 'match' && canManage && isPast && !hasResult && (
+                                  <button
+                                    onClick={ev => { ev.stopPropagation(); setShowResult(e); setResultForm({ goals_for: '', goals_against: '' }) }}
+                                    className="text-xs text-brand-600 font-bold flex items-center gap-1 hover:text-brand-800 transition-colors">
+                                    <Trophy size={11}/> سجّل نتيجة
+                                  </button>
+                                )}
+                              </div>
                               <div className="flex gap-1 mt-1.5 flex-wrap">
                                 <span className="badge text-xs" style={{background:c.bg,color:c.color}}>{c.label}</span>
                                 {e.att_member_ids?.length > 0
@@ -393,10 +482,24 @@ export default function EventsPage() {
                   {!e.att_member_ids && e.att_group && <div className="text-xs text-slate-400 mt-1">الحضور: {e.att_group}</div>}
                 </div>
                 {canManage && (
-                  <button onClick={() => setConfirmDelete(e)} className="text-slate-400 hover:text-red-500 p-1 flex-shrink-0">
-                    <Trash2 size={14}/>
-                  </button>
+                  <div className="flex gap-1">
+                    <button onClick={() => openEdit(e)} className="text-slate-400 hover:text-blue-500 p-1 flex-shrink-0">
+                      <Edit2 size={14}/>
+                    </button>
+                    <button onClick={() => setConfirmDelete(e)} className="text-slate-400 hover:text-red-500 p-1 flex-shrink-0">
+                      <Trash2 size={14}/>
+                    </button>
+                  </div>
                 )}
+              </div>
+              {/* Attendance buttons */}
+              <div className="bg-slate-50 rounded-xl p-2.5 mt-3">
+                <p className="text-xs font-bold text-slate-500 mb-2">هل ستحضر؟</p>
+                <AttendanceButton
+                  status={detailAtts[e.id] ?? ''}
+                  locked={isEventLocked(e.start_datetime)}
+                  onSelect={s => setDetailAtt(e.id, s)}
+                />
               </div>
             </div>
           )
@@ -614,6 +717,73 @@ export default function EventsPage() {
               </button>
             </div>
           </div>
+        )}
+      </Modal>
+
+      {/* ── EDIT EVENT MODAL ── */}
+      <Modal open={!!editEvent} onClose={() => setEditEvent(null)} title={`تعديل: ${editEvent?.title || ''}`} width="max-w-lg">
+        {editEvent && (
+          <>
+            <FormField label="العنوان" required>
+              <input className="form-input" value={editForm.title} onChange={e => setEditForm((p: any) => ({ ...p, title: e.target.value }))}/>
+            </FormField>
+            <FormField label="النوع">
+              <EventTypeSelector val={editForm.event_type} onChange={v => setEditForm((p: any) => ({ ...p, event_type: v }))}/>
+            </FormField>
+            {editForm.event_type === 'match' && (
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
+                <p className="text-[11px] font-bold text-slate-500">⚽ بيانات المباراة</p>
+                <FormField label="المنافس">
+                  <input className="form-input" value={editForm.opponent} onChange={e => setEditForm((p: any) => ({ ...p, opponent: e.target.value }))} placeholder="الهلال، النصر..."/>
+                </FormField>
+                <div className="grid grid-cols-2 gap-3">
+                  <FormField label="الأرض">
+                    <select className="form-input" value={editForm.home_away} onChange={e => setEditForm((p: any) => ({ ...p, home_away: e.target.value }))}>
+                      <option value="home">🏟️ ملعبنا</option>
+                      <option value="away">🚌 ملعب المنافس</option>
+                      <option value="neutral">⚖️ أرض محايدة</option>
+                    </select>
+                  </FormField>
+                  <FormField label="نوع المباراة">
+                    <select className="form-input" value={editForm.match_category} onChange={e => setEditForm((p: any) => ({ ...p, match_category: e.target.value }))}>
+                      <option value="friendly">ودية</option>
+                      <option value="tournament">بطولة</option>
+                    </select>
+                  </FormField>
+                </div>
+                {editForm.match_category === 'tournament' && (
+                  <FormField label="اسم البطولة">
+                    <input className="form-input" value={editForm.tournament_name} onChange={e => setEditForm((p: any) => ({ ...p, tournament_name: e.target.value }))}/>
+                  </FormField>
+                )}
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="البداية" required>
+                <input className="form-input" type="datetime-local" value={editForm.start_datetime} onChange={e => setEditForm((p: any) => ({ ...p, start_datetime: e.target.value }))}/>
+              </FormField>
+              <FormField label="النهاية">
+                <input className="form-input" type="datetime-local" value={editForm.end_datetime} onChange={e => setEditForm((p: any) => ({ ...p, end_datetime: e.target.value }))}/>
+              </FormField>
+            </div>
+            <FormField label="الموقع">
+              <input className="form-input" value={editForm.location} onChange={e => setEditForm((p: any) => ({ ...p, location: e.target.value }))}/>
+            </FormField>
+            <FormField label="رابط خريطة">
+              <input className="form-input" value={editForm.map_url} onChange={e => setEditForm((p: any) => ({ ...p, map_url: e.target.value }))} placeholder="https://maps.google.com/..."/>
+            </FormField>
+            <FormField label="من يسجل الحضور؟">
+              <select className="form-input" value={editForm.att_group} onChange={e => setEditForm((p: any) => ({ ...p, att_group: e.target.value }))}>
+                {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
+              </select>
+            </FormField>
+            <div className="flex gap-2 justify-end mt-4">
+              <button className="btn btn-ghost" onClick={() => setEditEvent(null)}>إلغاء</button>
+              <button className="btn btn-primary" onClick={saveEdit} disabled={saving || !editForm.title.trim()}>
+                {saving ? <Spinner size="sm"/> : <><Edit2 size={13}/> حفظ التعديلات</>}
+              </button>
+            </div>
+          </>
         )}
       </Modal>
     </div>

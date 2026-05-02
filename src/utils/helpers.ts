@@ -97,6 +97,7 @@ export const PERMISSIONS = [
   { key: 'manage_finance_pay',   label: 'تسجيل المدفوعات' },
   { key: 'make_announcements',   label: 'نشر الإعلانات والتذكيرات' },
   { key: 'manage_permissions',   label: 'إدارة صلاحيات الأعضاء' },
+  { key: 'view_parent_chat',    label: 'رؤية شات أولياء الأمور' },
 ] as const
 
 export type PermissionKey = typeof PERMISSIONS[number]['key']

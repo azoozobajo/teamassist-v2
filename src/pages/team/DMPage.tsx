@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { Send, Lock } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { dmService, teamService } from '../../services'
+import { dmService, teamService, permissionService } from '../../services'
 import { Spinner, PageHeader, EmptyState } from '../../components/ui'
 import { formatTimeAgo } from '../../utils/helpers'
 import { supabase } from '../../lib/supabase'
@@ -11,6 +11,7 @@ export default function DMPage() {
   const { teamId } = useParams()
   const { user } = useAuth()
   const [members, setMembers] = useState<any[]>([])
+  const [myRole, setMyRole] = useState('')
   const [selMember, setSelMember] = useState<any>(null)
   const [msgs, setMsgs] = useState<any[]>([])
   const [convs, setConvs] = useState<any[]>([])
@@ -19,22 +20,35 @@ export default function DMPage() {
   const [sending, setSending] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const channelRef = useRef<any>(null)
+  const selMemberRef = useRef<any>(null)
 
   useEffect(() => {
     if (!teamId || !user) return
-    teamService.getMembers(teamId).then(m => setMembers(m.filter((x: any) => x.user_id !== user.id)))
+    teamService.getMyRole(teamId, user.id).then(async r => {
+      const role = r || ''
+      setMyRole(role)
+      const all = await teamService.getMembers(teamId)
+      let filtered = all.filter((x: any) => x.user_id !== user.id)
+      if (role === 'parent') {
+        const perms = await permissionService.getUserPermissions(teamId, user.id)
+        const allowed = perms.filter(p => p.startsWith('parent_dm:')).map(p => p.replace('parent_dm:', ''))
+        filtered = filtered.filter((x: any) => allowed.includes(x.user_id))
+      }
+      setMembers(filtered)
+    })
     loadConvs()
 
-    // Realtime for incoming DMs
+    // Realtime for incoming DMs — use ref to avoid stale closure on selMember
     channelRef.current = supabase.channel(`dm:${teamId}:${user.id}`)
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public', table: 'direct_messages',
         filter: `team_id=eq.${teamId}`
       }, async (payload) => {
         const msg = payload.new as any
+        const cur = selMemberRef.current
         if (msg.receiver_id === user.id || msg.sender_id === user.id) {
-          if (selMember && (msg.sender_id === selMember.user_id || msg.receiver_id === selMember.user_id)) {
-            setMsgs(prev => prev.find(m => m.id === msg.id) ? prev : [...prev, { ...msg, sender: { full_name: selMember.profile?.full_name } }])
+          if (cur && (msg.sender_id === cur.user_id || msg.receiver_id === cur.user_id)) {
+            setMsgs(prev => prev.find(m => m.id === msg.id) ? prev : [...prev, msg])
           }
           loadConvs()
         }
@@ -54,7 +68,7 @@ export default function DMPage() {
   }
 
   async function selectMember(m: any) {
-    setSelMember(m); setLoading(true)
+    setSelMember(m); selMemberRef.current = m; setLoading(true)
     if (!teamId || !user) return
     const messages = await dmService.getMessages(teamId, user.id, m.user_id)
     setMsgs(messages); setLoading(false)

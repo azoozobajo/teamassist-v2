@@ -17,10 +17,11 @@ CREATE TABLE IF NOT EXISTS profiles (
 -- Auto-create profile on signup
 CREATE OR REPLACE FUNCTION handle_new_user() RETURNS TRIGGER AS $$
 BEGIN
-  INSERT INTO profiles(id, full_name)
-  VALUES (NEW.id, COALESCE(NEW.raw_user_meta_data->>'full_name',''));
+  INSERT INTO public.profiles(id, full_name)
+  VALUES (NEW.id, COALESCE(NEW.raw_user_meta_data->>'full_name',''))
+  ON CONFLICT (id) DO NOTHING;
   RETURN NEW;
-END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION handle_new_user();
@@ -580,3 +581,77 @@ ALTER TABLE events ADD COLUMN IF NOT EXISTS match_category TEXT DEFAULT 'friendl
 ALTER TABLE events ADD COLUMN IF NOT EXISTS tournament_name TEXT;
 ALTER TABLE events ADD COLUMN IF NOT EXISTS goals_for INTEGER;
 ALTER TABLE events ADD COLUMN IF NOT EXISTS goals_against INTEGER;
+
+-- =============================================
+-- V6: Monthly Star + Report Member Tagging
+-- =============================================
+
+-- MONTHLY STARS
+CREATE TABLE IF NOT EXISTS monthly_stars (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+  year INTEGER NOT NULL,
+  announced_at TIMESTAMPTZ,
+  note TEXT,
+  created_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(team_id, month, year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_monthly_stars_team ON monthly_stars(team_id);
+
+ALTER TABLE monthly_stars ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "ms_select" ON monthly_stars FOR SELECT USING (is_team_member(team_id, auth.uid()));
+CREATE POLICY "ms_insert" ON monthly_stars FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "ms_update" ON monthly_stars FOR UPDATE USING (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "ms_delete" ON monthly_stars FOR DELETE USING (is_team_admin(team_id, auth.uid()));
+
+-- Secret reports: tagged members
+ALTER TABLE secret_reports ADD COLUMN IF NOT EXISTS tagged_members UUID[] DEFAULT NULL;
+
+-- =============================================
+-- V7: Parent role — linked player
+-- =============================================
+ALTER TABLE team_members ADD COLUMN IF NOT EXISTS linked_player_id UUID REFERENCES profiles(id) ON DELETE SET NULL;
+
+-- =============================================
+-- V8: Leave team function (SECURITY DEFINER so member can update own row)
+-- =============================================
+-- Run V8 SQL separately (function above)
+
+-- =============================================
+-- V9: Parent chat type on chat_messages
+-- =============================================
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS chat_type TEXT DEFAULT 'general'
+  CHECK (chat_type IN ('general', 'parents'));
+CREATE INDEX IF NOT EXISTS idx_chat_type ON chat_messages(team_id, chat_type);
+CREATE OR REPLACE FUNCTION leave_team(p_team_id UUID)
+RETURNS VOID AS $$
+BEGIN
+  UPDATE team_members
+  SET status = 'inactive', removed_at = NOW()
+  WHERE team_id = p_team_id AND user_id = auth.uid() AND role != 'owner';
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+-- =============================================
+-- V10: Regulations (team documents)
+-- =============================================
+CREATE TABLE IF NOT EXISTS regulations (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  team_id UUID REFERENCES teams(id) ON DELETE CASCADE NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  published_at DATE DEFAULT CURRENT_DATE,
+  created_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_regulations_team ON regulations(team_id, published_at DESC);
+ALTER TABLE regulations ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "reg_select" ON regulations FOR SELECT USING (is_team_member(team_id, auth.uid()));
+CREATE POLICY "reg_insert" ON regulations FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "reg_update" ON regulations FOR UPDATE USING (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "reg_delete" ON regulations FOR DELETE USING (is_team_admin(team_id, auth.uid()));

@@ -4,10 +4,11 @@ import {
   Home, Users, Calendar, CheckSquare, MessageCircle, Bell, Swords, Star as StarIcon,
   DollarSign, FileText, Mail, Settings, Star,
   Umbrella, Trophy, LogOut, Menu, ChevronDown, Shield, UserCircle,
-  Plus, LogIn, Archive
+  Plus, LogIn, Archive, Baby, BookOpen
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { Avatar } from '../ui'
+import { supabase } from '../../lib/supabase'
 import { teamService, notificationService, dmService } from '../../services'
 import { cn, ROLE_LABELS, canManageTeam, canManageEvents, canViewReports, canManageFinance, isParent } from '../../utils/helpers'
 
@@ -24,6 +25,10 @@ export default function AppLayout() {
   const [unreadDM, setUnreadDM] = useState(0)
   const [teamName, setTeamName] = useState('')
   const [teamsOpen, setTeamsOpen] = useState(true)
+  const [showLeave, setShowLeave] = useState(false)
+  const [leavePassword, setLeavePassword] = useState('')
+  const [leaving, setLeaving] = useState(false)
+  const [leaveError, setLeaveError] = useState('')
 
   useEffect(() => {
     if (!user) return
@@ -41,6 +46,18 @@ export default function AppLayout() {
       setUnreadDM(convs.reduce((s: number, c: any) => s + c.unread, 0)))
   }, [teamId, user])
 
+  async function handleLeave() {
+    if (!teamId || !user || !leavePassword.trim()) return
+    setLeaving(true); setLeaveError('')
+    const { error } = await supabase.auth.signInWithPassword({ email: user.email!, password: leavePassword })
+    if (error) { setLeaveError('كلمة المرور غير صحيحة'); setLeaving(false); return }
+    await teamService.leaveSelf(teamId, user.id)
+    setShowLeave(false); setLeavePassword('')
+    teamService.getMyTeams(user.id).then(setMyTeams)
+    navigate('/')
+    setLeaving(false)
+  }
+
   const parent    = isParent(myRole)
   const canAdmin  = canManageTeam(myRole)
   const canFinance = canManageFinance(myRole)
@@ -48,24 +65,28 @@ export default function AppLayout() {
 
   const allTeamNav = [
     { to: `/team/${teamId}`,              icon: Home,          label: 'لوحة الفريق',       exact: true },
-    { to: `/team/${teamId}/members`,      icon: Users,         label: 'الأعضاء',            parentHide: true },
+    { to: `/team/${teamId}/members`,      icon: Users,         label: 'الأعضاء' },
     { to: `/team/${teamId}/events`,       icon: Calendar,      label: 'المواعيد' },
     { to: `/team/${teamId}/attendance`,   icon: CheckSquare,   label: 'الحضور',             coachOnly: true },
     { to: `/team/${teamId}/leaves`,       icon: Umbrella,      label: 'الإجازات',           parentHide: true },
-    { to: `/team/${teamId}/players`,      icon: Trophy,        label: 'بطاقات اللاعبين',   parentHide: true },
-    { to: `/team/${teamId}/points`,       icon: Star,          label: 'النقاط',             parentHide: true },
-    { to: `/team/${teamId}/chat`,         icon: MessageCircle, label: 'التواصل الداخلي',   badge: unreadDM, parentHide: true },
-    { to: `/team/${teamId}/announcements`,icon: Bell,          label: 'الإعلانات',          parentHide: true },
-    { to: `/team/${teamId}/finance`,      icon: DollarSign,    label: 'المالية',            parentHide: true },
+    { to: `/team/${teamId}/players`,      icon: Trophy,        label: 'بطاقات اللاعبين',   coachOnly: true },
+    { to: `/team/${teamId}/points`,       icon: Star,          label: 'النقاط' },
+    { to: `/team/${teamId}/chat`,         icon: MessageCircle, label: 'التواصل الداخلي',   badge: unreadDM },
+    { to: `/team/${teamId}/announcements`,icon: Bell,          label: 'الإعلانات' },
+    { to: `/team/${teamId}/finance`,      icon: DollarSign,    label: 'المالية' },
     { to: `/team/${teamId}/reports`,      icon: Shield,        label: 'التقارير',           requireReports: true },
     { to: `/team/${teamId}/seasonal`,     icon: FileText,      label: 'تقرير الموسم',      parentHide: true },
     { to: `/team/${teamId}/best-player`,  icon: StarIcon,      label: 'أفضل لاعب',         parentHide: true },
     { to: `/team/${teamId}/invite`,       icon: Mail,          label: 'الدعوات',            adminOnly: true },
-    { to: `/team/${teamId}/permissions`,  icon: Shield,        label: 'الصلاحيات',         ownerOnly: true },
+    { to: `/team/${teamId}/my-child`,      icon: Baby,          label: 'ابني في الفريق',    parentOnly: true },
+    { to: `/team/${teamId}/regulations`,  icon: BookOpen,      label: 'اللوائح والأنظمة' },
+    { to: `/team/${teamId}/permissions`,  icon: Shield,        label: 'الصلاحيات',         ownerOnly: true, hiddenNav: true },
     { to: `/team/${teamId}/settings`,     icon: Settings,      label: 'الإعدادات',          adminOnly: true },
   ]
 
   const teamNav = teamId ? allTeamNav.filter(n => {
+    if ((n as any).hiddenNav) return false
+    if ((n as any).parentOnly && !parent) return false
     if (parent && (n as any).parentHide) return false
     if ((n as any).adminOnly && !canAdmin) return false
     if ((n as any).ownerOnly && myRole !== 'owner') return false
@@ -175,7 +196,13 @@ export default function AppLayout() {
       </div>
 
       {/* ── Footer ── */}
-      <div className="border-t border-slate-100 px-3 py-3 flex-shrink-0">
+      <div className="border-t border-slate-100 px-3 py-3 flex-shrink-0 space-y-2">
+        {teamId && myRole && myRole !== 'owner' && (
+          <button onClick={() => { setShowLeave(true); setLeavePassword(''); setLeaveError('') }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-red-500 hover:bg-red-50 rounded-xl transition-colors">
+            <LogOut size={13}/> مغادرة الفريق
+          </button>
+        )}
         <div className="flex items-center gap-2.5">
           <Avatar name={profile?.full_name || 'U'} src={profile?.avatar_url} size="sm" />
           <div className="flex-1 min-w-0">
@@ -210,8 +237,8 @@ export default function AppLayout() {
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: '#F0F4F8' }}>
 
-      {/* Desktop sidebar — fixed right */}
-      <div className="hidden lg:flex w-64 flex-shrink-0 fixed top-0 right-0 h-screen z-30">
+      {/* Desktop sidebar — fixed right, dvh fixes iOS Safari viewport chrome */}
+      <div className="hidden lg:flex w-64 flex-shrink-0 fixed top-0 right-0 z-30" style={{ height: '100dvh' }}>
         <div className="w-full h-full">
           <SidebarContent />
         </div>
@@ -412,6 +439,44 @@ export default function AppLayout() {
           </div>
         </nav>
       </div>
+
+      {/* ── Leave Team Modal ── */}
+      {showLeave && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 bg-red-100 rounded-2xl flex items-center justify-center flex-shrink-0">
+                <LogOut size={22} className="text-red-500"/>
+              </div>
+              <div>
+                <h3 className="font-extrabold text-slate-800 text-base">مغادرة الفريق</h3>
+                <p className="text-xs text-slate-400">{teamName}</p>
+              </div>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-xs text-amber-700">
+              ⚠️ <strong>تحذير:</strong> بعد المغادرة لن تتمكن من العودة للفريق إلا إذا أرسل لك مدير الفريق دعوة جديدة.
+            </div>
+            <div className="mb-4">
+              <label className="text-xs font-bold text-slate-600 block mb-1.5">أدخل كلمة المرور للتأكيد</label>
+              <input type="password" className="form-input w-full"
+                value={leavePassword} onChange={e => { setLeavePassword(e.target.value); setLeaveError('') }}
+                placeholder="كلمة المرور"
+                onKeyDown={e => e.key === 'Enter' && handleLeave()}/>
+              {leaveError && <p className="text-xs text-red-500 mt-1.5">{leaveError}</p>}
+            </div>
+            <div className="flex gap-2">
+              <button className="btn btn-ghost flex-1 justify-center"
+                onClick={() => { setShowLeave(false); setLeavePassword(''); setLeaveError('') }}>
+                إلغاء
+              </button>
+              <button onClick={handleLeave} disabled={leaving || !leavePassword.trim()}
+                className="flex-1 py-2.5 rounded-xl bg-red-500 text-white text-sm font-bold hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                {leaving ? '...' : 'مغادرة الفريق'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

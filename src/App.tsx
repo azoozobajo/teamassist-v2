@@ -29,6 +29,8 @@ import MatchesPage from './pages/team/MatchesPage'
 import BestPlayerPage from './pages/team/BestPlayerPage'
 import PermissionsPage from './pages/team/PermissionsPage'
 import ArchivePage from './pages/team/ArchivePage'
+import MyChildPage from './pages/team/MyChildPage'
+import RegulationsPage from './pages/team/RegulationsPage'
 
 function RequireAuth() {
   const { user, loading } = useAuth()
@@ -83,6 +85,8 @@ export default function App() {
               <Route path="/team/:teamId/best-player" element={<BestPlayerPage/>}/>
               <Route path="/team/:teamId/permissions" element={<PermissionsPage/>}/>
               <Route path="/archive/:teamId" element={<ArchivePage/>}/>
+              <Route path="/team/:teamId/my-child" element={<MyChildPage/>}/>
+              <Route path="/team/:teamId/regulations" element={<RegulationsPage/>}/>
             </Route>
           </Route>
           <Route path="/join/:code" element={<JoinViaLink/>}/>

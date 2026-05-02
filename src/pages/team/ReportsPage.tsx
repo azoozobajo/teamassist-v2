@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Plus, Shield } from 'lucide-react'
+import { Plus, Shield, Check } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { reportService, teamService } from '../../services'
 import { Spinner, PageHeader, Modal, FormField, EmptyState, SearchBox } from '../../components/ui'
@@ -31,11 +31,14 @@ export default function ReportsPage() {
   const [form, setForm] = useState({ title: '', content: '', visible_to: 'الجهاز الفني فقط' })
   const [saving, setSaving] = useState(false)
   const [expandedId, setExpandedId] = useState<string|null>(null)
+  const [members, setMembers] = useState<any[]>([])
+  const [taggedMembers, setTaggedMembers] = useState<string[]>([])
   const set = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }))
 
   useEffect(() => {
     if (!teamId || !user) return
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
+    teamService.getMembers(teamId).then(m => setMembers(m))
     load()
   }, [teamId, user])
 
@@ -49,9 +52,13 @@ export default function ReportsPage() {
   async function save() {
     if (!form.title.trim() || !form.content.trim() || !teamId || !user) return
     setSaving(true)
-    await reportService.create({ ...form, tag: selTag, team_id: teamId, created_by: user.id })
+    await reportService.create({
+      ...form, tag: selTag, team_id: teamId, created_by: user.id,
+      tagged_members: taggedMembers.length > 0 ? taggedMembers : null
+    })
     await load(); setShowAdd(false)
-    setForm({ title:'', content:'', visible_to:'الجهاز الفني فقط' }); setSelTag('ملاحظة'); setSaving(false)
+    setForm({ title:'', content:'', visible_to:'الجهاز الفني فقط' })
+    setSelTag('ملاحظة'); setTaggedMembers([]); setSaving(false)
   }
 
   const canWrite = canViewReports(myRole)
@@ -110,6 +117,17 @@ export default function ReportsPage() {
                   <div className={`text-xs text-slate-500 leading-relaxed ${expandedId === r.id ? '' : 'line-clamp-2'}`}>
                     {r.content}
                   </div>
+                  {r.tagged_profiles?.length > 0 && (
+                    <div className="flex items-center gap-1 mt-2 flex-wrap">
+                      <span className="text-xs text-slate-400">يخص:</span>
+                      {r.tagged_profiles.map((p: any) => (
+                        <span key={p.id} className="flex items-center gap-1 bg-slate-100 rounded-full px-2 py-0.5 text-xs font-medium">
+                          <div className="w-4 h-4 bg-slate-300 rounded-full flex items-center justify-center text-[10px]">{p.full_name?.[0]}</div>
+                          {p.full_name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex items-center gap-1.5 mt-3">
                     <div className="w-5 h-5 bg-slate-200 rounded-full flex items-center justify-center text-xs">{r.author?.full_name?.[0]}</div>
                     <span className="text-xs text-slate-400">{r.author?.full_name}</span>
@@ -139,6 +157,27 @@ export default function ReportsPage() {
               </button>
             ))}
           </div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">الأعضاء المذكورون (اختياري)</label>
+          <div className="border border-slate-200 rounded-xl overflow-hidden max-h-40 overflow-y-auto">
+            {members.length === 0 && <div className="p-3 text-xs text-slate-400 text-center">لا يوجد أعضاء</div>}
+            {members.map((m: any) => {
+              const isSel = taggedMembers.includes(m.user_id)
+              return (
+                <div key={m.id}
+                  onClick={() => setTaggedMembers(p => p.includes(m.user_id) ? p.filter(x => x !== m.user_id) : [...p, m.user_id])}
+                  className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer border-b border-slate-50 last:border-0 transition-colors ${isSel ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
+                  <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${isSel ? 'bg-red-700 border-red-700' : 'border-slate-300'}`}>
+                    {isSel && <Check size={10} className="text-white"/>}
+                  </div>
+                  <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold flex-shrink-0">{m.profile?.full_name?.[0]}</div>
+                  <span className="text-sm">{m.profile?.full_name}</span>
+                </div>
+              )
+            })}
+          </div>
+          {taggedMembers.length > 0 && <p className="text-xs text-slate-400 mt-1">{taggedMembers.length} محدد</p>}
         </div>
         <FormField label="نص التقرير" required>
           <textarea className="form-input" rows={4} value={form.content} onChange={e => set('content', e.target.value)} placeholder="اكتب تفاصيل التقرير..."/>
