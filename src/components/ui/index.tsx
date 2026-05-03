@@ -11,11 +11,10 @@ export function Spinner({ size = 'md', className }: { size?: 'sm' | 'md' | 'lg';
 export function LoadingPage() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen" style={{ background: '#F0F4F8' }}>
-      <div className="w-16 h-16 rounded-3xl flex items-center justify-center mb-5"
-        style={{ background: 'linear-gradient(135deg,#0f766e,#1D9E75)', boxShadow: '0 8px 24px rgba(29,158,117,0.35)' }}>
-        <svg viewBox="0 0 24 24" className="w-9 h-9 fill-white">
-          <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.4C17.25 22.15 21 17.25 21 12V7l-9-5z"/>
-        </svg>
+      <div className="w-16 h-16 rounded-3xl flex items-center justify-center mb-5 bg-white overflow-hidden"
+        style={{ boxShadow: '0 8px 24px rgba(15,23,42,0.12), 0 0 0 1.5px rgba(15,23,42,0.06)' }}>
+        <img src="/logo.png" alt="TA" className="w-12 h-12 object-contain"
+          onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}/>
       </div>
       <Spinner size="lg" />
       <p className="text-slate-400 text-sm mt-3 font-bold">جاري التحميل...</p>

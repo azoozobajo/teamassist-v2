@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { UserPlus, Edit2, Trash2, CheckCircle, XCircle, Shield, Save, Check, Link, MessageSquare } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, inviteService, notificationService, permissionService } from '../../services'
+import { teamService, inviteService, notificationService, permissionService, levelService, streakService, badgeService } from '../../services'
 import { Spinner, PageHeader, SearchBox, Avatar, Modal, FormField, ConfirmDialog, EmptyState, Tabs } from '../../components/ui'
 import { ROLE_LABELS, canManageTeam, formatDate, PERMISSIONS } from '../../utils/helpers'
 
@@ -28,9 +28,12 @@ const roleColor: Record<string, string> = {
 export default function MembersPage() {
   const { teamId } = useParams()
   const { user } = useAuth()
-  const [members, setMembers] = useState<any[]>([])
+  const [members, setMembers]   = useState<any[]>([])
   const [requests, setRequests] = useState<any[]>([])
   const [allPerms, setAllPerms] = useState<Record<string, string[]>>({})
+  const [levels, setLevels]         = useState<any[]>([])
+  const [teamStreaks, setTeamStreaks] = useState<any[]>([])
+  const [teamBadges, setTeamBadges]  = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [myRole, setMyRole] = useState('')
   const [q, setQ] = useState('')
@@ -64,6 +67,11 @@ export default function MembersPage() {
   useEffect(() => {
     if (!teamId || !user) return
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
+    Promise.all([
+      levelService.getLevels(teamId),
+      streakService.getTeamStreaks(teamId),
+      badgeService.getTeamBadges(teamId),
+    ]).then(([lv, ts, tb]) => { setLevels(lv); setTeamStreaks(ts); setTeamBadges(tb) })
     load()
   }, [teamId, user])
 
@@ -237,6 +245,9 @@ export default function MembersPage() {
                   const linkedNames = linkedIds
                     .map(uid => members.find(x => x.user_id === uid)?.profile?.full_name)
                     .filter(Boolean)
+                  const isPlayer = m.role === 'player'
+                  const streak   = isPlayer ? teamStreaks.find(s => s.user_id === m.user_id) : null
+                  const earned   = isPlayer ? teamBadges.filter(b => b.user_id === m.user_id) : []
                   return (
                     <div key={m.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50/70 transition-colors">
                       <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md"/>
@@ -252,7 +263,26 @@ export default function MembersPage() {
                               <Link size={9}/> {linkedNames.join(' · ')}
                             </span>
                           )}
+                          {/* Streak */}
+                          {streak && streak.current_streak >= 2 && (
+                            <span className="text-xs font-bold text-orange-500 flex items-center gap-0.5">
+                              🔥{streak.current_streak}
+                            </span>
+                          )}
                         </div>
+                        {/* Badges */}
+                        {earned.length > 0 && (
+                          <div className="flex items-center gap-1 mt-1 flex-wrap">
+                            {earned.slice(0, 5).map((pb: any) => (
+                              <span key={pb.id} className="text-base leading-none" title={pb.badge?.name || ''}>
+                                {pb.badge?.icon}
+                              </span>
+                            ))}
+                            {earned.length > 5 && (
+                              <span className="text-[10px] text-slate-400">+{earned.length - 5}</span>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-1">
                         {isAdmin && m.user_id !== user?.id && (

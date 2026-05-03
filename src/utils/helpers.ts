@@ -6,6 +6,14 @@ export const formatDate = (d: string) => new Date(d).toLocaleDateString('ar-SA')
 export const formatDateTime = (d: string) => new Date(d).toLocaleString('ar-SA')
 export const formatTime = (d: string) => d.slice(11, 16)
 
+const ARABIC_DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت']
+export const formatEventDate = (d: string) => {
+  const date = new Date(d)
+  const day = ARABIC_DAYS[date.getDay()]
+  const dateStr = date.toLocaleDateString('ar-SA', { day: 'numeric', month: 'long' })
+  return `${day} · ${dateStr}`
+}
+
 export const formatTimeAgo = (d: string) => {
   const diff = Date.now() - new Date(d).getTime()
   const m = Math.floor(diff / 60000)

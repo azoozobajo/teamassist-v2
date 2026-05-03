@@ -66,19 +66,32 @@ export default function FinancePage() {
     setForm({ title:'', amount:'', due_date:'', target_type:'all', target_role:'player', target_user_ids:[] }); setSaving(false)
   }
 
+  async function doUpsert(paidTotal: number, ob: any, userId: string) {
+    if (!teamId || !user) return
+    const { error } = await financeService.upsertPayment({
+      obligation_id: ob.id, user_id: userId, team_id: teamId,
+      amount: ob.amount, paid_amount: paidTotal,
+      status: paidTotal >= ob.amount ? 'paid' : paidTotal > 0 ? 'partial' : 'unpaid',
+      paid_at: new Date().toISOString(), recorded_by: user.id
+    })
+    if (error) { console.error('[upsertPayment]', error); setSaving(false); return }
+    await load(); setShowPay(null); setPayAmt(''); setSaving(false)
+  }
+
   async function recordPayment() {
     if (!showPay || !teamId || !user) return
     setSaving(true)
-    const amt = parseFloat(payAmt) || showPay.ob.amount
+    const amt = parseFloat(payAmt)
+    if (!amt || amt <= 0) { setSaving(false); return }
     const cur = getPaid(showPay.ob.id, showPay.userId)
     const total = Math.min(showPay.ob.amount, cur + amt)
-    await financeService.upsertPayment({
-      obligation_id: showPay.ob.id, user_id: showPay.userId, team_id: teamId,
-      amount: showPay.ob.amount, paid_amount: total,
-      status: total >= showPay.ob.amount ? 'paid' : total > 0 ? 'partial' : 'unpaid',
-      paid_at: new Date().toISOString(), recorded_by: user.id
-    })
-    await load(); setShowPay(null); setPayAmt(''); setSaving(false)
+    await doUpsert(total, showPay.ob, showPay.userId)
+  }
+
+  async function recordFullPayment() {
+    if (!showPay || !teamId || !user) return
+    setSaving(true)
+    await doUpsert(showPay.ob.amount, showPay.ob, showPay.userId)
   }
 
   const isAdmin = canManageFinance(myRole)
@@ -292,16 +305,18 @@ export default function FinancePage() {
               </div>
             </div>
             <FormField label={`مبلغ الدفعة (${RIYAL})`}>
-              <input className="form-input" type="number" value={payAmt}
+              <input className="form-input" type="number" min="0.01"
+                value={payAmt}
                 onChange={e => setPayAmt(e.target.value)}
                 placeholder={String(showPay.ob.amount - getPaid(showPay.ob.id, showPay.userId))}/>
             </FormField>
             <div className="flex gap-2 justify-end mt-4">
-              <button className="btn btn-ghost btn-sm" onClick={() => { setPayAmt(String(showPay.ob.amount)); setTimeout(recordPayment, 100) }}>
-                مسدد كامل
+              <button className="btn btn-ghost btn-sm" onClick={recordFullPayment} disabled={saving}>
+                {saving ? <Spinner size="sm"/> : '✓ سدد بالكامل'}
               </button>
-              <button className="btn btn-primary" onClick={recordPayment} disabled={saving}>
-                {saving ? <Spinner size="sm"/> : 'تسجيل'}
+              <button className="btn btn-primary" onClick={recordPayment}
+                disabled={saving || !payAmt || parseFloat(payAmt) <= 0}>
+                {saving ? <Spinner size="sm"/> : 'تسجيل دفعة'}
               </button>
             </div>
           </>

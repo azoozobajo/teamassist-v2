@@ -29,9 +29,9 @@ export default function RegisterPage() {
 
         {/* Logo */}
         <div className="text-center mb-7">
-          <div className="w-16 h-16 rounded-3xl flex items-center justify-center mx-auto mb-3 overflow-hidden"
-            style={{ background: 'linear-gradient(135deg,#0f766e,#1D9E75)', boxShadow: '0 6px 20px rgba(29,158,117,0.35)' }}>
-            <img src="/logo.png" alt="TA" className="w-11 h-11 object-contain"
+          <div className="w-16 h-16 rounded-3xl bg-white flex items-center justify-center mx-auto mb-3 overflow-hidden"
+            style={{ boxShadow: '0 6px 20px rgba(15,23,42,0.14), 0 0 0 1.5px rgba(15,23,42,0.06)' }}>
+            <img src="/logo.png" alt="TA" className="w-12 h-12 object-contain"
               onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
             />
           </div>

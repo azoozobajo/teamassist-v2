@@ -5,3 +5,5 @@ dist/
 .claude/
 *.log
 vite-dev*.log
+.vercel
+.env*.local

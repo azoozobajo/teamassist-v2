@@ -34,9 +34,9 @@ export default function LoginPage() {
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-white/5 rounded-full" />
 
         <div className="relative text-white text-center px-12 max-w-md">
-          <div className="w-20 h-20 rounded-3xl bg-white/20 flex items-center justify-center mx-auto mb-6 backdrop-blur-sm overflow-hidden"
-            style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <img src="/logo.png" alt="TA" className="w-14 h-14 object-contain"
+          <div className="w-24 h-24 rounded-3xl bg-white flex items-center justify-center mx-auto mb-6 overflow-hidden"
+            style={{ boxShadow: '0 12px 40px rgba(0,0,0,0.25), 0 0 0 2px rgba(255,255,255,0.3)' }}>
+            <img src="/logo.png" alt="TA" className="w-16 h-16 object-contain"
               onError={e => {
                 const t = e.target as HTMLImageElement
                 t.style.display = 'none'
@@ -63,9 +63,9 @@ export default function LoginPage() {
 
           {/* Logo (mobile only) */}
           <div className="lg:hidden text-center mb-8">
-            <div className="w-16 h-16 rounded-3xl flex items-center justify-center mx-auto mb-3 overflow-hidden"
-              style={{ background: 'linear-gradient(135deg,#0f766e,#1D9E75)', boxShadow: '0 6px 20px rgba(29,158,117,0.35)' }}>
-              <img src="/logo.png" alt="TA" className="w-11 h-11 object-contain"
+            <div className="w-16 h-16 rounded-3xl bg-white flex items-center justify-center mx-auto mb-3 overflow-hidden"
+              style={{ boxShadow: '0 6px 20px rgba(15,23,42,0.14), 0 0 0 1.5px rgba(15,23,42,0.06)' }}>
+              <img src="/logo.png" alt="TA" className="w-12 h-12 object-contain"
                 onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
               />
             </div>

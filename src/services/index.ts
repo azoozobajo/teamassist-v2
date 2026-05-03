@@ -172,6 +172,7 @@ export const eventService = {
         location: groupData.location,
         map_url: groupData.map_url,
         att_group: groupData.att_group || 'الكل',
+        description: groupData.description || null,
         created_by: userId,
         is_locked: new Date(`${format(d, 'yyyy-MM-dd')}T${groupData.start_time}`) <= new Date()
       }))
@@ -199,6 +200,19 @@ export const eventService = {
     if (scope === 'all') {
       await supabase.from('recurrence_groups').delete().eq('id', groupId)
     }
+  },
+  async getRecurringGroups(teamId: string) {
+    const { data } = await supabase.from('recurrence_groups')
+      .select('*, events(id, start_datetime, title, description)')
+      .eq('team_id', teamId)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+  async updateEventsByIds(ids: string[], data: any) {
+    return supabase.from('events').update({ ...data, updated_at: new Date().toISOString() }).in('id', ids)
+  },
+  async deleteEventsByIds(ids: string[]) {
+    return supabase.from('events').delete().in('id', ids)
   },
   async lockPassedEvents(teamId: string) {
     return supabase.from('events').update({ is_locked: true })
@@ -688,6 +702,53 @@ export const badgeService = {
     }
     return earned
   },
+
+  // Retroactively evaluate ALL players in a team and award qualifying badges
+  async evaluateAllPlayers(teamId: string) {
+    // Get all players
+    const { data: players } = await supabase.from('team_members')
+      .select('user_id').eq('team_id', teamId).eq('role', 'player').eq('status', 'active')
+    if (!players || players.length === 0) return
+
+    for (const p of players) {
+      const uid = p.user_id
+
+      // Total points
+      const { data: ptsRows } = await supabase.from('points_transactions')
+        .select('points').eq('team_id', teamId).eq('user_id', uid)
+      const totalPoints = (ptsRows ?? []).reduce((s: number, r: any) => s + r.points, 0)
+
+      // Streak
+      const { data: streakRow } = await supabase.from('player_streaks')
+        .select('longest_streak').eq('team_id', teamId).eq('user_id', uid).maybeSingle()
+      const longestStreak = streakRow?.longest_streak ?? 0
+
+      // Best player wins
+      const { count: bpWins } = await supabase.from('best_player_polls')
+        .select('id', { count: 'exact', head: true })
+        .eq('team_id', teamId).eq('winner_id', uid).eq('status', 'closed')
+
+      // Monthly stars
+      const { count: msCount } = await supabase.from('monthly_stars')
+        .select('id', { count: 'exact', head: true })
+        .eq('team_id', teamId).eq('user_id', uid).not('announced_at', 'is', null)
+
+      // Attendance counts
+      const { data: attRows } = await supabase.from('attendance')
+        .select('event_id, events!inner(event_type)')
+        .eq('team_id', teamId).eq('user_id', uid)
+        .in('status', ['present', 'late'])
+      const trainingCount = (attRows ?? []).filter((a: any) => a.events?.event_type === 'training').length
+      const matchCount    = (attRows ?? []).filter((a: any) => a.events?.event_type === 'match').length
+
+      await badgeService.checkAndAwardBadges(teamId, uid, {
+        totalPoints, longestStreak,
+        bestPlayerWins: bpWins ?? 0,
+        monthlyStars: msCount ?? 0,
+        trainingCount, matchCount,
+      })
+    }
+  },
 }
 
 // ── DM ────────────────────────────────────────────────────────────────
@@ -868,9 +929,9 @@ export const bestPlayerService = {
   async createPoll(data: any) {
     return supabase.from('best_player_polls').insert(data).select().single()
   },
-  async closePoll(pollId: string, winnerId: string, teamId: string, pts: number) {
+  async closePoll(pollId: string, winnerId: string, teamId: string, pts: number, announce = false) {
     await supabase.from('best_player_polls')
-      .update({ status: 'closed', winner_id: winnerId, closed_at: new Date().toISOString(), points_awarded: pts })
+      .update({ status: 'closed', winner_id: winnerId, closed_at: new Date().toISOString(), points_awarded: pts, result_announced: announce })
       .eq('id', pollId)
     if (pts > 0) {
       await supabase.from('points_transactions').insert({
@@ -878,20 +939,33 @@ export const bestPlayerService = {
         category: 'مكافأة', reason: 'أفضل لاعب', is_auto: true
       })
     }
-    // Count total best player wins for this player and check badges
     const { count } = await supabase.from('best_player_polls')
       .select('id', { count: 'exact', head: true })
       .eq('team_id', teamId).eq('winner_id', winnerId).eq('status', 'closed')
-    await badgeService.checkAndAwardBadges(teamId, winnerId, {
-      bestPlayerWins: count ?? 0,
+    await badgeService.checkAndAwardBadges(teamId, winnerId, { bestPlayerWins: count ?? 0 })
+  },
+  async announceResult(pollId: string, teamId: string, createdBy: string) {
+    await supabase.from('best_player_polls').update({ result_announced: true }).eq('id', pollId)
+    const { data: poll } = await supabase.from('best_player_polls')
+      .select('*, winner:profiles!winner_id(id,full_name), event:events(title,event_type)')
+      .eq('id', pollId).single()
+    if (!poll) return
+    const winnerName = (poll.winner as any)?.full_name || 'اللاعب'
+    const eventTitle = (poll.event as any)?.title || 'الموعد'
+    const msg = `🏆 ${winnerName} هو أفضل لاعب في ${eventTitle}! تهانينا 👏`
+    await supabase.from('announcements').insert({
+      team_id: teamId, title: `⭐ أفضل لاعب: ${winnerName}`, content: msg, announcement_type: 'best_player', created_by: createdBy
     })
+    await notificationService.createForTeam(teamId, `⭐ أفضل لاعب: ${winnerName}`, msg, 'best_player', createdBy)
   },
   async vote(pollId: string, voterId: string, nomineeId: string) {
-    return supabase.from('best_player_votes').insert({ poll_id: pollId, voter_id: voterId, nominee_id: nomineeId })
+    const { error } = await supabase.from('best_player_votes').insert({ poll_id: pollId, voter_id: voterId, nominee_id: nomineeId })
+    return error
   },
   async removeVote(pollId: string, voterId: string, nomineeId: string) {
-    return supabase.from('best_player_votes').delete()
+    const { error } = await supabase.from('best_player_votes').delete()
       .eq('poll_id', pollId).eq('voter_id', voterId).eq('nominee_id', nomineeId)
+    return error
   },
   async getVotes(pollId: string) {
     const { data } = await supabase.from('best_player_votes').select('*, nominee:profiles!nominee_id(id,full_name)').eq('poll_id', pollId)
@@ -902,7 +976,7 @@ export const bestPlayerService = {
     return (data ?? []).map((v: any) => v.nominee_id) as string[]
   },
   async getMyVote(pollId: string, voterId: string) {
-    const { data } = await supabase.from('best_player_votes').select('nominee_id').eq('poll_id', pollId).eq('voter_id', voterId).single()
+    const { data } = await supabase.from('best_player_votes').select('nominee_id').eq('poll_id', pollId).eq('voter_id', voterId).limit(1).maybeSingle()
     return data?.nominee_id ?? null
   },
   async getPlayerAwards(teamId: string, userId: string) {
@@ -923,6 +997,13 @@ export const bestPlayerService = {
       .eq('team_id', teamId)
       .eq('status', 'open')
       .or(`closes_at.is.null,closes_at.gt.${now}`)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+  async getAllOpenPollsForTeam(teamId: string) {
+    const { data } = await supabase.from('best_player_polls')
+      .select('*, event:events(id,title,event_type,start_datetime)')
+      .eq('team_id', teamId).eq('status', 'open')
       .order('created_at', { ascending: false })
     return data ?? []
   },

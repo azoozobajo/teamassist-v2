@@ -113,7 +113,9 @@ export default function PointsPage() {
     category: 'مكافأة' as any, reason: '', points: '', target: 'all', selectedMembers: [] as string[],
   })
   const [compForm, setCompForm] = useState({ name: '', from_date: '', to_date: '', prize: '' })
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving]           = useState(false)
+  const [evaluating, setEvaluating]   = useState(false)
+  const [evalDone, setEvalDone]       = useState(false)
 
   // Per-player modal
   const [selectedPlayer, setSelectedPlayer] = useState<any>(null)
@@ -678,6 +680,33 @@ export default function PointsPage() {
               className="btn btn-ghost btn-sm w-full border border-dashed border-slate-200">
               <Plus size={13} /> إضافة شارة
             </button>
+
+            {/* Retroactive evaluation */}
+            {badgeDefs.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-slate-100">
+                <div className="text-xs text-slate-400 mb-2">
+                  اضغط الزر لتقييم جميع اللاعبين الحاليين ومنح الشارات التي يستحقونها بناءً على بياناتهم الموجودة
+                </div>
+                <button
+                  disabled={evaluating || evalDone}
+                  onClick={async () => {
+                    if (!teamId) return
+                    setEvaluating(true); setEvalDone(false)
+                    await badgeService.evaluateAllPlayers(teamId)
+                    const [tb] = await Promise.all([badgeService.getTeamBadges(teamId)])
+                    setTeamBadges(tb)
+                    setEvaluating(false); setEvalDone(true)
+                    setTimeout(() => setEvalDone(false), 4000)
+                  }}
+                  className="btn btn-primary btn-sm w-full justify-center">
+                  {evaluating
+                    ? <><Spinner size="sm" /> جاري التقييم...</>
+                    : evalDone
+                      ? '✅ تم التقييم بنجاح'
+                      : '🔍 تقييم وتوزيع الشارات الآن'}
+                </button>
+              </div>
+            )}
           </div>
         )}
 

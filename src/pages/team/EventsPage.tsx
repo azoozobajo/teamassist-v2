@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2, Flag } from 'lucide-react'
+import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2, Flag, Settings, ChevronDown } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { eventService, teamService, notificationService, occasionsService } from '../../services'
 import { Spinner, PageHeader, EmptyState, Modal, FormField, Tabs, AttendanceButton } from '../../components/ui'
-import { EVENT_CONFIG, WEEK_DAYS, canManageEvents, formatDate, isEventLocked } from '../../utils/helpers'
+import { EVENT_CONFIG, WEEK_DAYS, canManageEvents, formatDate, formatEventDate, isEventLocked } from '../../utils/helpers'
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay } from 'date-fns'
 import { arSA } from 'date-fns/locale'
 
@@ -32,6 +32,7 @@ export default function EventsPage() {
   const [calMonth, setCalMonth] = useState(new Date())
   const [showAdd, setShowAdd] = useState(false)
   const [showRecurring, setShowRecurring] = useState(false)
+  const [showAddChoice, setShowAddChoice] = useState(false)
   const [showDetail, setShowDetail] = useState<any>(null)
   const [confirmDelete, setConfirmDelete] = useState<any>(null)
   const [showResult, setShowResult] = useState<any>(null)
@@ -46,6 +47,18 @@ export default function EventsPage() {
   const [showOccasions, setShowOccasions] = useState(false)
   const [occForm, setOccForm] = useState({ title: '', from_date: '', to_date: '', color: '#3b82f6' })
 
+  // Manage recurring
+  const [showManageRecurring, setShowManageRecurring] = useState(false)
+  const [recurringGroups, setRecurringGroups] = useState<any[]>([])
+  const [recurGroupsLoading, setRecurGroupsLoading] = useState(false)
+  const [selectedGroup, setSelectedGroup] = useState<any>(null)
+  const [manageStep, setManageStep] = useState<'groups' | 'action' | 'editForm' | 'deleteConfirm'>('groups')
+  const [manageAction, setManageAction] = useState<'edit' | 'delete'>('edit')
+  const [manageScope, setManageScope] = useState<'all' | 'range' | 'manual'>('all')
+  const [manageRange, setManageRange] = useState({ from: '', to: '' })
+  const [manageSelected, setManageSelected] = useState<string[]>([])
+  const [manageEditForm, setManageEditForm] = useState({ title: '', start_time: '', end_time: '', location: '', description: '' })
+
   const defaultForm = {
     title: '', event_type: 'training', start_datetime: '', end_datetime: '',
     location: '', map_url: '', att_group: 'اللاعبون فقط', description: '',
@@ -59,6 +72,7 @@ export default function EventsPage() {
     title: '', event_type: 'training', days_of_week: [] as number[],
     start_date: '', end_date: '', start_time: '18:00', end_time: '20:00',
     location: '', map_url: '', att_group: 'اللاعبون فقط',
+    description: '',
     selectedMembers: [] as string[]
   }
   const [recurForm, setRecurForm] = useState(defaultRecur)
@@ -238,6 +252,86 @@ export default function EventsPage() {
     setOccasions(prev => prev.filter(o => o.id !== id))
   }
 
+  async function openManageRecurring() {
+    setShowManageRecurring(true)
+    setManageStep('groups')
+    setSelectedGroup(null)
+    setRecurGroupsLoading(true)
+    if (teamId) {
+      const groups = await eventService.getRecurringGroups(teamId)
+      setRecurringGroups(groups)
+    }
+    setRecurGroupsLoading(false)
+  }
+
+  function pickGroup(g: any) {
+    setSelectedGroup(g)
+    setManageEditForm({ title: g.title || '', start_time: g.start_time || '', end_time: g.end_time || '', location: g.location || '', description: '' })
+    setManageRange({ from: '', to: '' })
+    setManageSelected([])
+    setManageStep('action')
+  }
+
+  function pickManageAction(action: 'edit' | 'delete', scope: 'all' | 'range' | 'manual') {
+    setManageAction(action)
+    setManageScope(scope)
+    setManageSelected([])
+    setManageStep(action === 'edit' ? 'editForm' : 'deleteConfirm')
+  }
+
+  function getManageScopeEvents(): any[] {
+    if (!selectedGroup) return []
+    const evts: any[] = selectedGroup.events || []
+    const sorted = [...evts].sort((a, b) => a.start_datetime.localeCompare(b.start_datetime))
+    if (manageScope === 'all') return sorted
+    if (manageScope === 'range') {
+      return sorted.filter(e => {
+        const d = e.start_datetime.slice(0, 10)
+        return (!manageRange.from || d >= manageRange.from) && (!manageRange.to || d <= manageRange.to)
+      })
+    }
+    return sorted.filter(e => manageSelected.includes(e.id))
+  }
+
+  async function applyManageEdit() {
+    setSaving(true)
+    const targetEvents = getManageScopeEvents()
+    if (!targetEvents.length) { setSaving(false); return }
+
+    const baseData: any = {}
+    if (manageEditForm.title.trim()) baseData.title = manageEditForm.title.trim()
+    if (manageEditForm.location !== undefined) baseData.location = manageEditForm.location || null
+    if (manageEditForm.description !== undefined) baseData.description = manageEditForm.description || null
+
+    const hasTimeChange = manageEditForm.start_time || manageEditForm.end_time
+    if (hasTimeChange) {
+      await Promise.all(targetEvents.map(e => {
+        const datePart = e.start_datetime.slice(0, 10)
+        const upd = { ...baseData }
+        if (manageEditForm.start_time) upd.start_datetime = `${datePart}T${manageEditForm.start_time}:00`
+        if (manageEditForm.end_time) upd.end_datetime = `${datePart}T${manageEditForm.end_time}:00`
+        return eventService.updateEvent(e.id, upd)
+      }))
+    } else if (Object.keys(baseData).length > 0) {
+      await eventService.updateEventsByIds(targetEvents.map(e => e.id), baseData)
+    }
+
+    await load()
+    setShowManageRecurring(false); setSelectedGroup(null); setManageStep('groups'); setSaving(false)
+  }
+
+  async function applyManageDelete() {
+    setSaving(true)
+    if (manageScope === 'all') {
+      await eventService.deleteRecurringEvents(selectedGroup.id, 'all')
+    } else {
+      const targetIds = getManageScopeEvents().map(e => e.id)
+      if (targetIds.length) await eventService.deleteEventsByIds(targetIds)
+    }
+    await load()
+    setShowManageRecurring(false); setSelectedGroup(null); setManageStep('groups'); setSaving(false)
+  }
+
   const canManage = canManageEvents(myRole)
   const isParent = myRole === 'parent'
   const now = new Date()
@@ -338,12 +432,31 @@ export default function EventsPage() {
             <button className="btn btn-ghost btn-sm" onClick={() => setShowOccasions(true)}>
               <Flag size={13}/> مناسبة
             </button>
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowRecurring(true)}>
-              <Repeat size={13}/> متكرر
+            <button className="btn btn-ghost btn-sm" onClick={openManageRecurring}>
+              <Settings size={13}/> المكررة
             </button>
-            <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}>
-              <Plus size={13}/> موعد
-            </button>
+            <div className="relative">
+              <button className="btn btn-primary btn-sm flex items-center gap-1"
+                onClick={() => setShowAddChoice(p => !p)}>
+                <Plus size={13}/> موعد <ChevronDown size={11} className={`transition-transform ${showAddChoice ? 'rotate-180' : ''}`}/>
+              </button>
+              {showAddChoice && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setShowAddChoice(false)}/>
+                  <div className="absolute left-0 top-full mt-1.5 z-20 bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden min-w-[160px]">
+                    <button onClick={() => { setShowAdd(true); setShowAddChoice(false) }}
+                      className="w-full flex items-center gap-2.5 px-4 py-3 hover:bg-slate-50 text-sm font-bold text-slate-700 transition-colors">
+                      <Plus size={15} className="text-brand-500 flex-shrink-0"/> موعد واحد
+                    </button>
+                    <div className="h-px bg-slate-100"/>
+                    <button onClick={() => { setShowRecurring(true); setShowAddChoice(false) }}
+                      className="w-full flex items-center gap-2.5 px-4 py-3 hover:bg-slate-50 text-sm font-bold text-slate-700 transition-colors">
+                      <Repeat size={15} className="text-purple-500 flex-shrink-0"/> موعد متكرر
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         )}/>
 
@@ -377,6 +490,24 @@ export default function EventsPage() {
                 <span className="font-bold text-sm">{format(calMonth,'MMMM yyyy',{locale:arSA})}</span>
                 <button onClick={() => setCalMonth(m => new Date(m.getFullYear(), m.getMonth()+1))} className="btn btn-ghost btn-sm px-2">›</button>
               </div>
+              {/* Occasions legend */}
+              {(() => {
+                const monthStart = format(startOfMonth(calMonth), 'yyyy-MM-dd')
+                const monthEnd   = format(endOfMonth(calMonth),   'yyyy-MM-dd')
+                const monthOccs  = occasions.filter(o => o.from_date <= monthEnd && o.to_date >= monthStart)
+                if (!monthOccs.length) return null
+                return (
+                  <div className="flex flex-wrap gap-x-3 gap-y-1.5 mb-3 px-1">
+                    {monthOccs.map(o => (
+                      <div key={o.id} className="flex items-center gap-1.5">
+                        <div className="w-3 h-3 rounded-sm flex-shrink-0" style={{ background: o.color }}/>
+                        <span className="text-[11px] font-bold text-slate-500">{o.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+
               <div className="grid grid-cols-7 gap-1 mb-1">
                 {arDays.map(d => <div key={d} className="text-center text-xs font-bold text-slate-400 py-1">{d}</div>)}
               </div>
@@ -432,7 +563,10 @@ export default function EventsPage() {
                         <div key={e.id} className={`card mb-0 border-r-4 ${c.borderClass} cursor-pointer hover:shadow-md transition-all`}
                           onClick={() => setShowDetail({ date: parseISO(e.start_datetime), events: [e] })}>
                           <div className="flex items-center gap-3">
-                            <span className="text-2xl flex-shrink-0">{c.icon}</span>
+                            <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+                              <span className="text-2xl leading-none">{c.icon}</span>
+                              <span className="text-[9px] font-bold text-slate-400 leading-none">{c.label}</span>
+                            </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <span className="font-bold text-sm truncate">{e.title}</span>
@@ -440,7 +574,7 @@ export default function EventsPage() {
                                 {isEventLocked(e.start_datetime) && <span className="badge badge-red text-xs">مغلق</span>}
                               </div>
                               <div className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
-                                <Clock size={10}/> {formatDate(e.start_datetime)} · {e.start_datetime.slice(11,16)}
+                                <Clock size={10}/> {formatEventDate(e.start_datetime)} · {e.start_datetime.slice(11,16)}
                               </div>
                               {e.location && (
                                 <div className="text-xs text-slate-400 flex items-center gap-1">
@@ -573,6 +707,13 @@ export default function EventsPage() {
                   </div>
                 )}
               </div>
+              {/* Coach note */}
+              {e.description && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-2">
+                  <p className="text-xs font-bold text-amber-700 mb-1">📝 ملاحظة المدرب</p>
+                  <p className="text-sm text-amber-800 leading-relaxed">{e.description}</p>
+                </div>
+              )}
               {/* Attendance buttons */}
               <div className="bg-slate-50 rounded-xl p-2.5 mt-3">
                 <p className="text-xs font-bold text-slate-500 mb-2">هل ستحضر؟</p>
@@ -685,6 +826,14 @@ export default function EventsPage() {
             )}
           </FormField>
         )}
+        <FormField label="ملاحظة للاعبين (اختياري — تظهر عند التحضير)">
+          <div className="relative">
+            <textarea className="form-input resize-none h-20" maxLength={280}
+              value={form.description} onChange={e => setF('description', e.target.value)}
+              placeholder="تعليمات خاصة، متطلبات التدريب..."/>
+            <span className="absolute bottom-2 left-2 text-[10px] text-slate-300">{form.description.length}/280</span>
+          </div>
+        </FormField>
         <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowAdd(false)}>إلغاء</button>
           <button className="btn btn-primary" onClick={addEvent} disabled={saving || (form.att_group==='مجموعة مخصصة' && form.selectedMembers.length===0)}>
@@ -754,6 +903,14 @@ export default function EventsPage() {
             <MemberPicker which="recur"/>
           </FormField>
         )}
+        <FormField label="ملاحظة للاعبين (اختياري — تظهر عند التحضير)">
+          <div className="relative">
+            <textarea className="form-input resize-none h-20" maxLength={280}
+              value={recurForm.description} onChange={e => setR('description', e.target.value)}
+              placeholder="تعليمات خاصة، متطلبات التدريب..."/>
+            <span className="absolute bottom-2 left-2 text-[10px] text-slate-300">{recurForm.description.length}/280</span>
+          </div>
+        </FormField>
         <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowRecurring(false)}>إلغاء</button>
           <button className="btn btn-primary" onClick={addRecurring}
@@ -873,6 +1030,212 @@ export default function EventsPage() {
         )}
       </Modal>
 
+      {/* ── MANAGE RECURRING MODAL ── */}
+      <Modal open={showManageRecurring} onClose={() => { setShowManageRecurring(false); setSelectedGroup(null); setManageStep('groups') }}
+        title="تعديل المواعيد المكررة" width="max-w-lg">
+
+        {/* Step 1: Groups list */}
+        {manageStep === 'groups' && (
+          <div>
+            {recurGroupsLoading ? (
+              <div className="flex justify-center py-8"><Spinner/></div>
+            ) : recurringGroups.length === 0 ? (
+              <div className="text-center py-8 text-slate-400 text-sm">لا توجد جداول مكررة</div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs text-slate-400 mb-3">اختر الجدول المتكرر الذي تريد تعديله</p>
+                {recurringGroups.map(g => {
+                  const evts: any[] = (g.events || []).sort((a: any, b: any) => a.start_datetime.localeCompare(b.start_datetime))
+                  const futureCount = evts.filter((e: any) => new Date(e.start_datetime) > new Date()).length
+                  return (
+                    <div key={g.id} onClick={() => pickGroup(g)}
+                      className="flex items-center gap-3 p-3 rounded-xl border border-slate-100 bg-white hover:bg-brand-50 hover:border-brand-200 cursor-pointer transition-colors">
+                      <div className="w-9 h-9 rounded-xl bg-brand-100 flex items-center justify-center flex-shrink-0">
+                        <Repeat size={16} className="text-brand-600"/>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-sm text-slate-700 truncate">{g.title}</div>
+                        <div className="text-xs text-slate-400 mt-0.5">
+                          {evts.length} موعد · {futureCount} قادم
+                          {evts[0] && <span> · {formatEventDate(evts[0].start_datetime)}</span>}
+                        </div>
+                      </div>
+                      <span className="text-slate-300 text-lg">›</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 2: Action selection */}
+        {manageStep === 'action' && selectedGroup && (
+          <div>
+            <div className="bg-brand-50 border border-brand-200 rounded-xl p-3 mb-4 flex items-center gap-2">
+              <Repeat size={14} className="text-brand-600 flex-shrink-0"/>
+              <div>
+                <div className="font-bold text-sm text-brand-700">{selectedGroup.title}</div>
+                <div className="text-xs text-brand-500">{selectedGroup.events?.length || 0} موعد</div>
+              </div>
+            </div>
+
+            <p className="text-xs font-bold text-slate-500 mb-2">تعديل:</p>
+            <div className="space-y-1.5 mb-4">
+              {([['all','تعديل جميع المواعيد'],['range','تعديل نطاق تاريخ (من ← إلى)'],['manual','تعديل مواعيد محددة يدوياً']] as const).map(([s, label]) => (
+                <button key={s} onClick={() => pickManageAction('edit', s)}
+                  className="w-full text-right flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-200 text-sm text-slate-700 font-medium transition-colors">
+                  <Edit2 size={13} className="text-blue-500 flex-shrink-0"/> {label}
+                </button>
+              ))}
+            </div>
+
+            <p className="text-xs font-bold text-slate-500 mb-2">حذف:</p>
+            <div className="space-y-1.5 mb-4">
+              {([['all','حذف جميع المواعيد'],['range','حذف نطاق تاريخ (من ← إلى)'],['manual','حذف مواعيد محددة يدوياً']] as const).map(([s, label]) => (
+                <button key={s} onClick={() => pickManageAction('delete', s)}
+                  className="w-full text-right flex items-center gap-2 px-4 py-2.5 rounded-xl border border-red-100 bg-white hover:bg-red-50 hover:border-red-300 text-sm text-red-600 font-medium transition-colors">
+                  <Trash2 size={13} className="flex-shrink-0"/> {label}
+                </button>
+              ))}
+            </div>
+
+            <button onClick={() => setManageStep('groups')} className="btn btn-ghost btn-sm">← رجوع</button>
+          </div>
+        )}
+
+        {/* Step 3: Edit form */}
+        {manageStep === 'editForm' && selectedGroup && (
+          <div>
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 text-xs text-blue-700">
+              <Edit2 size={12} className="inline ml-1"/>
+              {manageScope === 'all' && `تعديل جميع مواعيد: ${selectedGroup.title}`}
+              {manageScope === 'range' && 'تعديل نطاق تاريخ — اترك الحقول المراد الإبقاء عليها فارغة'}
+              {manageScope === 'manual' && 'اختر المواعيد المراد تعديلها'}
+            </div>
+
+            {manageScope === 'range' && (
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <FormField label="من تاريخ">
+                  <input type="date" className="form-input" value={manageRange.from} onChange={e => setManageRange(p => ({...p, from: e.target.value}))}/>
+                </FormField>
+                <FormField label="إلى تاريخ">
+                  <input type="date" className="form-input" value={manageRange.to} onChange={e => setManageRange(p => ({...p, to: e.target.value}))}/>
+                </FormField>
+              </div>
+            )}
+
+            {manageScope === 'manual' && (
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-44 overflow-y-auto mb-3">
+                <div className="px-3 py-2 bg-slate-50 text-xs text-slate-500 font-bold border-b border-slate-100">
+                  {manageSelected.length} موعد محدد
+                </div>
+                {(selectedGroup.events || [])
+                  .sort((a: any, b: any) => a.start_datetime.localeCompare(b.start_datetime))
+                  .map((e: any) => (
+                  <label key={e.id} className={`flex items-center gap-2 px-3 py-2 cursor-pointer border-b border-slate-50 last:border-0 transition-colors ${manageSelected.includes(e.id) ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+                    <input type="checkbox" checked={manageSelected.includes(e.id)}
+                      onChange={() => setManageSelected(p => p.includes(e.id) ? p.filter(x => x !== e.id) : [...p, e.id])}
+                      className="w-4 h-4 accent-brand-500"/>
+                    <span className="text-sm">{formatEventDate(e.start_datetime)}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <p className="text-xs text-slate-400 mb-3">اترك الحقل فارغاً للإبقاء على القيمة الحالية</p>
+            <FormField label="العنوان">
+              <input className="form-input" value={manageEditForm.title} onChange={e => setManageEditForm(p => ({...p, title: e.target.value}))} placeholder={selectedGroup.title}/>
+            </FormField>
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="وقت البداية">
+                <input type="time" className="form-input" value={manageEditForm.start_time} onChange={e => setManageEditForm(p => ({...p, start_time: e.target.value}))}/>
+              </FormField>
+              <FormField label="وقت النهاية">
+                <input type="time" className="form-input" value={manageEditForm.end_time} onChange={e => setManageEditForm(p => ({...p, end_time: e.target.value}))}/>
+              </FormField>
+            </div>
+            <FormField label="الموقع">
+              <input className="form-input" value={manageEditForm.location} onChange={e => setManageEditForm(p => ({...p, location: e.target.value}))} placeholder={selectedGroup.location || ''}/>
+            </FormField>
+            <FormField label="ملاحظة للاعبين">
+              <div className="relative">
+                <textarea className="form-input resize-none h-16" maxLength={280}
+                  value={manageEditForm.description} onChange={e => setManageEditForm(p => ({...p, description: e.target.value}))}
+                  placeholder="تعليمات خاصة..."/>
+                <span className="absolute bottom-2 left-2 text-[10px] text-slate-300">{manageEditForm.description.length}/280</span>
+              </div>
+            </FormField>
+
+            <div className="flex gap-2 justify-end mt-4">
+              <button className="btn btn-ghost" onClick={() => setManageStep('action')}>رجوع</button>
+              <button className="btn btn-primary" onClick={applyManageEdit}
+                disabled={saving
+                  || (manageScope === 'manual' && manageSelected.length === 0)
+                  || (manageScope === 'range' && (!manageRange.from || !manageRange.to))}>
+                {saving ? <Spinner size="sm"/> : <><Edit2 size={13}/> تطبيق التعديل ({getManageScopeEvents().length})</>}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Delete confirm */}
+        {manageStep === 'deleteConfirm' && selectedGroup && (
+          <div>
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
+              <p className="text-sm font-bold text-red-700 mb-1">⚠️ تأكيد الحذف</p>
+              <p className="text-xs text-red-600">{selectedGroup.title}</p>
+            </div>
+
+            {manageScope === 'range' && (
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <FormField label="من تاريخ">
+                  <input type="date" className="form-input" value={manageRange.from} onChange={e => setManageRange(p => ({...p, from: e.target.value}))}/>
+                </FormField>
+                <FormField label="إلى تاريخ">
+                  <input type="date" className="form-input" value={manageRange.to} onChange={e => setManageRange(p => ({...p, to: e.target.value}))}/>
+                </FormField>
+              </div>
+            )}
+
+            {manageScope === 'manual' && (
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-44 overflow-y-auto mb-3">
+                <div className="px-3 py-2 bg-slate-50 text-xs text-slate-500 font-bold border-b border-slate-100">
+                  {manageSelected.length} موعد محدد للحذف
+                </div>
+                {(selectedGroup.events || [])
+                  .sort((a: any, b: any) => a.start_datetime.localeCompare(b.start_datetime))
+                  .map((e: any) => (
+                  <label key={e.id} className={`flex items-center gap-2 px-3 py-2 cursor-pointer border-b border-slate-50 last:border-0 transition-colors ${manageSelected.includes(e.id) ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
+                    <input type="checkbox" checked={manageSelected.includes(e.id)}
+                      onChange={() => setManageSelected(p => p.includes(e.id) ? p.filter(x => x !== e.id) : [...p, e.id])}
+                      className="w-4 h-4 accent-red-500"/>
+                    <span className="text-sm">{formatEventDate(e.start_datetime)}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            {manageScope !== 'manual' && (
+              <p className="text-sm text-slate-600 mb-4">
+                سيتم حذف <strong>{getManageScopeEvents().length}</strong> موعد.
+                {manageScope === 'all' && ' لا يمكن التراجع عن هذا الإجراء.'}
+              </p>
+            )}
+
+            <div className="flex gap-2 justify-end mt-4">
+              <button className="btn btn-ghost" onClick={() => setManageStep('action')}>رجوع</button>
+              <button className="btn btn-danger" onClick={applyManageDelete}
+                disabled={saving
+                  || (manageScope === 'manual' && manageSelected.length === 0)
+                  || (manageScope === 'range' && (!manageRange.from || !manageRange.to))}>
+                {saving ? <Spinner size="sm"/> : <><Trash2 size={13}/> تأكيد الحذف ({getManageScopeEvents().length})</>}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       {/* ── EDIT EVENT MODAL ── */}
       <Modal open={!!editEvent} onClose={() => setEditEvent(null)} title={`تعديل: ${editEvent?.title || ''}`} width="max-w-lg">
         {editEvent && (
@@ -929,6 +1292,14 @@ export default function EventsPage() {
               <select className="form-input" value={editForm.att_group} onChange={e => setEditForm((p: any) => ({ ...p, att_group: e.target.value }))}>
                 {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
               </select>
+            </FormField>
+            <FormField label="ملاحظة للاعبين (اختياري — تظهر عند التحضير)">
+              <div className="relative">
+                <textarea className="form-input resize-none h-20" maxLength={280}
+                  value={editForm.description} onChange={e => setEditForm((p: any) => ({ ...p, description: e.target.value }))}
+                  placeholder="تعليمات خاصة، متطلبات التدريب..."/>
+                <span className="absolute bottom-2 left-2 text-[10px] text-slate-300">{editForm.description?.length || 0}/280</span>
+              </div>
             </FormField>
             <div className="flex gap-2 justify-end mt-4">
               <button className="btn btn-ghost" onClick={() => setEditEvent(null)}>إلغاء</button>

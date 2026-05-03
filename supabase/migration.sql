@@ -843,3 +843,15 @@ CREATE POLICY "team_member_read_player_badges" ON player_badges FOR SELECT USING
 );
 DROP POLICY IF EXISTS "service_manage_player_badges" ON player_badges;
 CREATE POLICY "service_manage_player_badges" ON player_badges FOR ALL USING (true);
+
+-- =============================================
+-- V19: Best Player voting fixes + result announcement
+-- =============================================
+
+-- Fix: allow voters to delete their own votes (removeVote was silently failing)
+DROP POLICY IF EXISTS "bpv_delete" ON best_player_votes;
+CREATE POLICY "bpv_delete" ON best_player_votes FOR DELETE USING (auth.uid() = voter_id);
+
+-- Track whether poll results were publicly announced
+ALTER TABLE best_player_polls ADD COLUMN IF NOT EXISTS result_announced BOOLEAN DEFAULT FALSE;
+ALTER TABLE best_player_polls ADD COLUMN IF NOT EXISTS points_awarded INTEGER DEFAULT 0;
