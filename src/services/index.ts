@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase'
-import { addDays, format, parseISO, getDay, eachDayOfInterval } from 'date-fns'
+import { format, parseISO, getDay, eachDayOfInterval } from 'date-fns'
 
 // ── TEAMS ─────────────────────────────────────────────────────────────
 export const teamService = {
@@ -236,6 +236,17 @@ export const eventService = {
       .order('start_datetime', { ascending: true })
     return data ?? []
   },
+  async getRecentPastEvents(teamId: string, eventTypes: string[], hours: number) {
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString()
+    const { data } = await supabase.from('events')
+      .select('id, title, event_type, start_datetime')
+      .eq('team_id', teamId)
+      .in('event_type', eventTypes)
+      .lt('start_datetime', new Date().toISOString())
+      .gte('start_datetime', since)
+      .order('start_datetime', { ascending: false })
+    return data ?? []
+  },
   async getTeamAttendanceStats(teamId: string) {
     const { data } = await supabase.from('attendance')
       .select('user_id, status, profiles(full_name)').eq('team_id', teamId)
@@ -266,6 +277,15 @@ export const notificationService = {
   },
   async create(data: any) {
     return supabase.from('notifications').insert(data)
+  },
+  async createForUsers(userIds: string[], teamId: string, title: string, body: string, type: string) {
+    if (!userIds.length) return
+    const { data: team } = await supabase.from('teams').select('logo_url').eq('id', teamId).single()
+    const notifs = userIds.map(uid => ({
+      user_id: uid, team_id: teamId, title, body, type, is_read: false,
+      team_logo: team?.logo_url || null
+    }))
+    await supabase.from('notifications').insert(notifs)
   },
   async createForTeam(teamId: string, title: string, body: string, type: string, excludeUserId?: string, senderName?: string) {
     const { data: members } = await supabase.from('team_members')
@@ -413,7 +433,7 @@ export const pointsService = {
   },
   async getHistory(teamId: string, limit = 50) {
     const { data } = await supabase.from('points_transactions')
-      .select('*, profile:profiles(*)')
+      .select('*, profile:profiles!user_id(*)')
       .eq('team_id', teamId).order('created_at', { ascending: false }).limit(limit)
     return data ?? []
   },
@@ -436,7 +456,238 @@ export const pointsService = {
   },
   async createCompetition(data: any) {
     return supabase.from('competitions').insert(data).select().single()
-  }
+  },
+  async addAutoAttendancePoints(teamId: string, userId: string, eventType: string, eventId: string) {
+    // Points are only for players, not coaches/admins/parents
+    const { data: memberRow } = await supabase.from('team_members')
+      .select('role').eq('team_id', teamId).eq('user_id', userId).maybeSingle()
+    if (memberRow?.role !== 'player') return
+    const triggerMap: Record<string, string> = {
+      training: 'حضور التدريب',
+      match: 'حضور المباراة',
+      meeting: 'حضور الاجتماع',
+      camp: 'حضور المعسكر',
+    }
+    const trigger = triggerMap[eventType]
+    if (!trigger) return
+    const { data: setting } = await supabase.from('auto_point_settings')
+      .select('points, is_active').eq('team_id', teamId).eq('event_trigger', trigger).maybeSingle()
+    if (!setting?.is_active || !setting.points) return
+    // Check deduplication: already awarded for this event+user?
+    const { count } = await supabase.from('points_transactions')
+      .select('id', { count: 'exact', head: true })
+      .eq('team_id', teamId).eq('user_id', userId).eq('source_event_id', eventId).eq('is_auto', true)
+    if ((count ?? 0) > 0) return
+    await supabase.from('points_transactions').insert({
+      team_id: teamId, user_id: userId, points: setting.points,
+      category: 'أداء', reason: trigger, is_auto: true, source_event_id: eventId
+    })
+    // Update streak for training events
+    let longestStreak = 0
+    if (eventType === 'training') {
+      const streak = await streakService.updateStreakOnAttendance(teamId, userId, eventId)
+      const { data: streakRow } = await supabase.from('player_streaks')
+        .select('longest_streak').eq('team_id', teamId).eq('user_id', userId).maybeSingle()
+      longestStreak = streakRow?.longest_streak ?? streak ?? 0
+    }
+    // Badge check for all event types (training + match)
+    const { data: pts } = await supabase.from('points_transactions')
+      .select('points').eq('team_id', teamId).eq('user_id', userId)
+    const totalPoints = (pts ?? []).reduce((s: number, r: any) => s + r.points, 0)
+    const { data: attRows } = await supabase.from('attendance')
+      .select('event_id, events!inner(event_type)')
+      .eq('team_id', teamId).eq('user_id', userId)
+      .in('status', ['present', 'late'])
+    const trainingCount = (attRows ?? []).filter((a: any) => a.events?.event_type === 'training').length
+    const matchCount    = (attRows ?? []).filter((a: any) => a.events?.event_type === 'match').length
+    await badgeService.checkAndAwardBadges(teamId, userId, {
+      totalPoints, longestStreak, trainingCount, matchCount,
+    })
+  },
+  async getPlayerTransactions(teamId: string, userId: string, fromDate?: string, toDate?: string) {
+    let q = supabase.from('points_transactions')
+      .select('*')
+      .eq('team_id', teamId).eq('user_id', userId)
+      .order('created_at', { ascending: false })
+    if (fromDate) q = q.gte('created_at', fromDate)
+    if (toDate) q = q.lte('created_at', toDate + 'T23:59:59')
+    const { data } = await q
+    return data ?? []
+  },
+  async getUserPoints(teamId: string, userId: string) {
+    const { data } = await supabase.from('points_transactions')
+      .select('points').eq('team_id', teamId).eq('user_id', userId)
+    return (data ?? []).reduce((s: number, r: any) => s + r.points, 0)
+  },
+}
+
+// ── PLAYER LEVELS ─────────────────────────────────────────────────────
+export const levelService = {
+  async getLevels(teamId: string) {
+    const { data } = await supabase.from('player_levels')
+      .select('*').eq('team_id', teamId).order('min_points', { ascending: true })
+    return data ?? []
+  },
+  async saveLevel(level: any) {
+    if (level.id) {
+      return supabase.from('player_levels').update({
+        name: level.name, icon: level.icon, min_points: level.min_points, color: level.color
+      }).eq('id', level.id)
+    }
+    return supabase.from('player_levels').insert({ ...level })
+  },
+  async deleteLevel(id: string) {
+    return supabase.from('player_levels').delete().eq('id', id)
+  },
+  getPlayerLevel(points: number, levels: any[]) {
+    const sorted = [...levels].sort((a, b) => b.min_points - a.min_points)
+    return sorted.find(l => points >= l.min_points) ?? null
+  },
+}
+
+// ── STREAKS ────────────────────────────────────────────────────────────
+export const streakService = {
+  async getRules(teamId: string) {
+    const { data } = await supabase.from('streak_rules')
+      .select('*').eq('team_id', teamId).order('consecutive_count', { ascending: true })
+    return data ?? []
+  },
+  async saveRules(teamId: string, rules: { consecutive_count: number; bonus_points: number }[]) {
+    await supabase.from('streak_rules').delete().eq('team_id', teamId)
+    if (rules.length === 0) return
+    return supabase.from('streak_rules').insert(rules.map(r => ({ ...r, team_id: teamId })))
+  },
+  async getStreak(teamId: string, userId: string) {
+    const { data } = await supabase.from('player_streaks')
+      .select('*').eq('team_id', teamId).eq('user_id', userId).maybeSingle()
+    return data
+  },
+  async getTeamStreaks(teamId: string) {
+    const { data } = await supabase.from('player_streaks')
+      .select('*').eq('team_id', teamId)
+    return data ?? []
+  },
+  async updateStreakOnAttendance(teamId: string, userId: string, eventId: string) {
+    // Get ordered list of all training events for this team up to now
+    const { data: events } = await supabase.from('events')
+      .select('id, start_datetime')
+      .eq('team_id', teamId).eq('event_type', 'training')
+      .lte('start_datetime', new Date().toISOString())
+      .order('start_datetime', { ascending: false })
+      .limit(50)
+    if (!events || events.length === 0) return
+
+    const eventIds = events.map((e: any) => e.id)
+    // Get attendance records for this player on all these training events
+    const { data: attRows } = await supabase.from('attendance')
+      .select('event_id, status')
+      .eq('team_id', teamId).eq('user_id', userId)
+      .in('event_id', eventIds)
+    const presentSet = new Set(
+      (attRows ?? []).filter((a: any) => a.status === 'present' || a.status === 'late').map((a: any) => a.event_id)
+    )
+
+    // Count consecutive from most recent backwards
+    let streak = 0
+    for (const ev of events) {
+      if (presentSet.has(ev.id)) streak++
+      else break
+    }
+
+    // Get current record
+    const { data: current } = await supabase.from('player_streaks')
+      .select('longest_streak').eq('team_id', teamId).eq('user_id', userId).maybeSingle()
+    const longest = Math.max(streak, current?.longest_streak ?? 0)
+
+    await supabase.from('player_streaks').upsert({
+      team_id: teamId, user_id: userId,
+      current_streak: streak, longest_streak: longest,
+      last_training_event_id: eventId,
+    }, { onConflict: 'team_id,user_id' })
+
+    // Check streak rules and award bonus points (deduplicated by reason+event)
+    const { data: rules } = await supabase.from('streak_rules')
+      .select('*').eq('team_id', teamId).eq('consecutive_count', streak)
+    if (rules && rules.length > 0) {
+      const rule = rules[0]
+      const reason = `سلسلة ${streak} تدريبات متتالية 🔥`
+      const { count } = await supabase.from('points_transactions')
+        .select('id', { count: 'exact', head: true })
+        .eq('team_id', teamId).eq('user_id', userId)
+        .eq('source_event_id', eventId).eq('reason', reason)
+      if ((count ?? 0) === 0) {
+        await supabase.from('points_transactions').insert({
+          team_id: teamId, user_id: userId,
+          points: rule.bonus_points, category: 'أداء',
+          reason, is_auto: true, source_event_id: eventId,
+        })
+      }
+    }
+    return streak
+  },
+}
+
+// ── BADGES ────────────────────────────────────────────────────────────
+export const badgeService = {
+  async getDefinitions(teamId: string) {
+    const { data } = await supabase.from('badge_definitions')
+      .select('*').eq('team_id', teamId).order('created_at', { ascending: true })
+    return data ?? []
+  },
+  async saveDefinition(def: any) {
+    if (def.id) {
+      return supabase.from('badge_definitions').update({
+        name: def.name, icon: def.icon, description: def.description,
+        trigger_type: def.trigger_type, trigger_value: def.trigger_value, color: def.color,
+      }).eq('id', def.id)
+    }
+    return supabase.from('badge_definitions').insert({ ...def })
+  },
+  async deleteDefinition(id: string) {
+    return supabase.from('badge_definitions').delete().eq('id', id)
+  },
+  async getPlayerBadges(teamId: string, userId: string) {
+    const { data } = await supabase.from('player_badges')
+      .select('*, badge:badge_definitions(*)')
+      .eq('team_id', teamId).eq('user_id', userId)
+      .order('earned_at', { ascending: false })
+    return data ?? []
+  },
+  async getTeamBadges(teamId: string) {
+    const { data } = await supabase.from('player_badges')
+      .select('*, badge:badge_definitions(*)')
+      .eq('team_id', teamId)
+    return data ?? []
+  },
+  async checkAndAwardBadges(teamId: string, userId: string, context: {
+    totalPoints?: number; currentStreak?: number; longestStreak?: number;
+    bestPlayerWins?: number; monthlyStars?: number;
+    matchCount?: number; trainingCount?: number;
+  }) {
+    const { data: defs } = await supabase.from('badge_definitions')
+      .select('*').eq('team_id', teamId)
+    if (!defs || defs.length === 0) return []
+
+    const earned: string[] = []
+    for (const def of defs) {
+      let qualifies = false
+      const v = def.trigger_value
+      switch (def.trigger_type) {
+        case 'total_points':    qualifies = (context.totalPoints ?? 0) >= v; break
+        case 'streak':          qualifies = (context.longestStreak ?? 0) >= v; break
+        case 'best_player_wins':qualifies = (context.bestPlayerWins ?? 0) >= v; break
+        case 'monthly_star':    qualifies = (context.monthlyStars ?? 0) >= v; break
+        case 'match_count':     qualifies = (context.matchCount ?? 0) >= v; break
+        case 'training_count':  qualifies = (context.trainingCount ?? 0) >= v; break
+      }
+      if (!qualifies) continue
+      const { error } = await supabase.from('player_badges').insert({
+        team_id: teamId, user_id: userId, badge_id: def.id,
+      })
+      if (!error) earned.push(def.id)
+    }
+    return earned
+  },
 }
 
 // ── DM ────────────────────────────────────────────────────────────────
@@ -618,16 +869,37 @@ export const bestPlayerService = {
     return supabase.from('best_player_polls').insert(data).select().single()
   },
   async closePoll(pollId: string, winnerId: string, teamId: string, pts: number) {
-    await supabase.from('best_player_polls').update({ status: 'closed', winner_id: winnerId, closed_at: new Date().toISOString() }).eq('id', pollId)
-    // Award points
-    await supabase.from('points_transactions').insert({ team_id: teamId, user_id: winnerId, points: pts, category: 'مكافأة', reason: 'أفضل لاعب', is_auto: true })
+    await supabase.from('best_player_polls')
+      .update({ status: 'closed', winner_id: winnerId, closed_at: new Date().toISOString(), points_awarded: pts })
+      .eq('id', pollId)
+    if (pts > 0) {
+      await supabase.from('points_transactions').insert({
+        team_id: teamId, user_id: winnerId, points: pts,
+        category: 'مكافأة', reason: 'أفضل لاعب', is_auto: true
+      })
+    }
+    // Count total best player wins for this player and check badges
+    const { count } = await supabase.from('best_player_polls')
+      .select('id', { count: 'exact', head: true })
+      .eq('team_id', teamId).eq('winner_id', winnerId).eq('status', 'closed')
+    await badgeService.checkAndAwardBadges(teamId, winnerId, {
+      bestPlayerWins: count ?? 0,
+    })
   },
   async vote(pollId: string, voterId: string, nomineeId: string) {
-    return supabase.from('best_player_votes').upsert({ poll_id: pollId, voter_id: voterId, nominee_id: nomineeId }, { onConflict: 'poll_id,voter_id' })
+    return supabase.from('best_player_votes').insert({ poll_id: pollId, voter_id: voterId, nominee_id: nomineeId })
+  },
+  async removeVote(pollId: string, voterId: string, nomineeId: string) {
+    return supabase.from('best_player_votes').delete()
+      .eq('poll_id', pollId).eq('voter_id', voterId).eq('nominee_id', nomineeId)
   },
   async getVotes(pollId: string) {
     const { data } = await supabase.from('best_player_votes').select('*, nominee:profiles!nominee_id(id,full_name)').eq('poll_id', pollId)
     return data ?? []
+  },
+  async getMyVotes(pollId: string, voterId: string) {
+    const { data } = await supabase.from('best_player_votes').select('nominee_id').eq('poll_id', pollId).eq('voter_id', voterId)
+    return (data ?? []).map((v: any) => v.nominee_id) as string[]
   },
   async getMyVote(pollId: string, voterId: string) {
     const { data } = await supabase.from('best_player_votes').select('nominee_id').eq('poll_id', pollId).eq('voter_id', voterId).single()
@@ -643,6 +915,52 @@ export const bestPlayerService = {
       .select('*, winner:profiles!winner_id(id,full_name), event:events(title,event_type)')
       .eq('team_id', teamId).eq('status', 'closed').order('closed_at', { ascending: false })
     return data ?? []
+  },
+  async getOpenPollsForTeam(teamId: string) {
+    const now = new Date().toISOString()
+    const { data } = await supabase.from('best_player_polls')
+      .select('*, event:events(id,title,event_type,start_datetime)')
+      .eq('team_id', teamId)
+      .eq('status', 'open')
+      .or(`closes_at.is.null,closes_at.gt.${now}`)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+  async ensurePoll(eventId: string, teamId: string, startDatetime: string) {
+    const { data: existing } = await supabase.from('best_player_polls')
+      .select('id,closes_at,status').eq('event_id', eventId).maybeSingle()
+    if (existing) return existing
+    const closesAt = new Date(new Date(startDatetime).getTime() + 48 * 60 * 60 * 1000).toISOString()
+    const { data } = await supabase.from('best_player_polls')
+      .insert({ team_id: teamId, event_id: eventId, closes_at: closesAt })
+      .select('id,closes_at,status').single()
+    return data
+  },
+  async getAllAwards(teamId: string) {
+    const [polls, stars] = await Promise.all([
+      supabase.from('best_player_polls')
+        .select('*, player:profiles!winner_id(id,full_name,avatar_url), event:events(title,event_type)')
+        .eq('team_id', teamId).eq('status', 'closed').order('closed_at', { ascending: false }),
+      supabase.from('monthly_stars')
+        .select('*, player:profiles!user_id(id,full_name,avatar_url)')
+        .eq('team_id', teamId).not('announced_at', 'is', null)
+        .order('year', { ascending: false }).order('month', { ascending: false })
+    ])
+    const pollAwards = (polls.data ?? []).map((p: any) => ({
+      id: p.id, type: 'poll' as const,
+      player: p.player,
+      awardName: `أفضل لاعب · ${p.event?.title || ''}`,
+      date: p.closed_at,
+      points: p.points_awarded || 0,
+    }))
+    const starAwards = (stars.data ?? []).map((s: any) => ({
+      id: s.id, type: 'star' as const,
+      player: s.player,
+      awardName: s.label || 'نجم الشهر',
+      date: s.announced_at,
+      points: s.points_awarded || 0,
+    }))
+    return [...pollAwards, ...starAwards].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
   }
 }
 
@@ -682,16 +1000,43 @@ export const monthlyStarService = {
       .maybeSingle()
     return data ?? null
   },
-  async set(teamId: string, userId: string, month: number, year: number, note: string, createdBy: string, announceNow: boolean) {
-    return supabase.from('monthly_stars').upsert({
+  async set(teamId: string, userId: string, month: number, year: number, opts: { label?: string; note?: string; congratsMsg?: string; announceAt?: string | null; announcedAt?: string | null; createdBy: string; pointsAwarded?: number }) {
+    const { error } = await supabase.from('monthly_stars').upsert({
       team_id: teamId, user_id: userId, month, year,
-      note: note || null, created_by: createdBy,
-      announced_at: announceNow ? new Date().toISOString() : null
+      label: opts.label || null,
+      note: opts.note || null,
+      congrats_msg: opts.congratsMsg || null,
+      announce_at: opts.announceAt || null,
+      announced_at: opts.announcedAt || null,
+      created_by: opts.createdBy,
+      points_awarded: opts.pointsAwarded ?? 0,
     }, { onConflict: 'team_id,month,year' })
-      .select('*, player:profiles!user_id(id, full_name, avatar_url)').single()
+    if (error) return { data: null, error }
+    const { data } = await supabase.from('monthly_stars')
+      .select('*, player:profiles!user_id(id, full_name, avatar_url)')
+      .eq('team_id', teamId).eq('month', month).eq('year', year).single()
+    return { data, error: null }
   },
-  async announce(id: string) {
-    return supabase.from('monthly_stars').update({ announced_at: new Date().toISOString() }).eq('id', id)
+  async announce(id: string, teamId?: string, userId?: string) {
+    await supabase.from('monthly_stars').update({ announced_at: new Date().toISOString() }).eq('id', id)
+    if (teamId && userId) {
+      const { count } = await supabase.from('monthly_stars')
+        .select('id', { count: 'exact', head: true })
+        .eq('team_id', teamId).eq('user_id', userId).not('announced_at', 'is', null)
+      await badgeService.checkAndAwardBadges(teamId, userId, {
+        monthlyStars: count ?? 0,
+      })
+    }
+  },
+  async getHistory(teamId: string) {
+    const now = new Date()
+    const { data } = await supabase.from('monthly_stars')
+      .select('*, player:profiles!user_id(id, full_name, avatar_url)')
+      .eq('team_id', teamId)
+      .not('announced_at', 'is', null)
+      .order('year', { ascending: false })
+      .order('month', { ascending: false })
+    return (data ?? []).filter((s: any) => !(s.month === now.getMonth() + 1 && s.year === now.getFullYear()))
   }
 }
 
@@ -700,8 +1045,14 @@ export const monthlyStarService = {
 export const regulationsService = {
   async getAll(teamId: string) {
     const { data } = await supabase.from('regulations')
-      .select('*, author:profiles!created_by(full_name)')
+      .select('*')
       .eq('team_id', teamId).order('published_at', { ascending: false })
+    return data ?? []
+  },
+  async getRequired(teamId: string) {
+    const { data } = await supabase.from('regulations')
+      .select('*').eq('team_id', teamId).eq('is_required', true)
+      .order('published_at', { ascending: false })
     return data ?? []
   },
   async create(data: any) {
@@ -712,5 +1063,46 @@ export const regulationsService = {
   },
   async delete(id: string) {
     return supabase.from('regulations').delete().eq('id', id)
+  },
+}
+
+export const regulationAgreementsService = {
+  async getMyAgreements(teamId: string, userId: string) {
+    const { data } = await supabase.from('regulation_agreements')
+      .select('regulation_id').eq('team_id', teamId).eq('user_id', userId)
+    return (data ?? []).map((r: any) => r.regulation_id) as string[]
+  },
+  async agree(teamId: string, regulationId: string, userId: string) {
+    return supabase.from('regulation_agreements').upsert(
+      { team_id: teamId, regulation_id: regulationId, user_id: userId, agreed_at: new Date().toISOString() },
+      { onConflict: 'regulation_id,user_id' }
+    )
+  },
+  async getAgreementsForDoc(regulationId: string) {
+    const { data } = await supabase.from('regulation_agreements')
+      .select('user_id').eq('regulation_id', regulationId)
+    return data ?? []
+  },
+  async getCountsForTeam(teamId: string) {
+    const { data } = await supabase.from('regulation_agreements')
+      .select('regulation_id').eq('team_id', teamId)
+    const counts: Record<string, number> = {}
+    ;(data ?? []).forEach((r: any) => { counts[r.regulation_id] = (counts[r.regulation_id] || 0) + 1 })
+    return counts
+  },
+}
+
+// ── OCCASIONS ──────────────────────────────────────────────────────────
+export const occasionsService = {
+  async getAll(teamId: string) {
+    const { data } = await supabase.from('occasions').select('*')
+      .eq('team_id', teamId).order('from_date', { ascending: true })
+    return data ?? []
+  },
+  async create(data: any) {
+    return supabase.from('occasions').insert(data).select().single()
+  },
+  async delete(id: string) {
+    return supabase.from('occasions').delete().eq('id', id)
   },
 }

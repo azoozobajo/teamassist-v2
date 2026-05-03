@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2 } from 'lucide-react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2, Flag } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { eventService, teamService, notificationService } from '../../services'
+import { eventService, teamService, notificationService, occasionsService } from '../../services'
 import { Spinner, PageHeader, EmptyState, Modal, FormField, Tabs, AttendanceButton } from '../../components/ui'
 import { EVENT_CONFIG, WEEK_DAYS, canManageEvents, formatDate, isEventLocked } from '../../utils/helpers'
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay } from 'date-fns'
@@ -12,9 +12,17 @@ const EVENT_TYPES = ['training','match','meeting','camp','other']
 const ATT_GROUPS = ['الكل','اللاعبون فقط','المدربون فقط','اللاعبون والمدربون','الإداريون فقط','مجموعة مخصصة']
 const HOME_AWAY_LABEL: Record<string, string> = { home: '🏟️ ملعبنا', away: '🚌 ملعب المنافس', neutral: '⚖️ أرض محايدة' }
 
+// Types where "الكل" doesn't make sense — players are the default audience
+const PLAYER_FOCUSED_TYPES = new Set(['training', 'match', 'camp'])
+const getAttGroups = (eventType: string) =>
+  PLAYER_FOCUSED_TYPES.has(eventType) ? ATT_GROUPS.filter(g => g !== 'الكل') : ATT_GROUPS
+const getDefaultAttGroup = (eventType: string) =>
+  PLAYER_FOCUSED_TYPES.has(eventType) ? 'اللاعبون فقط' : 'الكل'
+
 export default function EventsPage() {
   const { teamId } = useParams()
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [events, setEvents] = useState<any[]>([])
   const [members, setMembers] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -33,9 +41,14 @@ export default function EventsPage() {
   const [editForm, setEditForm] = useState<any>({})
   const [saving, setSaving] = useState(false)
 
+  // Occasions
+  const [occasions, setOccasions]       = useState<any[]>([])
+  const [showOccasions, setShowOccasions] = useState(false)
+  const [occForm, setOccForm] = useState({ title: '', from_date: '', to_date: '', color: '#3b82f6' })
+
   const defaultForm = {
     title: '', event_type: 'training', start_datetime: '', end_datetime: '',
-    location: '', map_url: '', att_group: 'الكل', description: '',
+    location: '', map_url: '', att_group: 'اللاعبون فقط', description: '',
     selectedMembers: [] as string[],
     opponent: '', home_away: 'home', match_category: 'friendly', tournament_name: ''
   }
@@ -45,7 +58,7 @@ export default function EventsPage() {
   const defaultRecur = {
     title: '', event_type: 'training', days_of_week: [] as number[],
     start_date: '', end_date: '', start_time: '18:00', end_time: '20:00',
-    location: '', map_url: '', att_group: 'الكل',
+    location: '', map_url: '', att_group: 'اللاعبون فقط',
     selectedMembers: [] as string[]
   }
   const [recurForm, setRecurForm] = useState(defaultRecur)
@@ -55,6 +68,7 @@ export default function EventsPage() {
     if (!teamId || !user) return
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
     teamService.getMembers(teamId).then(m => setMembers(m.filter((x: any) => x.role !== 'parent')))
+    occasionsService.getAll(teamId).then(setOccasions)
     load()
   }, [teamId, user])
 
@@ -199,6 +213,31 @@ export default function EventsPage() {
     }
   }
 
+  // Occasions helpers
+  function occasionsOnDate(date: Date) {
+    const d = format(date, 'yyyy-MM-dd')
+    return occasions.filter(o => d >= o.from_date && d <= o.to_date)
+  }
+  function occasionsOnEvent(ev: any) {
+    const d = ev.start_datetime.slice(0, 10)
+    return occasions.filter(o => d >= o.from_date && d <= o.to_date)
+  }
+
+  async function saveOccasion() {
+    if (!occForm.title.trim() || !occForm.from_date || !occForm.to_date || !teamId || !user) return
+    setSaving(true)
+    const { error } = await occasionsService.create({ ...occForm, team_id: teamId, created_by: user.id })
+    if (error) { console.error('occasions insert error:', error); setSaving(false); return }
+    const updated = await occasionsService.getAll(teamId)
+    setOccasions(updated)
+    setOccForm({ title: '', from_date: '', to_date: '', color: '#3b82f6' })
+    setSaving(false)
+  }
+  async function deleteOccasion(id: string) {
+    await occasionsService.delete(id)
+    setOccasions(prev => prev.filter(o => o.id !== id))
+  }
+
   const canManage = canManageEvents(myRole)
   const isParent = myRole === 'parent'
   const now = new Date()
@@ -296,6 +335,9 @@ export default function EventsPage() {
       <PageHeader title="المواعيد"
         action={canManage && (
           <div className="flex gap-2">
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowOccasions(true)}>
+              <Flag size={13}/> مناسبة
+            </button>
             <button className="btn btn-ghost btn-sm" onClick={() => setShowRecurring(true)}>
               <Repeat size={13}/> متكرر
             </button>
@@ -304,6 +346,18 @@ export default function EventsPage() {
             </button>
           </div>
         )}/>
+
+      {/* Active occasions banner */}
+      {occasions.filter(o => format(now,'yyyy-MM-dd') >= o.from_date && format(now,'yyyy-MM-dd') <= o.to_date).length > 0 && (
+        <div className="flex gap-2 flex-wrap mb-3">
+          {occasions.filter(o => format(now,'yyyy-MM-dd') >= o.from_date && format(now,'yyyy-MM-dd') <= o.to_date).map(o => (
+            <div key={o.id} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border"
+              style={{ background: o.color + '18', color: o.color, borderColor: o.color + '44' }}>
+              <Flag size={11}/> {o.title} · {o.from_date} ← {o.to_date}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* View toggle */}
       <div className="flex gap-2 mb-4">
@@ -333,9 +387,14 @@ export default function EventsPage() {
                   const isToday = isSameDay(day, now)
                   return (
                     <div key={day.toISOString()}
-                      className={`min-h-[52px] rounded-xl p-1 cursor-pointer transition-colors ${isToday ? 'bg-brand-50 ring-1 ring-brand-400' : dayEvs.length ? 'hover:bg-slate-50' : ''}`}
+                      className={`min-h-[52px] rounded-xl p-1 cursor-pointer transition-colors relative ${isToday ? 'bg-brand-50 ring-1 ring-brand-400' : dayEvs.length ? 'hover:bg-slate-50' : ''}`}
                       onClick={() => dayEvs.length && setShowDetail({ date: day, events: dayEvs })}>
-                      <div className={`text-xs font-bold mb-0.5 text-center ${isToday ? 'text-brand-600' : 'text-slate-600'}`}>
+                      {/* Occasion color strip at top */}
+                      {occasionsOnDate(day).map((o, i) => (
+                        <div key={o.id} className="absolute top-0 right-0 left-0 h-1 rounded-t-xl"
+                          style={{ background: o.color, top: i * 3, opacity: 0.75 }}/>
+                      ))}
+                      <div className={`text-xs font-bold mb-0.5 text-center mt-1 ${isToday ? 'text-brand-600' : 'text-slate-600'}`}>
                         {day.getDate()}
                       </div>
                       {dayEvs.slice(0,2).map(e => {
@@ -343,6 +402,14 @@ export default function EventsPage() {
                         return <div key={e.id} className="text-center text-base leading-none" title={e.title}>{c.icon}</div>
                       })}
                       {dayEvs.length > 2 && <div className="text-xs text-center text-slate-400">+{dayEvs.length-2}</div>}
+                      {/* Occasion dots */}
+                      {occasionsOnDate(day).length > 0 && (
+                        <div className="flex gap-0.5 justify-center mt-0.5">
+                          {occasionsOnDate(day).slice(0,3).map(o => (
+                            <div key={o.id} className="w-1.5 h-1.5 rounded-full" style={{ background: o.color }}/>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )
                 })}
@@ -398,7 +465,7 @@ export default function EventsPage() {
                               {/* Result badge */}
                               {e.event_type === 'match' && <div className="mt-1"><ResultBadge e={e}/></div>}
                               {/* Edit + Result buttons */}
-                              <div className="flex items-center gap-2 mt-1.5">
+                              <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                                 {canManage && (
                                   <button onClick={ev => { ev.stopPropagation(); openEdit(e) }}
                                     className="text-xs text-blue-500 font-bold flex items-center gap-1 hover:text-blue-700 transition-colors">
@@ -412,12 +479,26 @@ export default function EventsPage() {
                                     <Trophy size={11}/> سجّل نتيجة
                                   </button>
                                 )}
+                                {isPast && ['training','match'].includes(e.event_type) && !isParent &&
+                                  (Date.now() - new Date(e.start_datetime).getTime() < 48 * 60 * 60 * 1000) && (
+                                  <button
+                                    onClick={ev => { ev.stopPropagation(); navigate(`/team/${teamId}/best-player`) }}
+                                    className="text-xs text-amber-600 font-bold flex items-center gap-1 hover:text-amber-800 transition-colors">
+                                    ⭐ أفضل لاعب
+                                  </button>
+                                )}
                               </div>
                               <div className="flex gap-1 mt-1.5 flex-wrap">
                                 <span className="badge text-xs" style={{background:c.bg,color:c.color}}>{c.label}</span>
                                 {e.att_member_ids?.length > 0
                                   ? <span className="badge badge-blue text-xs"><Users size={9}/> {e.att_member_ids.length} محدد</span>
                                   : e.att_group && <span className="badge badge-gray text-xs">{e.att_group}</span>}
+                                {occasionsOnEvent(e).map((o: any) => (
+                                  <span key={o.id} className="badge text-xs flex items-center gap-0.5"
+                                    style={{ background: o.color + '18', color: o.color, border: `1px solid ${o.color}44` }}>
+                                    <Flag size={8}/> {o.title}
+                                  </span>
+                                ))}
                               </div>
                             </div>
                           </div>
@@ -532,7 +613,17 @@ export default function EventsPage() {
           <input className="form-input" value={form.title} onChange={e => setF('title',e.target.value)} placeholder="تدريب أسبوعي"/>
         </FormField>
         <FormField label="النوع">
-          <EventTypeSelector val={form.event_type} onChange={v => setF('event_type',v)}/>
+          <EventTypeSelector val={form.event_type} onChange={v => {
+            setF('event_type', v)
+            // Auto-reset att_group when switching between player-focused and open types
+            if (PLAYER_FOCUSED_TYPES.has(v) && !getAttGroups(v).includes(form.att_group)) {
+              setF('att_group', getDefaultAttGroup(v))
+            } else if (!PLAYER_FOCUSED_TYPES.has(v) && form.att_group === 'الكل') {
+              // Keep "الكل" when switching to open types
+            } else if (!PLAYER_FOCUSED_TYPES.has(v) && PLAYER_FOCUSED_TYPES.has(form.event_type)) {
+              setF('att_group', 'الكل')
+            }
+          }}/>
         </FormField>
 
         {/* Match-specific fields */}
@@ -583,7 +674,7 @@ export default function EventsPage() {
         </FormField>
         <FormField label="من يسجل الحضور؟">
           <select className="form-input" value={form.att_group} onChange={e => setF('att_group',e.target.value)}>
-            {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
+            {getAttGroups(form.event_type).map(g => <option key={g}>{g}</option>)}
           </select>
         </FormField>
         {form.att_group === 'مجموعة مخصصة' && (
@@ -612,7 +703,14 @@ export default function EventsPage() {
           <input className="form-input" value={recurForm.title} onChange={e => setR('title',e.target.value)} placeholder="تدريب أسبوعي"/>
         </FormField>
         <FormField label="النوع">
-          <EventTypeSelector val={recurForm.event_type} onChange={v => setR('event_type',v)}/>
+          <EventTypeSelector val={recurForm.event_type} onChange={v => {
+            setR('event_type', v)
+            if (PLAYER_FOCUSED_TYPES.has(v) && !getAttGroups(v).includes(recurForm.att_group)) {
+              setR('att_group', getDefaultAttGroup(v))
+            } else if (!PLAYER_FOCUSED_TYPES.has(v) && PLAYER_FOCUSED_TYPES.has(recurForm.event_type)) {
+              setR('att_group', 'الكل')
+            }
+          }}/>
         </FormField>
         <FormField label="أيام التكرار" required>
           <div className="flex flex-wrap gap-2">
@@ -648,7 +746,7 @@ export default function EventsPage() {
         </FormField>
         <FormField label="من يسجل الحضور؟">
           <select className="form-input" value={recurForm.att_group} onChange={e => setR('att_group',e.target.value)}>
-            {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
+            {getAttGroups(recurForm.event_type).map(g => <option key={g}>{g}</option>)}
           </select>
         </FormField>
         {recurForm.att_group === 'مجموعة مخصصة' && (
@@ -716,6 +814,61 @@ export default function EventsPage() {
                 {saving ? <Spinner size="sm"/> : '💾 حفظ النتيجة'}
               </button>
             </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── OCCASIONS MODAL ── */}
+      <Modal open={showOccasions} onClose={() => setShowOccasions(false)} title="المناسبات والفترات" width="max-w-lg">
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4">
+          <p className="text-xs font-bold text-slate-500 mb-3">إضافة مناسبة جديدة</p>
+          <FormField label="اسم المناسبة" required>
+            <input className="form-input" value={occForm.title}
+              onChange={e => setOccForm(p => ({ ...p, title: e.target.value }))}
+              placeholder="عيد الفطر، اختبارات، نهاية الموسم..."/>
+          </FormField>
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="من تاريخ" required>
+              <input className="form-input" type="date" value={occForm.from_date}
+                onChange={e => setOccForm(p => ({ ...p, from_date: e.target.value }))}/>
+            </FormField>
+            <FormField label="إلى تاريخ" required>
+              <input className="form-input" type="date" value={occForm.to_date}
+                onChange={e => setOccForm(p => ({ ...p, to_date: e.target.value }))}/>
+            </FormField>
+          </div>
+          <FormField label="اللون">
+            <div className="flex gap-2 flex-wrap mt-1">
+              {['#3b82f6','#ef4444','#f59e0b','#10b981','#8b5cf6','#ec4899','#06b6d4','#f97316'].map(color => (
+                <button key={color} type="button" onClick={() => setOccForm(p => ({ ...p, color }))}
+                  className={`w-8 h-8 rounded-xl border-2 transition-all ${occForm.color === color ? 'border-slate-700 scale-110 shadow-md' : 'border-transparent hover:scale-105'}`}
+                  style={{ background: color }}/>
+              ))}
+            </div>
+          </FormField>
+          <button className="btn btn-primary btn-sm mt-3" onClick={saveOccasion}
+            disabled={saving || !occForm.title.trim() || !occForm.from_date || !occForm.to_date}>
+            {saving ? <Spinner size="sm"/> : <><Flag size={13}/> إضافة مناسبة</>}
+          </button>
+        </div>
+
+        {occasions.length === 0 ? (
+          <p className="text-center text-sm text-slate-400 py-4">لا توجد مناسبات مضافة بعد</p>
+        ) : (
+          <div className="space-y-2">
+            {occasions.map(o => (
+              <div key={o.id} className="flex items-center gap-3 p-3 rounded-xl border border-slate-100 bg-white">
+                <div className="w-5 h-5 rounded-lg flex-shrink-0" style={{ background: o.color }}/>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-sm text-slate-700">{o.title}</div>
+                  <div className="text-xs text-slate-400">{o.from_date} ← {o.to_date}</div>
+                </div>
+                <button onClick={() => deleteOccasion(o.id)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0">
+                  <Trash2 size={14}/>
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </Modal>

@@ -2,9 +2,18 @@ import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Star, Trophy, Check } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { bestPlayerService, eventService, teamService, pointsService } from '../../services'
+import { bestPlayerService, eventService, teamService } from '../../services'
 import { Spinner, PageHeader, EmptyState, Tabs, Modal, FormField } from '../../components/ui'
 import { EVENT_CONFIG, formatDate } from '../../utils/helpers'
+
+function timeLeft(closesAt: string | null) {
+  if (!closesAt) return null
+  const diff = new Date(closesAt).getTime() - Date.now()
+  if (diff <= 0) return null
+  const h = Math.floor(diff / 3600000)
+  const m = Math.floor((diff % 3600000) / 60000)
+  return `${h}س ${m}د`
+}
 
 export default function BestPlayerPage() {
   const { teamId } = useParams()
@@ -14,96 +23,136 @@ export default function BestPlayerPage() {
   const [awards, setAwards] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [myRole, setMyRole] = useState('')
-  const [myVotes, setMyVotes] = useState<Record<string, string>>({})
+  // Multi-vote: poll_id → Set of voted nominee_ids
+  const [myVotes, setMyVotes] = useState<Record<string, Set<string>>>({})
   const [voteCounts, setVoteCounts] = useState<Record<string, Record<string, number>>>({})
-  const [ptsAward, setPtsAward] = useState(10)
+  const [maxVotes, setMaxVotes] = useState(1)
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsMaxVotes, setSettingsMaxVotes] = useState(1)
+  const [ptsAward, setPtsAward] = useState(10)
   const [saving, setSaving] = useState<string | null>(null)
+  const [voting, setVoting] = useState<string | null>(null)
 
   useEffect(() => {
     if (!teamId || !user) return
-    teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
-    load()
+    Promise.all([
+      teamService.getMyRole(teamId, user.id),
+      teamService.getTeam(teamId),
+    ]).then(([role, team]) => {
+      const r = role || ''
+      setMyRole(r)
+      const mv = team?.best_player_max_votes ?? 1
+      setMaxVotes(mv)
+      setSettingsMaxVotes(mv)
+      load(r)
+    })
   }, [teamId, user])
 
-  async function load() {
+  async function load(role: string) {
     if (!teamId || !user) return
     setLoading(true)
-    // Get open polls (linked to events where I was present)
-    const myAtt = await eventService.getMyAttendance(teamId, user.id)
-    const presentEventIds = myAtt
-      .filter((a: any) => a.status === 'present' || a.status === 'late')
-      .map((a: any) => a.event_id)
 
-    // Get polls
+    // Auto-create polls for recently ended training/match (eligible voters + admins)
+    if (role !== 'parent' && role !== 'guest') {
+      const recent = await eventService.getRecentPastEvents(teamId, ['training', 'match'], 72)
+      await Promise.all(recent.map(ev => bestPlayerService.ensurePoll(ev.id, teamId, ev.start_datetime)))
+    }
+
+    const rawPolls = await bestPlayerService.getOpenPollsForTeam(teamId)
+
     const polls: any[] = []
-    const vts: Record<string, string> = {}
+    const vts: Record<string, Set<string>> = {}
     const counts: Record<string, Record<string, number>> = {}
 
-    for (const evId of presentEventIds.slice(0, 10)) {
-      const poll = await bestPlayerService.getPollForEvent(evId)
-      if (poll && poll.status === 'open') {
-        // Get event details
-        const { data: ev } = await (await import('../../lib/supabase')).supabase
-          .from('events').select('*').eq('id', evId).single()
-        // Get present members for this event
-        const att = await eventService.getAttendance(evId)
-        const presentMembers = att.filter((a: any) => a.status === 'present' || a.status === 'late')
-        polls.push({ ...poll, event: ev, presentMembers })
-        // My vote
-        const myVote = await bestPlayerService.getMyVote(poll.id, user.id)
-        if (myVote) vts[poll.id] = myVote
-        // Vote counts
-        const allVotes = await bestPlayerService.getVotes(poll.id)
-        const cnt: Record<string, number> = {}
-        allVotes.forEach((v: any) => { cnt[v.nominee_id] = (cnt[v.nominee_id] || 0) + 1 })
-        counts[poll.id] = cnt
-      }
-    }
-    setOpenPolls(polls); setMyVotes(vts); setVoteCounts(counts)
+    await Promise.all(rawPolls.map(async (poll: any) => {
+      const [att, myVotesList, allVotes] = await Promise.all([
+        eventService.getAttendance(poll.event_id),
+        role === 'player' ? bestPlayerService.getMyVotes(poll.id, user.id) : Promise.resolve([]),
+        bestPlayerService.getVotes(poll.id),
+      ])
+      const presentMembers = att.filter((a: any) => a.status === 'present' || a.status === 'late')
+      polls.push({ ...poll, presentMembers })
+      vts[poll.id] = new Set(myVotesList as string[])
+      const cnt: Record<string, number> = {}
+      allVotes.forEach((v: any) => { cnt[v.nominee_id] = (cnt[v.nominee_id] || 0) + 1 })
+      counts[poll.id] = cnt
+    }))
 
-    // Awards history
-    const awardsList = await bestPlayerService.getTeamAwards(teamId)
+    polls.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    setOpenPolls(polls)
+    setMyVotes(vts)
+    setVoteCounts(counts)
+
+    const awardsList = await bestPlayerService.getAllAwards(teamId)
     setAwards(awardsList)
     setLoading(false)
   }
 
-  async function castVote(pollId: string, nomineeId: string) {
-    if (!user) return
-    await bestPlayerService.vote(pollId, user.id, nomineeId)
-    setMyVotes(p => ({ ...p, [pollId]: nomineeId }))
-    setVoteCounts(p => {
-      const curr = { ...(p[pollId] || {}) }
-      // Remove old vote if any
-      const old = myVotes[pollId]
-      if (old && curr[old]) curr[old]--
-      curr[nomineeId] = (curr[nomineeId] || 0) + 1
-      return { ...p, [pollId]: curr }
-    })
+  async function toggleVote(pollId: string, nomineeId: string) {
+    if (!user || voting) return
+    const current = myVotes[pollId] ?? new Set<string>()
+    const alreadyVoted = current.has(nomineeId)
+
+    setVoting(nomineeId)
+    if (alreadyVoted) {
+      await bestPlayerService.removeVote(pollId, user.id, nomineeId)
+      setMyVotes(p => {
+        const next = new Set(p[pollId])
+        next.delete(nomineeId)
+        return { ...p, [pollId]: next }
+      })
+      setVoteCounts(p => {
+        const cnt = { ...(p[pollId] || {}) }
+        if (cnt[nomineeId]) cnt[nomineeId]--
+        return { ...p, [pollId]: cnt }
+      })
+    } else {
+      if (current.size >= maxVotes) { setVoting(null); return }
+      await bestPlayerService.vote(pollId, user.id, nomineeId)
+      setMyVotes(p => {
+        const next = new Set(p[pollId])
+        next.add(nomineeId)
+        return { ...p, [pollId]: next }
+      })
+      setVoteCounts(p => {
+        const cnt = { ...(p[pollId] || {}) }
+        cnt[nomineeId] = (cnt[nomineeId] || 0) + 1
+        return { ...p, [pollId]: cnt }
+      })
+    }
+    setVoting(null)
   }
 
   async function closePoll(poll: any) {
     if (!teamId) return
     setSaving(poll.id)
     const counts = voteCounts[poll.id] || {}
-    const maxVotes = Math.max(...Object.values(counts) as number[], 0)
-    const winners = Object.entries(counts).filter(([, v]) => v === maxVotes).map(([uid]) => uid)
+    const maxVoteCount = Math.max(...(Object.values(counts) as number[]), 0)
+    const winners = Object.entries(counts).filter(([, v]) => v === maxVoteCount).map(([uid]) => uid)
     if (winners.length === 0) { setSaving(null); return }
-    // Award all tied winners
     for (const winnerId of winners) {
       await bestPlayerService.closePoll(poll.id, winnerId, teamId, ptsAward)
     }
-    await load(); setSaving(null)
+    await load(myRole)
+    setSaving(null)
   }
 
-  const isAdmin = myRole === 'owner' || ['head_coach','administrator'].includes(myRole)
+  async function saveSettings() {
+    if (!teamId) return
+    await teamService.updateTeam(teamId, { best_player_max_votes: settingsMaxVotes })
+    setMaxVotes(settingsMaxVotes)
+    setShowSettings(false)
+  }
+
+  const isAdmin = ['owner', 'head_coach', 'administrator'].includes(myRole)
+  const canVote = myRole === 'player'
 
   return (
     <div>
       <PageHeader title="⭐ أفضل لاعب"
         action={isAdmin && (
           <button className="btn btn-ghost btn-sm" onClick={() => setShowSettings(true)}>
-            ⚙️ النقاط المُمنحة
+            ⚙️ الإعدادات
           </button>
         )}/>
       <Tabs tabs={[
@@ -117,57 +166,124 @@ export default function BestPlayerPage() {
             openPolls.length === 0
               ? <div className="card"><EmptyState icon={<Star size={24}/>}
                   title="لا توجد تصويتات مفتوحة"
-                  description="التصويت يُفتح تلقائياً بعد انتهاء كل موعد"/></div>
+                  description="التصويت يُفتح تلقائياً بعد انتهاء كل تمرين أو مباراة ويبقى مفتوحاً 48 ساعة"/></div>
               : <div className="space-y-4">
                   {openPolls.map(poll => {
                     const cfg = EVENT_CONFIG[poll.event?.event_type] || EVENT_CONFIG.other
-                    const myVote = myVotes[poll.id]
                     const counts = voteCounts[poll.id] || {}
                     const totalVotes = Object.values(counts).reduce((s: number, v: any) => s + v, 0)
-                    const maxVotes = Math.max(...Object.values(counts) as number[], 0)
+                    const maxVoteCount = Math.max(...(Object.values(counts) as number[]), 0)
+                    const remaining = timeLeft(poll.closes_at)
+                    const myVotedSet = myVotes[poll.id] ?? new Set()
+                    const myVotedCount = myVotedSet.size
+                    const atMax = myVotedCount >= maxVotes
+
                     return (
                       <div key={poll.id} className="card">
-                        <div className="flex items-center gap-2 mb-3">
-                          <span className="text-xl">{cfg.icon}</span>
-                          <div>
-                            <div className="font-bold text-sm">{poll.event?.title}</div>
+                        {/* Header */}
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-2xl">{cfg.icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-extrabold text-sm truncate">{poll.event?.title}</div>
                             <div className="text-xs text-slate-400">{formatDate(poll.event?.start_datetime)}</div>
                           </div>
-                          <span className="badge badge-gold mr-auto">{totalVotes} صوت</span>
+                          <span className="badge badge-gold text-xs">{totalVotes} صوت</span>
                         </div>
-                        <p className="text-xs text-slate-500 mb-3">من كان أفضل لاعب في هذا الموعد؟ (الحاضرون فقط)</p>
-                        <div className="space-y-2">
-                          {poll.presentMembers.map((a: any) => {
-                            const voteCount = counts[a.user_id] || 0
-                            const pct = totalVotes ? Math.round(voteCount / totalVotes * 100) : 0
-                            const isVoted = myVote === a.user_id
-                            const isLeading = voteCount === maxVotes && maxVotes > 0
-                            return (
-                              <div key={a.user_id}
-                                onClick={() => a.user_id !== user?.id && castVote(poll.id, a.user_id)}
-                                className={`flex items-center gap-3 p-2.5 rounded-xl border transition-all cursor-pointer ${isVoted ? 'border-yellow-400 bg-yellow-50' : a.user_id === user?.id ? 'border-slate-100 bg-slate-50 cursor-not-allowed opacity-60' : 'border-slate-100 hover:border-slate-200'}`}>
-                                <div className="w-8 h-8 bg-brand-100 text-brand-700 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">
-                                  {a.profile?.full_name?.[0] || '?'}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center justify-between text-xs mb-0.5">
-                                    <span className="font-bold">{a.profile?.full_name} {a.user_id === user?.id ? '(أنت)' : ''}</span>
-                                    <span className="text-slate-500">{voteCount} صوت · {pct}%</span>
-                                  </div>
-                                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                    <div className={`h-full rounded-full transition-all ${isLeading ? 'bg-yellow-400' : 'bg-slate-300'}`} style={{ width: `${pct}%` }}/>
-                                  </div>
-                                </div>
-                                {isVoted && <Star size={16} className="text-yellow-500 flex-shrink-0 fill-yellow-400"/>}
-                                {isLeading && !isVoted && <span className="text-xs text-yellow-600 flex-shrink-0">🏅</span>}
-                              </div>
-                            )
-                          })}
+
+                        {/* Status bar */}
+                        <div className="flex items-center justify-between mb-3">
+                          {remaining
+                            ? <span className="text-xs text-amber-600 font-bold">⏱ {remaining} متبقية</span>
+                            : <span className="text-xs text-slate-400 font-bold">انتهت مدة التصويت</span>}
+                          {canVote && remaining && (
+                            <span className={`text-xs font-bold ${atMax ? 'text-brand-600' : 'text-slate-400'}`}>
+                              صوّتَ لـ {myVotedCount}/{maxVotes}
+                            </span>
+                          )}
+                          {!canVote && (
+                            <span className="text-xs text-slate-400">التصويت للاعبين فقط</span>
+                          )}
                         </div>
+
+                        {/* Nominees */}
+                        {poll.presentMembers.length === 0 ? (
+                          <div className="text-xs text-slate-400 text-center py-3">لم يُسجَّل حضور لهذا الموعد</div>
+                        ) : (
+                          <div className="space-y-2">
+                            {poll.presentMembers
+                              .filter((a: any) => a.user_id !== user?.id)
+                              .map((a: any) => {
+                                const voteCount = counts[a.user_id] || 0
+                                const pct = totalVotes ? Math.round(voteCount / totalVotes * 100) : 0
+                                const isMyVote = myVotedSet.has(a.user_id)
+                                const isLeading = voteCount === maxVoteCount && maxVoteCount > 0
+                                const canTap = canVote && !!remaining && (isMyVote || !atMax)
+
+                                return (
+                                  <div key={a.user_id}
+                                    className={`flex items-center gap-3 p-3 rounded-2xl border-2 transition-all ${
+                                      isMyVote
+                                        ? 'border-brand-400 bg-brand-50'
+                                        : canTap
+                                          ? 'border-slate-100 hover:border-slate-200'
+                                          : 'border-slate-50 bg-slate-50/50 opacity-70'
+                                    }`}>
+                                    {/* Avatar */}
+                                    <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-extrabold flex-shrink-0 overflow-hidden transition-all ${
+                                      isMyVote ? 'bg-brand-500 text-white shadow-md ring-2 ring-brand-300 ring-offset-1' : 'bg-slate-100 text-slate-600'
+                                    }`}>
+                                      {a.profile?.avatar_url
+                                        ? <img src={a.profile.avatar_url} className="w-full h-full object-cover" alt=""/>
+                                        : a.profile?.full_name?.[0] || '?'}
+                                    </div>
+
+                                    {/* Name + bar */}
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center justify-between mb-1">
+                                        <span className={`text-sm font-bold truncate ${isMyVote ? 'text-brand-800' : 'text-slate-800'}`}>
+                                          {a.profile?.full_name}
+                                        </span>
+                                        <span className="text-xs text-slate-400 flex-shrink-0 mr-1">
+                                          {voteCount} {isLeading ? '👑' : ''}
+                                        </span>
+                                      </div>
+                                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                                        <div className={`h-full rounded-full transition-all duration-500 ${
+                                          isMyVote ? 'bg-brand-400' : isLeading ? 'bg-yellow-400' : 'bg-slate-200'
+                                        }`} style={{ width: `${pct}%` }}/>
+                                      </div>
+                                    </div>
+
+                                    {/* Vote button */}
+                                    {canVote && remaining && (
+                                      <button
+                                        onClick={() => toggleVote(poll.id, a.user_id)}
+                                        disabled={voting === a.user_id || (!isMyVote && atMax)}
+                                        className={`flex-shrink-0 w-11 h-11 rounded-2xl flex items-center justify-center transition-all font-extrabold text-sm shadow-sm active:scale-95 ${
+                                          isMyVote
+                                            ? 'bg-brand-500 text-white shadow-brand-200'
+                                            : atMax
+                                              ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                                              : 'bg-slate-100 text-slate-500 hover:bg-brand-100 hover:text-brand-600 cursor-pointer'
+                                        }`}>
+                                        {voting === a.user_id
+                                          ? <Spinner size="sm"/>
+                                          : isMyVote
+                                            ? <Check size={18}/>
+                                            : <Star size={16}/>}
+                                      </button>
+                                    )}
+                                  </div>
+                                )
+                            })}
+                          </div>
+                        )}
+
+                        {/* Admin close button */}
                         {isAdmin && (
                           <button onClick={() => closePoll(poll)} disabled={saving === poll.id}
-                            className="btn btn-ghost btn-sm w-full justify-center mt-3 text-amber-600 border-amber-200">
-                            {saving === poll.id ? <Spinner size="sm"/> : `إغلاق التصويت ومنح ${ptsAward} نقطة للفائز`}
+                            className="btn btn-ghost btn-sm w-full justify-center mt-4 text-amber-600 border-amber-200 hover:bg-amber-50">
+                            {saving === poll.id ? <Spinner size="sm"/> : `إغلاق ومنح ${ptsAward} نقطة للفائز`}
                           </button>
                         )}
                       </div>
@@ -180,35 +296,58 @@ export default function BestPlayerPage() {
             awards.length === 0
               ? <div className="card"><EmptyState icon={<Trophy size={24}/>} title="لا توجد جوائز بعد"/></div>
               : <div className="space-y-3">
-                  {awards.map((a: any) => {
-                    const cfg = EVENT_CONFIG[a.event?.event_type] || EVENT_CONFIG.other
-                    return (
-                      <div key={a.id} className="card mb-0 flex items-center gap-3">
-                        <div className="text-2xl">🏆</div>
-                        <div className="flex-1 min-w-0">
-                          <div className="font-bold text-sm">{a.winner?.full_name}</div>
-                          <div className="text-xs text-slate-400">{cfg.icon} {a.event?.title} · {formatDate(a.closed_at)}</div>
-                        </div>
-                        <div className="text-xs bg-yellow-50 text-yellow-700 px-2 py-1 rounded-lg font-bold">
-                          +{a.points_awarded || 0} نقطة
-                        </div>
+                  {awards.map((a: any) => (
+                    <div key={a.id} className="card mb-0 flex items-center gap-3">
+                      <div className="text-2xl">{a.type === 'star' ? '⭐' : '🏆'}</div>
+                      <div className="w-10 h-10 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center font-bold text-sm flex-shrink-0 overflow-hidden">
+                        {a.player?.avatar_url
+                          ? <img src={a.player.avatar_url} className="w-full h-full object-cover" alt=""/>
+                          : a.player?.full_name?.[0] || '?'}
                       </div>
-                    )
-                  })}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-sm truncate">{a.player?.full_name}</div>
+                        <div className="text-xs text-slate-400 truncate">{a.awardName} · {formatDate(a.date)}</div>
+                      </div>
+                      {a.points > 0 && (
+                        <div className="text-xs bg-yellow-50 text-yellow-700 px-2 py-1 rounded-lg font-bold flex-shrink-0">
+                          +{a.points} نقطة
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
           )}
         </>
       )}
 
-      <Modal open={showSettings} onClose={() => setShowSettings(false)} title="إعداد نقاط أفضل لاعب">
+      {/* Settings Modal */}
+      <Modal open={showSettings} onClose={() => setShowSettings(false)} title="⚙️ إعدادات أفضل لاعب">
         <FormField label="النقاط الممنوحة للفائز">
           <input className="form-input" type="number" min="1" value={ptsAward}
             onChange={e => setPtsAward(parseInt(e.target.value) || 10)}/>
         </FormField>
-        <div className="text-xs text-slate-400 mt-2 mb-4">
-          عند التعادل يحصل جميع الفائزين على نفس النقاط
+        <FormField label="الحد الأقصى للأصوات لكل لاعب">
+          <div className="flex gap-2">
+            {[1, 2, 3].map(n => (
+              <button key={n} type="button"
+                onClick={() => setSettingsMaxVotes(n)}
+                className={`flex-1 py-3 rounded-2xl border-2 text-sm font-extrabold transition-all ${
+                  settingsMaxVotes === n
+                    ? 'bg-brand-500 text-white border-brand-500'
+                    : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}>
+                {n === 1 ? '1 صوت' : n === 2 ? '2 أصوات' : '3 أصوات'}
+              </button>
+            ))}
+          </div>
+        </FormField>
+        <div className="text-xs text-slate-400 mt-1 mb-4">
+          تُطبَّق على التصويتات الجديدة · لا يمكن التصويت لنفس اللاعب مرتين · عند التعادل يحصل الجميع على النقاط
         </div>
-        <button className="btn btn-primary" onClick={() => setShowSettings(false)}>حفظ</button>
+        <div className="flex gap-2 justify-end">
+          <button className="btn btn-ghost" onClick={() => setShowSettings(false)}>إلغاء</button>
+          <button className="btn btn-primary" onClick={saveSettings}>حفظ</button>
+        </div>
       </Modal>
     </div>
   )

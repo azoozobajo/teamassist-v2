@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { Lock, Search, X } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { eventService, teamService } from '../../services'
+import { eventService, teamService, pointsService } from '../../services'
 import { Spinner, PageHeader, AttendanceButton, Modal, FormField, Avatar } from '../../components/ui'
 import { EVENT_CONFIG, formatDate, canManageEvents, isEventLocked } from '../../utils/helpers'
 import { supabase } from '../../lib/supabase'
@@ -129,9 +129,12 @@ export default function AttendancePage() {
       event_id: modalEv.id, team_id: teamId, user_id: userId,
       status, ...extra, updated_at: new Date().toISOString()
     })
+    // Auto-award attendance points for present/late
+    if (status === 'present' || status === 'late') {
+      pointsService.addAutoAttendancePoints(teamId, userId, modalEv.event_type, modalEv.id)
+    }
     const updated = await eventService.getAttendance(modalEv.id)
     setModalAtt(updated); refreshSummary(modalEv.id, updated)
-    // Refresh member att map if filter active
     if (filterMemberId === userId) {
       setMemberAttMap(prev => ({ ...prev, [modalEv.id]: status }))
     }

@@ -655,3 +655,191 @@ CREATE POLICY "reg_select" ON regulations FOR SELECT USING (is_team_member(team_
 CREATE POLICY "reg_insert" ON regulations FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
 CREATE POLICY "reg_update" ON regulations FOR UPDATE USING (is_team_admin(team_id, auth.uid()));
 CREATE POLICY "reg_delete" ON regulations FOR DELETE USING (is_team_admin(team_id, auth.uid()));
+
+-- =============================================
+-- V11: Occasions (calendar markers)
+-- =============================================
+CREATE TABLE IF NOT EXISTS occasions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  team_id UUID REFERENCES teams(id) ON DELETE CASCADE NOT NULL,
+  title TEXT NOT NULL,
+  from_date DATE NOT NULL,
+  to_date DATE NOT NULL,
+  color TEXT NOT NULL DEFAULT '#3b82f6',
+  created_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_occasions_team ON occasions(team_id, from_date);
+ALTER TABLE occasions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "occ_select" ON occasions FOR SELECT USING (is_team_member(team_id, auth.uid()));
+CREATE POLICY "occ_insert" ON occasions FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "occ_delete" ON occasions FOR DELETE USING (is_team_admin(team_id, auth.uid()));
+
+-- =============================================
+-- V12: Regulation required-agreement system
+-- =============================================
+ALTER TABLE regulations ADD COLUMN IF NOT EXISTS is_required BOOLEAN DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS regulation_agreements (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  team_id UUID REFERENCES teams(id) ON DELETE CASCADE NOT NULL,
+  regulation_id UUID REFERENCES regulations(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  agreed_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(regulation_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reg_agreements_reg ON regulation_agreements(regulation_id);
+CREATE INDEX IF NOT EXISTS idx_reg_agreements_user ON regulation_agreements(team_id, user_id);
+ALTER TABLE regulation_agreements ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "ra_select" ON regulation_agreements FOR SELECT USING (is_team_member(team_id, auth.uid()));
+CREATE POLICY "ra_insert" ON regulation_agreements FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "ra_upsert" ON regulation_agreements FOR UPDATE USING (auth.uid() = user_id);
+
+-- =============================================
+-- V13: Monthly star improvements
+-- =============================================
+ALTER TABLE monthly_stars ADD COLUMN IF NOT EXISTS label TEXT;
+ALTER TABLE monthly_stars ADD COLUMN IF NOT EXISTS announce_at TIMESTAMPTZ;
+ALTER TABLE monthly_stars ADD COLUMN IF NOT EXISTS congrats_msg TEXT;
+
+-- =============================================
+-- V14: Monthly star points award
+-- =============================================
+ALTER TABLE monthly_stars ADD COLUMN IF NOT EXISTS points_awarded INTEGER DEFAULT 0;
+
+-- =============================================
+-- V15: Best player poll 48-hour auto-close
+-- =============================================
+ALTER TABLE best_player_polls ADD COLUMN IF NOT EXISTS closes_at TIMESTAMPTZ;
+-- Allow any team member to update poll status (needed for auto-close trigger)
+DROP POLICY IF EXISTS "bpp_update" ON best_player_polls;
+CREATE POLICY "bpp_update" ON best_player_polls FOR UPDATE USING (is_team_member(team_id, auth.uid()));
+
+-- =============================================
+-- V16: Best player multi-vote support
+-- =============================================
+-- (run separately)
+
+-- =============================================
+-- V17: Auto attendance points deduplication
+-- =============================================
+ALTER TABLE points_transactions ADD COLUMN IF NOT EXISTS source_event_id UUID REFERENCES events(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS pts_auto_event_unique
+  ON points_transactions(team_id, user_id, source_event_id)
+  WHERE is_auto = true AND source_event_id IS NOT NULL;
+
+-- =============================================
+-- V16 (continued): Best player multi-vote support
+-- =============================================
+-- Allow multiple votes per voter (one per nominee) — drop old single-vote constraint
+ALTER TABLE best_player_votes DROP CONSTRAINT IF EXISTS best_player_votes_poll_id_voter_id_key;
+ALTER TABLE best_player_votes ADD CONSTRAINT IF NOT EXISTS bpv_poll_voter_nominee_unique UNIQUE(poll_id, voter_id, nominee_id);
+
+-- Team-level max votes per voter setting (1, 2, or 3)
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS best_player_max_votes INTEGER DEFAULT 1;
+
+-- =============================================
+-- V18: Player Levels, Streaks & Badges
+-- =============================================
+
+-- Player Levels (admin-configurable tiers with icons)
+CREATE TABLE IF NOT EXISTS player_levels (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  icon TEXT NOT NULL DEFAULT '⭐',
+  min_points INTEGER NOT NULL DEFAULT 0,
+  color TEXT DEFAULT '#1D9E75',
+  sort_order INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Streak Rules (consecutive training attendance → bonus points)
+CREATE TABLE IF NOT EXISTS streak_rules (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  consecutive_count INTEGER NOT NULL,
+  bonus_points INTEGER NOT NULL,
+  UNIQUE(team_id, consecutive_count)
+);
+
+-- Player Streaks (current state per player)
+CREATE TABLE IF NOT EXISTS player_streaks (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  current_streak INTEGER DEFAULT 0,
+  longest_streak INTEGER DEFAULT 0,
+  last_training_event_id UUID REFERENCES events(id) ON DELETE SET NULL,
+  UNIQUE(team_id, user_id)
+);
+
+-- Badge Definitions (admin-configurable achievements)
+CREATE TABLE IF NOT EXISTS badge_definitions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  icon TEXT NOT NULL DEFAULT '🏅',
+  description TEXT DEFAULT '',
+  trigger_type TEXT NOT NULL
+    CHECK (trigger_type IN ('total_points','streak','best_player_wins','monthly_star','match_count','training_count')),
+  trigger_value INTEGER NOT NULL DEFAULT 1,
+  color TEXT DEFAULT '#F59E0B',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Player Badges (earned — one per player per badge)
+CREATE TABLE IF NOT EXISTS player_badges (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  badge_id UUID NOT NULL REFERENCES badge_definitions(id) ON DELETE CASCADE,
+  earned_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(team_id, user_id, badge_id)
+);
+
+-- RLS
+ALTER TABLE player_levels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE streak_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE player_streaks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE badge_definitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE player_badges ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "team_member_read_levels" ON player_levels;
+CREATE POLICY "team_member_read_levels" ON player_levels FOR SELECT USING (
+  EXISTS (SELECT 1 FROM team_members WHERE team_id = player_levels.team_id AND user_id = auth.uid() AND status = 'active')
+);
+DROP POLICY IF EXISTS "admin_manage_levels" ON player_levels;
+CREATE POLICY "admin_manage_levels" ON player_levels FOR ALL USING (
+  EXISTS (SELECT 1 FROM team_members WHERE team_id = player_levels.team_id AND user_id = auth.uid() AND role IN ('owner','administrator') AND status = 'active')
+);
+DROP POLICY IF EXISTS "team_member_read_streak_rules" ON streak_rules;
+CREATE POLICY "team_member_read_streak_rules" ON streak_rules FOR SELECT USING (
+  EXISTS (SELECT 1 FROM team_members WHERE team_id = streak_rules.team_id AND user_id = auth.uid() AND status = 'active')
+);
+DROP POLICY IF EXISTS "admin_manage_streak_rules" ON streak_rules;
+CREATE POLICY "admin_manage_streak_rules" ON streak_rules FOR ALL USING (
+  EXISTS (SELECT 1 FROM team_members WHERE team_id = streak_rules.team_id AND user_id = auth.uid() AND role IN ('owner','administrator') AND status = 'active')
+);
+DROP POLICY IF EXISTS "team_member_read_streaks" ON player_streaks;
+CREATE POLICY "team_member_read_streaks" ON player_streaks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM team_members WHERE team_id = player_streaks.team_id AND user_id = auth.uid() AND status = 'active')
+);
+DROP POLICY IF EXISTS "self_read_streak" ON player_streaks;
+CREATE POLICY "self_read_streak" ON player_streaks FOR SELECT USING (user_id = auth.uid());
+DROP POLICY IF EXISTS "service_manage_streaks" ON player_streaks;
+CREATE POLICY "service_manage_streaks" ON player_streaks FOR ALL USING (true);
+DROP POLICY IF EXISTS "team_member_read_badges" ON badge_definitions;
+CREATE POLICY "team_member_read_badges" ON badge_definitions FOR SELECT USING (
+  EXISTS (SELECT 1 FROM team_members WHERE team_id = badge_definitions.team_id AND user_id = auth.uid() AND status = 'active')
+);
+DROP POLICY IF EXISTS "admin_manage_badge_defs" ON badge_definitions;
+CREATE POLICY "admin_manage_badge_defs" ON badge_definitions FOR ALL USING (
+  EXISTS (SELECT 1 FROM team_members WHERE team_id = badge_definitions.team_id AND user_id = auth.uid() AND role IN ('owner','administrator') AND status = 'active')
+);
+DROP POLICY IF EXISTS "team_member_read_player_badges" ON player_badges;
+CREATE POLICY "team_member_read_player_badges" ON player_badges FOR SELECT USING (
+  EXISTS (SELECT 1 FROM team_members WHERE team_id = player_badges.team_id AND user_id = auth.uid() AND status = 'active')
+);
+DROP POLICY IF EXISTS "service_manage_player_badges" ON player_badges;
+CREATE POLICY "service_manage_player_badges" ON player_badges FOR ALL USING (true);

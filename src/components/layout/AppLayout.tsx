@@ -24,7 +24,6 @@ export default function AppLayout() {
   const [unreadN, setUnreadN] = useState(0)
   const [unreadDM, setUnreadDM] = useState(0)
   const [teamName, setTeamName] = useState('')
-  const [teamsOpen, setTeamsOpen] = useState(true)
   const [showLeave, setShowLeave] = useState(false)
   const [leavePassword, setLeavePassword] = useState('')
   const [leaving, setLeaving] = useState(false)
@@ -153,38 +152,6 @@ export default function AppLayout() {
 
       {/* ── Nav (scrollable) ── */}
       <div className="flex-1 overflow-y-auto py-1 px-2 space-y-0.5">
-
-        {/* ── Teams list ── */}
-        {myTeams.length > 0 && (
-          <div>
-            <button onClick={() => setTeamsOpen(o => !o)}
-              className="flex items-center gap-3 px-3 py-2.5 text-sm rounded-xl w-full text-slate-500 hover:bg-slate-50 transition-all mt-1 select-none">
-              <Users size={17} />
-              <span className="flex-1 text-right font-bold">فرقي ({myTeams.length})</span>
-              <ChevronDown size={13} className={cn('transition-transform flex-shrink-0', teamsOpen && 'rotate-180')} />
-            </button>
-            {teamsOpen && myTeams.map((t: any) => (
-              <button key={t.id}
-                onClick={() => { navigate(`/team/${t.id}`); setOpen(false) }}
-                className={cn(
-                  'flex items-center gap-3 px-3 py-2 text-sm rounded-xl w-full text-right transition-all',
-                  teamId === t.id
-                    ? 'bg-brand-50 text-brand-700 font-bold'
-                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-                )}>
-                <div className={cn(
-                  'w-7 h-7 rounded-xl flex items-center justify-center text-xs font-bold flex-shrink-0 overflow-hidden',
-                  teamId === t.id ? 'bg-brand-500 text-white' : 'bg-brand-100 text-brand-700'
-                )}>
-                  {t.logo_url
-                    ? <img src={t.logo_url} className="w-full h-full object-cover" />
-                    : t.name[0]}
-                </div>
-                <span className="flex-1 truncate text-right">{t.name}</span>
-              </button>
-            ))}
-          </div>
-        )}
 
         {/* ── Team pages ── */}
         {teamNav.length > 0 && (

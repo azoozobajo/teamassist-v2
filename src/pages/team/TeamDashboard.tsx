@@ -1,9 +1,9 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, eventService, leaveService, monthlyStarService } from '../../services'
+import { teamService, eventService, leaveService, monthlyStarService, notificationService, pointsService, bestPlayerService } from '../../services'
 import { Spinner, AttendanceButton, Modal, FormField } from '../../components/ui'
-import { formatDate, EVENT_CONFIG, canManageTeam, isEventLocked, ROLE_LABELS } from '../../utils/helpers'
+import { formatDate, EVENT_CONFIG, canManageTeam, isEventLocked, ROLE_LABELS, isParent } from '../../utils/helpers'
 import { Copy, CheckCircle, Users, Calendar, Umbrella, ChevronLeft, TrendingUp, Swords, Star } from 'lucide-react'
 
 const MONTHS = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر']
@@ -14,7 +14,6 @@ export default function TeamDashboard() {
   const navigate = useNavigate()
   const [team, setTeam]         = useState<any>(null)
   const [members, setMembers]   = useState<any[]>([])
-  const [events, setEvents]     = useState<any[]>([])
   const [weekEvents, setWeekEvents] = useState<any[]>([])
   const [matchResults, setMatchResults] = useState<any[]>([])
   const [leaves, setLeaves]     = useState<any[]>([])
@@ -27,9 +26,15 @@ export default function TeamDashboard() {
 
   // Monthly star
   const [monthlyStar, setMonthlyStar] = useState<any>(undefined)
+  const [starHistory, setStarHistory] = useState<any[]>([])
+  const [showStarHistory, setShowStarHistory] = useState(false)
   const [showStarModal, setShowStarModal] = useState(false)
-  const [starForm, setStarForm] = useState({ userId: '', note: '' })
+  const [starForm, setStarForm] = useState({ userId: '', label: '', note: '', congratsMsg: '', announceAt: '', points: '0' })
+  const [announceMode, setAnnounceMode] = useState<'immediate' | 'scheduled'>('immediate')
   const [starSaving, setStarSaving] = useState(false)
+  const autoAnnounceDone = useRef(false)
+  const [openPollsCount, setOpenPollsCount] = useState(0)
+  const [myVotedPolls, setMyVotedPolls] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     if (!teamId || !user) return
@@ -43,10 +48,27 @@ export default function TeamDashboard() {
       eventService.getWeekEvents(teamId),
       eventService.getMyAttendance(teamId, user.id),
       monthlyStarService.getCurrent(teamId),
-    ]).then(([t, m, e, r, l, mr, we, myAttRecords, star]) => {
-      setTeam(t); setMembers(m); setEvents(e); setMyRole(r || ''); setLeaves(l)
+      monthlyStarService.getHistory(teamId),
+    ]).then(([t, m, e, r, l, mr, we, myAttRecords, star, hist]) => {
+      setTeam(t); setMembers(m); setMyRole(r || ''); setLeaves(l)
       setMatchResults(mr); setWeekEvents(we)
       setMonthlyStar(star ?? null)
+      setStarHistory(hist ?? [])
+
+      // Load open best-player polls for reminder (non-parent/non-guest only)
+      if (r && r !== 'parent' && r !== 'guest') {
+        bestPlayerService.getOpenPollsForTeam(teamId!).then(async polls => {
+          setOpenPollsCount(polls.length)
+          if (polls.length > 0 && user) {
+            const voted = new Set<string>()
+            await Promise.all(polls.map(async (p: any) => {
+              const v = await bestPlayerService.getMyVote(p.id, user.id)
+              if (v) voted.add(p.id)
+            }))
+            setMyVotedPolls(voted)
+          }
+        })
+      }
 
       const attMap: Record<string, string> = {}
       ;(myAttRecords as any[]).forEach((a: any) => { attMap[a.event_id] = a.status })
@@ -97,22 +119,67 @@ export default function TeamDashboard() {
     const { error } = await eventService.setAttendance({
       event_id: eventId, team_id: teamId, user_id: user.id, status
     })
-    if (error) setWeekAtts(p => ({ ...p, [eventId]: prev }))
+    if (error) {
+      setWeekAtts(p => ({ ...p, [eventId]: prev }))
+    } else if (status === 'present' || status === 'late') {
+      // Auto-points for self-attendance confirmation
+      const ev = [...weekEvents, ...(nextEvent ? [nextEvent] : [])].find((e: any) => e.id === eventId)
+      if (ev) pointsService.addAutoAttendancePoints(teamId, user.id, ev.event_type, eventId)
+    }
   }
+
+  useEffect(() => {
+    if (!monthlyStar || monthlyStar.announced_at || autoAnnounceDone.current || !teamId || !user) return
+    if (monthlyStar.announce_at && new Date(monthlyStar.announce_at) <= new Date()) {
+      autoAnnounceDone.current = true
+      monthlyStarService.announce(monthlyStar.id, teamId, monthlyStar.user_id).then(() => {
+        setMonthlyStar((p: any) => ({ ...p, announced_at: new Date().toISOString() }))
+        const name = monthlyStar.player?.full_name || ''
+        const msg = monthlyStar.congrats_msg || `🌟 تهانينا لـ ${name} على حصوله على جائزة نجم الشهر! أداء رائع ويستحق التقدير 👏`
+        notificationService.createForTeam(teamId, `⭐ نجم الشهر: ${name}`, msg, 'star', user.id)
+      })
+    }
+  }, [monthlyStar?.id])
 
   async function saveMonthlyStar(announceNow: boolean) {
     if (!starForm.userId || !teamId || !user) return
     setStarSaving(true)
-    const now = new Date()
-    const { data } = await monthlyStarService.set(teamId, starForm.userId, now.getMonth() + 1, now.getFullYear(), starForm.note, user.id, announceNow)
-    if (data) setMonthlyStar(data)
+    const nowD = new Date()
+    const isImmediate = announceNow || (!!starForm.announceAt && new Date(starForm.announceAt) <= nowD)
+    const pts = parseInt(starForm.points) || 0
+    const { data } = await monthlyStarService.set(teamId, starForm.userId, nowD.getMonth() + 1, nowD.getFullYear(), {
+      label: starForm.label,
+      note: starForm.note,
+      congratsMsg: starForm.congratsMsg,
+      announceAt: starForm.announceAt || null,
+      announcedAt: isImmediate ? nowD.toISOString() : null,
+      createdBy: user.id,
+      pointsAwarded: pts,
+    })
+    if (data) {
+      setMonthlyStar(data)
+      if (isImmediate && data.player) {
+        const name = data.player.full_name || ''
+        const msg = starForm.congratsMsg || `🌟 تهانينا لـ ${name} على حصوله على جائزة نجم الشهر! أداء رائع ويستحق التقدير 👏`
+        await notificationService.createForTeam(teamId, `⭐ نجم الشهر: ${name}`, msg, 'star', user.id)
+        if (pts > 0) {
+          await pointsService.addPoints([{
+            team_id: teamId, user_id: starForm.userId, points: pts,
+            category: 'مكافأة', reason: starForm.label || 'نجم الشهر', is_auto: false, created_by: user.id
+          }])
+        }
+      }
+    }
     setShowStarModal(false); setStarSaving(false)
   }
 
   async function announceMonthlyStar() {
-    if (!monthlyStar?.id) return
-    await monthlyStarService.announce(monthlyStar.id)
+    if (!monthlyStar?.id || !teamId || !user) return
+    await monthlyStarService.announce(monthlyStar.id, teamId, monthlyStar.user_id)
     setMonthlyStar((p: any) => ({ ...p, announced_at: new Date().toISOString() }))
+    const name = monthlyStar.player?.full_name || ''
+    const msg = monthlyStar.congrats_msg || `🌟 تهانينا لـ ${name} على حصوله على جائزة نجم الشهر! أداء رائع ويستحق التقدير 👏`
+    await notificationService.createForTeam(teamId, `⭐ نجم الشهر: ${name}`, msg, 'star', user.id)
   }
 
   if (loading) return <div className="flex justify-center py-16"><Spinner size="lg" /></div>
@@ -120,13 +187,27 @@ export default function TeamDashboard() {
 
   const pending  = leaves.filter(l => l.status === 'pending')
   const isAdmin  = canManageTeam(myRole)
+  const amParent = isParent(myRole)
   const cfg      = nextEvent ? EVENT_CONFIG[nextEvent.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other : null
   const locked   = nextEvent ? isEventLocked(nextEvent.start_datetime) : false
   const attPct   = attStats.total ? Math.round(attStats.present / attStats.total * 100) : 0
   const weekList = weekEvents.filter(e => e.id !== nextEvent?.id)
   const now      = new Date()
-  const isRevealed = monthlyStar?.announced_at && new Date(monthlyStar.announced_at) <= now
-  const monthName  = MONTHS[now.getMonth()]
+  const isRevealed = monthlyStar && (
+    (monthlyStar.announced_at && new Date(monthlyStar.announced_at) <= now) ||
+    (monthlyStar.announce_at && new Date(monthlyStar.announce_at) <= now)
+  )
+
+  // For parents: only show attendance on meetings where they are named
+  const parentCanAttend = (evt: any) => {
+    if (!amParent) return true
+    if (evt.event_type !== 'meeting') return false
+    if (!evt.att_member_ids?.length) return true
+    return (evt.att_member_ids as string[]).includes(user?.id || '')
+  }
+
+  // Relevant 7-day events for this member (used for the stat counter)
+  const myWeekEvents = weekEvents.filter(e => amParent ? parentCanAttend(e) : true)
 
   return (
     <div className="animate-fade space-y-4">
@@ -178,8 +259,8 @@ export default function TeamDashboard() {
           <div className="w-10 h-10 bg-purple-100 rounded-2xl flex items-center justify-center mx-auto mb-2">
             <Calendar size={20} className="text-purple-600" />
           </div>
-          <div className="stat-value text-purple-600">{events.length}</div>
-          <div className="stat-label">مواعيد قادمة</div>
+          <div className="stat-value text-purple-600">{myWeekEvents.length}</div>
+          <div className="stat-label">مواعيد 7 أيام</div>
         </div>
         <div className="stat-box cursor-pointer hover:border-brand-200 transition-all"
           onClick={() => navigate(`/team/${teamId}/attendance`)}>
@@ -204,62 +285,156 @@ export default function TeamDashboard() {
         </div>
       </div>
 
-      {/* ── Monthly Star Widget ── */}
-      {(isAdmin || monthlyStar) && monthlyStar !== undefined && (
-        <div className={`card ${isRevealed ? 'bg-gradient-to-br from-amber-50 to-yellow-50 border-amber-200' : ''}`}>
-          <div className="flex items-center gap-2 mb-3">
-            <Star size={18} className={isRevealed ? 'text-amber-500' : 'text-slate-400'} fill={isRevealed ? 'currentColor' : 'none'} />
-            <h3 className={`font-extrabold ${isRevealed ? 'text-amber-800' : 'text-slate-700'}`}>
-              نجم شهر {monthName}
-            </h3>
-          </div>
+      {/* ── Best Player Poll Reminder ── */}
+      {openPollsCount > 0 && !amParent && (() => {
+        const unvoted = openPollsCount - myVotedPolls.size
+        return (
+          <button onClick={() => navigate(`/team/${teamId}/best-player`)}
+            className="w-full card flex items-center gap-3 bg-amber-50 border-amber-200 hover:bg-amber-100 transition-colors cursor-pointer">
+            <div className="w-10 h-10 rounded-2xl bg-amber-200 flex items-center justify-center text-xl flex-shrink-0">⭐</div>
+            <div className="flex-1 min-w-0 text-right">
+              <div className="font-extrabold text-sm text-amber-800">
+                {unvoted > 0 ? `لم تصوّت بعد في ${unvoted} تصويت` : 'التصويتات المفتوحة'}
+              </div>
+              <div className="text-xs text-amber-600">{openPollsCount} تصويت مفتوح لأفضل لاعب · اضغط للتصويت</div>
+            </div>
+            {unvoted > 0 && (
+              <span className="bg-amber-500 text-white text-xs font-bold px-2 py-1 rounded-full flex-shrink-0">{unvoted}</span>
+            )}
+          </button>
+        )
+      })()}
 
-          {isRevealed ? (
-            <div className="flex items-center gap-3">
-              <div className="w-16 h-16 rounded-2xl bg-amber-200 flex items-center justify-center text-2xl font-extrabold overflow-hidden border-2 border-amber-300 flex-shrink-0">
-                {monthlyStar.player?.avatar_url
-                  ? <img src={monthlyStar.player.avatar_url} className="w-full h-full object-cover" alt="" />
-                  : <span>{monthlyStar.player?.full_name?.[0]}</span>}
+      {/* ── Monthly Star Widget ── */}
+      {monthlyStar !== undefined && (
+        <div>
+          {/* History toggle */}
+          {showStarHistory && starHistory.length > 0 && (
+            <div className="card mb-2 space-y-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-extrabold text-slate-500 uppercase tracking-widest">النجوم السابقون</span>
+                <button onClick={() => setShowStarHistory(false)} className="text-xs text-slate-400 hover:text-slate-600">إخفاء ▲</button>
               </div>
-              <div className="flex-1">
-                <div className="font-extrabold text-xl text-amber-900">{monthlyStar.player?.full_name}</div>
-                {monthlyStar.note && <div className="text-xs text-amber-700 mt-0.5">{monthlyStar.note}</div>}
+              {starHistory.map((s: any) => (
+                <div key={s.id} className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-amber-100 flex items-center justify-center text-sm font-extrabold text-amber-700 overflow-hidden flex-shrink-0">
+                    {s.player?.avatar_url ? <img src={s.player.avatar_url} className="w-full h-full object-cover" alt=""/> : s.player?.full_name?.[0]}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-sm text-slate-700 truncate">{s.player?.full_name}</div>
+                    {s.label && <div className="text-xs text-slate-400 truncate">{s.label}</div>}
+                  </div>
+                  <div className="text-xs text-amber-600 font-bold flex-shrink-0">{MONTHS[s.month - 1]} {s.year}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* No star yet */}
+          {!monthlyStar ? (
+            isAdmin ? (
+              <button onClick={() => { setStarForm({ userId: '', label: '', note: '', congratsMsg: '', announceAt: '', points: '0' }); setShowStarModal(true) }}
+                className="w-full flex flex-col items-center py-5 rounded-2xl border-2 border-dashed border-amber-200 bg-amber-50 hover:bg-amber-100 transition-colors cursor-pointer">
+                <Star size={24} className="text-amber-400 mb-1" />
+                <p className="text-sm font-bold text-amber-600">اختر نجم الشهر</p>
+              </button>
+            ) : (
+              <div className="card text-center py-4">
+                <div className="w-14 h-14 rounded-full bg-slate-100 mx-auto flex items-center justify-center text-2xl text-slate-300">⭐</div>
+                <p className="text-xs text-slate-400 mt-2 font-bold">لم يُختر نجم هذا الشهر بعد</p>
               </div>
-              {isAdmin && (
-                <button onClick={() => { setStarForm({ userId: monthlyStar.user_id, note: monthlyStar.note || '' }); setShowStarModal(true) }}
-                  className="btn btn-ghost btn-sm text-xs flex-shrink-0">تعديل</button>
-              )}
+            )
+          ) : isRevealed ? (
+            /* ── Revealed: premium gold card ── */
+            <div className="relative overflow-hidden rounded-3xl" style={{ background: 'linear-gradient(135deg,#78350f 0%,#92400e 25%,#b45309 55%,#d97706 80%,#f59e0b 100%)', boxShadow: '0 8px 32px rgba(180,83,9,0.4)' }}>
+              {/* Sparkle decorations */}
+              <span className="absolute top-3 right-5 text-xl pointer-events-none animate-bounce" style={{ animationDelay: '0.1s' }}>⭐</span>
+              <span className="absolute top-10 left-5 text-sm pointer-events-none animate-bounce" style={{ animationDelay: '0.5s' }}>✨</span>
+              <span className="absolute bottom-5 right-10 text-base pointer-events-none animate-bounce" style={{ animationDelay: '0.8s' }}>⭐</span>
+              <span className="absolute bottom-3 left-8 text-sm pointer-events-none animate-bounce" style={{ animationDelay: '0.3s' }}>✨</span>
+
+              <div className="relative px-5 pt-4 pb-5 text-center">
+                {/* Top row */}
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-amber-200 font-extrabold text-xs uppercase tracking-widest">⭐ نجم الشهر</span>
+                  <div className="flex gap-2">
+                    {starHistory.length > 0 && (
+                      <button onClick={() => setShowStarHistory(p => !p)}
+                        className="text-xs text-amber-200 hover:text-white font-bold transition-colors">🏅 السابقون</button>
+                    )}
+                    {isAdmin && (
+                      <button onClick={() => { setStarForm({ userId: monthlyStar.user_id, label: monthlyStar.label || '', note: monthlyStar.note || '', congratsMsg: monthlyStar.congrats_msg || '', announceAt: monthlyStar.announce_at?.slice(0,16) || '', points: String(monthlyStar.points_awarded || 0) }); setShowStarModal(true) }}
+                        className="text-xs text-amber-200 hover:text-white font-bold transition-colors">تعديل</button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Avatar with glow ring */}
+                <div className="relative w-24 h-24 mx-auto mb-3">
+                  <span className="absolute inset-0 rounded-full animate-ping opacity-30" style={{ background: 'rgba(251,191,36,0.7)' }}/>
+                  <div className="relative w-full h-full rounded-full border-4 border-amber-300 overflow-hidden shadow-2xl bg-amber-200 flex items-center justify-center text-3xl font-extrabold text-amber-800">
+                    {monthlyStar.player?.avatar_url
+                      ? <img src={monthlyStar.player.avatar_url} className="w-full h-full object-cover" alt=""/>
+                      : monthlyStar.player?.full_name?.[0]}
+                  </div>
+                  <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-2xl">👑</span>
+                </div>
+
+                {/* Label */}
+                {monthlyStar.label && (
+                  <div className="text-amber-200 text-xs font-bold mb-1">{monthlyStar.label}</div>
+                )}
+                {/* Name */}
+                <div className="text-white font-extrabold text-2xl leading-tight drop-shadow-md">
+                  {monthlyStar.player?.full_name}
+                </div>
+                {/* Note */}
+                {monthlyStar.note && (
+                  <div className="text-amber-200 text-sm mt-1">{monthlyStar.note}</div>
+                )}
+                {/* Points badge */}
+                {monthlyStar.points_awarded > 0 && (
+                  <div className="inline-flex items-center gap-1 mt-2 bg-white/20 text-white text-xs font-bold px-3 py-1 rounded-full">
+                    🏆 +{monthlyStar.points_awarded} نقطة
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
-            <div className="text-center py-2">
-              <div className="w-16 h-16 rounded-full bg-slate-200 mx-auto flex items-center justify-center text-3xl font-extrabold text-slate-400 animate-pulse">?</div>
-              <p className="text-xs text-slate-400 mt-2">سيتم الإعلان قريباً...</p>
-              {isAdmin && (
-                <div className="flex gap-2 justify-center mt-3">
-                  {monthlyStar && !monthlyStar.announced_at && (
-                    <button onClick={announceMonthlyStar}
-                      className="btn btn-sm text-xs" style={{ background: '#f59e0b', color: '#fff', border: 'none' }}>
-                      ⭐ أعلن الآن
-                    </button>
-                  )}
-                  <button onClick={() => { setStarForm({ userId: monthlyStar?.user_id || '', note: monthlyStar?.note || '' }); setShowStarModal(true) }}
-                    className="btn btn-ghost btn-sm text-xs">
-                    {monthlyStar ? 'تعديل' : 'اختر النجم'}
-                  </button>
+            /* ── Pending reveal ── */
+            <div className="relative overflow-hidden rounded-3xl" style={{ background: 'linear-gradient(135deg,#1e293b,#334155)', boxShadow: '0 8px 24px rgba(15,23,42,0.3)' }}>
+              <div className="px-5 pt-4 pb-5 text-center">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-slate-400 font-extrabold text-xs uppercase tracking-widest">⭐ نجم الشهر</span>
+                  <div className="flex gap-2">
+                    {starHistory.length > 0 && (
+                      <button onClick={() => setShowStarHistory(p => !p)}
+                        className="text-xs text-slate-400 hover:text-slate-200 font-bold transition-colors">🏅 السابقون</button>
+                    )}
+                    {isAdmin && (
+                      <div className="flex gap-2">
+                        {!monthlyStar.announced_at && (
+                          <button onClick={announceMonthlyStar}
+                            className="text-xs text-amber-400 hover:text-amber-300 font-bold transition-colors">⭐ أعلن</button>
+                        )}
+                        <button onClick={() => { setStarForm({ userId: monthlyStar.user_id, label: monthlyStar.label || '', note: monthlyStar.note || '', congratsMsg: monthlyStar.congrats_msg || '', announceAt: monthlyStar.announce_at?.slice(0,16) || '', points: String(monthlyStar.points_awarded || 0) }); setShowStarModal(true) }}
+                          className="text-xs text-slate-400 hover:text-white font-bold transition-colors">تعديل</button>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              )}
+                <div className="w-20 h-20 rounded-full bg-slate-700/80 mx-auto flex items-center justify-center text-4xl text-slate-400 animate-pulse mb-3 border-4 border-slate-600">?</div>
+                {monthlyStar.label && <div className="text-amber-400 font-bold text-sm mb-1">{monthlyStar.label}</div>}
+                <div className="text-slate-300 text-sm font-bold">سيتم الإعلان قريباً...</div>
+                {monthlyStar.announce_at && (
+                  <div className="text-slate-500 text-xs mt-1">
+                    📅 {new Date(monthlyStar.announce_at).toLocaleString('ar-SA', { dateStyle: 'short', timeStyle: 'short' })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
-      )}
-
-      {/* Admin: show "choose star" button when no star set yet */}
-      {isAdmin && !monthlyStar && monthlyStar !== undefined && (
-        <button onClick={() => { setStarForm({ userId: '', note: '' }); setShowStarModal(true) }}
-          className="card w-full text-center py-4 border-dashed border-2 border-amber-200 bg-amber-50 hover:bg-amber-100 transition-colors cursor-pointer">
-          <Star size={20} className="text-amber-400 mx-auto mb-1" />
-          <p className="text-sm font-bold text-amber-600">اختر نجم شهر {monthName}</p>
-        </button>
       )}
 
       {/* ── Match Results Widget ── */}
@@ -342,14 +517,16 @@ export default function TeamDashboard() {
             </div>
           )}
 
-          <div className="bg-slate-50 rounded-2xl p-3">
-            <p className="text-sm font-bold text-slate-600 mb-2.5">هل ستحضر هذا الموعد؟</p>
-            <AttendanceButton
-              status={weekAtts[nextEvent.id] ?? ''}
-              locked={locked}
-              onSelect={s => setAttendance(nextEvent.id, s)}
-            />
-          </div>
+          {parentCanAttend(nextEvent) && (
+            <div className="bg-slate-50 rounded-2xl p-3">
+              <p className="text-sm font-bold text-slate-600 mb-2.5">هل ستحضر هذا الموعد؟</p>
+              <AttendanceButton
+                status={weekAtts[nextEvent.id] ?? ''}
+                locked={locked}
+                onSelect={s => setAttendance(nextEvent.id, s)}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -398,14 +575,16 @@ export default function TeamDashboard() {
                     </span>
                   </div>
 
-                  <div className="bg-slate-50 rounded-xl p-2.5">
-                    <p className="text-xs font-bold text-slate-500 mb-2">هل ستحضر؟</p>
-                    <AttendanceButton
-                      status={myStatus}
-                      locked={evLocked}
-                      onSelect={s => setAttendance(e.id, s)}
-                    />
-                  </div>
+                  {parentCanAttend(e) && (
+                    <div className="bg-slate-50 rounded-xl p-2.5">
+                      <p className="text-xs font-bold text-slate-500 mb-2">هل ستحضر؟</p>
+                      <AttendanceButton
+                        status={myStatus}
+                        locked={evLocked}
+                        onSelect={s => setAttendance(e.id, s)}
+                      />
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -414,34 +593,68 @@ export default function TeamDashboard() {
       )}
 
       {/* ── Monthly Star Admin Modal ── */}
-      <Modal open={showStarModal} onClose={() => setShowStarModal(false)} title={`نجم شهر ${monthName}`}>
-        <FormField label="اختر اللاعب">
+      <Modal open={showStarModal} onClose={() => setShowStarModal(false)} title="نجم الشهر">
+        <FormField label="التسمية" required>
+          <input className="form-input font-bold" value={starForm.label}
+            onChange={e => setStarForm(p => ({ ...p, label: e.target.value }))}
+            placeholder="مثال: نجم شهر مايو"/>
+        </FormField>
+        <FormField label="اختر اللاعب" required>
           <select className="form-input" value={starForm.userId}
             onChange={e => setStarForm(p => ({ ...p, userId: e.target.value }))}>
-            <option value="">-- اختر عضواً --</option>
-            {members.map((m: any) => (
+            <option value="">-- اختر لاعباً --</option>
+            {members.filter((m: any) => m.role === 'player').map((m: any) => (
               <option key={m.user_id} value={m.user_id}>{m.profile?.full_name}</option>
             ))}
           </select>
         </FormField>
-        <FormField label="ملاحظة (اختياري)">
+        <FormField label="وصف الإنجاز (اختياري)">
           <input className="form-input" value={starForm.note}
             onChange={e => setStarForm(p => ({ ...p, note: e.target.value }))}
-            placeholder="أفضل مدافع، قائد الفريق..."/>
+            placeholder="أفضل مدافع، أكثر لاعب مجتهد..."/>
         </FormField>
-        <div className="flex gap-2 justify-end mt-4 flex-wrap">
+        <FormField label="رسالة التهنئة (اختياري)">
+          <textarea className="form-input" rows={2} value={starForm.congratsMsg}
+            onChange={e => setStarForm(p => ({ ...p, congratsMsg: e.target.value }))}
+            placeholder="ستُولَّد رسالة تلقائية إذا تركت فارغة..."/>
+        </FormField>
+        <FormField label="مكافأة نقاط (اختياري)">
+          <div className="flex items-center gap-2">
+            <input className="form-input" type="number" min="0" value={starForm.points}
+              onChange={e => setStarForm(p => ({ ...p, points: e.target.value }))}
+              placeholder="0"/>
+            <span className="text-sm text-slate-500 whitespace-nowrap">نقطة تُضاف فور الإعلان</span>
+          </div>
+        </FormField>
+
+        {/* Announce mode toggle */}
+        <div className="flex gap-2 mb-1 mt-1">
+          {(['immediate','scheduled'] as const).map(mode => (
+            <button key={mode} type="button" onClick={() => setAnnounceMode(mode)}
+              className={`flex-1 py-2 rounded-xl border text-sm font-bold transition-all ${
+                announceMode === mode
+                  ? mode === 'immediate' ? 'bg-amber-500 text-white border-amber-500' : 'bg-blue-500 text-white border-blue-500'
+                  : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+              }`}>
+              {mode === 'immediate' ? '⭐ أعلن مباشرة' : '📅 حدد تاريخ الإعلان'}
+            </button>
+          ))}
+        </div>
+        {announceMode === 'scheduled' && (
+          <div className="mb-1">
+            <input className="form-input" type="datetime-local" value={starForm.announceAt}
+              onChange={e => setStarForm(p => ({ ...p, announceAt: e.target.value }))}/>
+            <p className="text-xs text-slate-400 mt-1">يظهر "قريباً" للجميع ويُرسَل الإشعار تلقائياً عند الوصول للتاريخ المحدد</p>
+          </div>
+        )}
+
+        <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowStarModal(false)}>إلغاء</button>
-          <button className="btn btn-sm py-2 px-4"
-            style={{ background: '#d97706', color: '#fff', border: 'none' }}
-            onClick={() => saveMonthlyStar(false)}
-            disabled={!starForm.userId || starSaving}>
-            {starSaving ? <Spinner size="sm"/> : 'احفظ (سري)'}
-          </button>
-          <button className="btn btn-sm py-2 px-4"
-            style={{ background: '#f59e0b', color: '#fff', border: 'none' }}
-            onClick={() => saveMonthlyStar(true)}
-            disabled={!starForm.userId || starSaving}>
-            {starSaving ? <Spinner size="sm"/> : '⭐ أعلن الآن'}
+          <button className="btn btn-sm py-2 px-5"
+            style={{ background: announceMode === 'immediate' ? '#f59e0b' : '#3b82f6', color: '#fff', border: 'none' }}
+            onClick={() => saveMonthlyStar(announceMode === 'immediate')}
+            disabled={!starForm.userId || !starForm.label.trim() || (announceMode === 'scheduled' && !starForm.announceAt) || starSaving}>
+            {starSaving ? <Spinner size="sm"/> : announceMode === 'immediate' ? '⭐ أعلن الآن' : '📅 احفظ مجدول'}
           </button>
         </div>
       </Modal>
