@@ -356,12 +356,25 @@ export const financeService = {
   },
   async getPayments(teamId: string) {
     const { data } = await supabase.from('payments')
-      .select('*, profile:profiles(id, full_name)').eq('team_id', teamId)
+      .select('*, profile:profiles(id, full_name)')
+      .eq('team_id', teamId)
+      .order('created_at', { ascending: false })
     return data ?? []
   },
-  async upsertPayment(data: any) {
-    return supabase.from('payments')
-      .upsert({ ...data, created_at: new Date().toISOString() }, { onConflict: 'obligation_id,user_id' })
+  async findPayment(obligationId: string, userId: string) {
+    const { data } = await supabase.from('payments')
+      .select('id')
+      .eq('obligation_id', obligationId)
+      .eq('user_id', userId)
+      .limit(1)
+    return data?.[0] ?? null
+  },
+  async createPayment(data: any) {
+    return await supabase.from('payments')
+      .insert({ ...data, created_at: new Date().toISOString() })
+  },
+  async updatePayment(id: string, fields: { paid_amount: number; status: string; paid_at: string; recorded_by: string; amount: number }) {
+    return await supabase.from('payments').update(fields).eq('id', id)
   },
   async getPlayerFinance(teamId: string, userId: string) {
     const { data: obs } = await supabase.from('financial_obligations')
@@ -449,6 +462,15 @@ export const pointsService = {
     const { data } = await supabase.from('points_transactions')
       .select('*, profile:profiles!user_id(*)')
       .eq('team_id', teamId).order('created_at', { ascending: false }).limit(limit)
+    return data ?? []
+  },
+  async getHistoryByRange(teamId: string, fromDate: string, toDate: string) {
+    const { data } = await supabase.from('points_transactions')
+      .select('*, profile:profiles!user_id(*)')
+      .eq('team_id', teamId)
+      .gte('created_at', fromDate)
+      .lte('created_at', toDate + 'T23:59:59')
+      .order('created_at', { ascending: false })
     return data ?? []
   },
   async addPoints(records: any[]) {

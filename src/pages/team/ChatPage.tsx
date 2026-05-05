@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { Send, MessageCircle, Lock, Users, Baby } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
@@ -6,6 +6,8 @@ import { chatService, dmService, teamService, permissionService } from '../../se
 import { Spinner, PageHeader } from '../../components/ui'
 import { formatTimeAgo } from '../../utils/helpers'
 import { supabase } from '../../lib/supabase'
+
+const STAFF_ROLES = ['owner', 'head_coach', 'assistant_coach', 'administrator']
 
 // ── Reusable Chat Panel ────────────────────────────────────────────────
 function ChatPanel({
@@ -93,9 +95,10 @@ function ChatPanel({
   )
 }
 
-// ── DM Tab ─────────────────────────────────────────────────────────────
-function DMTab({ teamId, user, allowedContactIds }: {
+// ── Contact DM Panel ───────────────────────────────────────────────────
+function DMTab({ teamId, user, allowedContactIds, headerIcon, emptyContactMsg, chatLabel }: {
   teamId: string; user: any; allowedContactIds?: string[]
+  headerIcon?: React.ReactNode; emptyContactMsg?: string; chatLabel?: string
 }) {
   const [members, setMembers]     = useState<any[]>([])
   const [selMember, setSelMember] = useState<any>(null)
@@ -104,18 +107,22 @@ function DMTab({ teamId, user, allowedContactIds }: {
   const [loading, setLoading]     = useState(false)
   const [text, setText]           = useState('')
   const [sending, setSending]     = useState(false)
-  const bottomRef   = useRef<HTMLDivElement>(null)
-  const channelRef  = useRef<any>(null)
+  const bottomRef    = useRef<HTMLDivElement>(null)
+  const channelRef   = useRef<any>(null)
   const selMemberRef = useRef<any>(null)
 
   useEffect(() => {
     teamService.getMembers(teamId).then(m => {
-      let list = m.filter((x: any) => x.user_id !== user.id && x.role !== 'player')
-      if (allowedContactIds) list = list.filter((x: any) => allowedContactIds.includes(x.user_id))
+      let list = m.filter((x: any) => x.user_id !== user.id)
+      if (allowedContactIds !== undefined) list = list.filter((x: any) => allowedContactIds.includes(x.user_id))
       setMembers(list)
     })
+  }, [teamId, user, allowedContactIds])
+
+  useEffect(() => {
     loadConvs()
-    channelRef.current = supabase.channel(`dm:${teamId}:${user.id}`)
+    const channelKey = chatLabel ? `dm-${chatLabel}:${teamId}:${user.id}` : `dm:${teamId}:${user.id}`
+    channelRef.current = supabase.channel(channelKey)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'direct_messages', filter: `team_id=eq.${teamId}` },
         async (payload) => {
           const msg = payload.new as any
@@ -136,6 +143,18 @@ function DMTab({ teamId, user, allowedContactIds }: {
     const c = await dmService.getConversations(teamId, user.id)
     setConvs(c)
   }
+
+  // Sort contacts: those with messages first (newest → oldest), then alphabetical
+  const sortedMembers = useMemo(() => {
+    return [...members].sort((a, b) => {
+      const aTime = convs.find(c => c.partnerId === a.user_id)?.lastMsg?.created_at || ''
+      const bTime = convs.find(c => c.partnerId === b.user_id)?.lastMsg?.created_at || ''
+      if (aTime && bTime) return bTime.localeCompare(aTime)
+      if (aTime) return -1
+      if (bTime) return 1
+      return (a.profile?.full_name || '').localeCompare(b.profile?.full_name || '')
+    })
+  }, [members, convs])
 
   async function selectMember(m: any) {
     setSelMember(m); selMemberRef.current = m; setLoading(true)
@@ -158,58 +177,81 @@ function DMTab({ teamId, user, allowedContactIds }: {
 
   return (
     <div className="flex flex-1 overflow-hidden">
-      <div className="w-52 border-l border-slate-100 flex flex-col flex-shrink-0 bg-slate-50/50">
+      {/* ── Contact list sidebar ── */}
+      <div className="w-56 border-l border-slate-100 flex flex-col flex-shrink-0 bg-slate-50/50">
         <div className="px-3 py-2.5 border-b border-slate-100 flex items-center gap-1.5">
-          <Lock size={11} className="text-brand-500"/>
-          <span className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">المحادثات</span>
+          {headerIcon || <Lock size={11} className="text-brand-500"/>}
+          <span className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">
+            {chatLabel || 'المحادثات'}
+          </span>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {members.length === 0
-            ? <div className="p-4 text-xs text-slate-400 text-center mt-6">لا يوجد جهات تواصل مسموح بها</div>
-            : members.map(m => {
-                const unread = getUnread(m.user_id)
-                const conv = convs.find(c => c.partnerId === m.user_id)
-                const isActive = selMember?.id === m.id
-                return (
-                  <button key={m.id} onClick={() => selectMember(m)}
-                    className={`w-full text-right px-3 py-3 border-b border-slate-50 hover:bg-white transition-colors ${isActive ? 'bg-white border-r-2 border-brand-500' : ''}`}>
-                    <div className="flex items-center gap-2.5">
-                      <div className={`w-9 h-9 rounded-2xl flex items-center justify-center text-sm font-extrabold flex-shrink-0 ${isActive ? 'bg-brand-500 text-white' : 'bg-brand-100 text-brand-700'}`}>
-                        {m.profile?.full_name?.[0] || '?'}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-xs truncate font-bold ${isActive ? 'text-brand-800' : 'text-slate-700'}`}>{m.profile?.full_name}</div>
-                        {conv?.lastMsg ? <div className="text-xs text-slate-400 truncate">{conv.lastMsg.content}</div>
-                          : <div className="text-xs text-slate-300">ابدأ المحادثة</div>}
-                      </div>
-                      {unread > 0 && <span className="w-5 h-5 bg-red-500 text-white text-xs font-extrabold rounded-full flex items-center justify-center flex-shrink-0 animate-pulse-soft">{unread}</span>}
+          {sortedMembers.length === 0 ? (
+            <div className="p-4 text-xs text-slate-400 text-center mt-8 leading-relaxed">
+              {emptyContactMsg || 'لا توجد جهات تواصل'}
+            </div>
+          ) : sortedMembers.map(m => {
+            const unread  = getUnread(m.user_id)
+            const conv    = convs.find(c => c.partnerId === m.user_id)
+            const isActive = selMember?.user_id === m.user_id
+            const hasMsg   = !!conv?.lastMsg
+            return (
+              <button key={m.user_id} onClick={() => selectMember(m)}
+                className={`w-full text-right px-3 py-3 border-b border-slate-50 hover:bg-white transition-colors ${isActive ? 'bg-white border-r-2 border-brand-500' : ''}`}>
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-9 h-9 rounded-2xl flex items-center justify-center text-sm font-extrabold flex-shrink-0 ${isActive ? 'bg-brand-500 text-white' : 'bg-brand-100 text-brand-700'}`}>
+                    {m.profile?.full_name?.[0] || '?'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className={`text-xs truncate font-bold ${isActive ? 'text-brand-700' : unread > 0 ? 'text-slate-900' : 'text-slate-700'}`}>
+                      {m.profile?.full_name || '—'}
                     </div>
-                  </button>
-                )
-              })}
+                    {hasMsg
+                      ? <div className={`text-xs truncate mt-0.5 ${unread > 0 ? 'text-slate-600 font-semibold' : 'text-slate-400'}`}>{conv.lastMsg.content}</div>
+                      : <div className="text-xs text-slate-300 mt-0.5">ابدأ المحادثة</div>}
+                  </div>
+                  {unread > 0 && (
+                    <span className="w-5 h-5 bg-red-500 text-white text-[10px] font-extrabold rounded-full flex items-center justify-center flex-shrink-0">
+                      {unread}
+                    </span>
+                  )}
+                </div>
+              </button>
+            )
+          })}
         </div>
       </div>
+
+      {/* ── Chat area ── */}
       <div className="flex-1 flex flex-col min-w-0">
         {!selMember ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-6">
-            <div className="w-16 h-16 bg-brand-50 rounded-3xl flex items-center justify-center"><Lock size={28} className="text-brand-400"/></div>
+            <div className="w-16 h-16 bg-brand-50 rounded-3xl flex items-center justify-center">
+              {headerIcon
+                ? <span className="scale-150">{headerIcon}</span>
+                : <Lock size={28} className="text-brand-400"/>}
+            </div>
             <p className="font-extrabold text-slate-600">اختر محادثة</p>
-            <p className="text-xs text-slate-400">اختر من القائمة لبدء محادثة خاصة سرية</p>
+            <p className="text-xs text-slate-400">اختر شخصاً من القائمة لبدء المحادثة</p>
           </div>
         ) : (
           <>
             <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-3 bg-white">
-              <div className="w-9 h-9 bg-brand-500 text-white rounded-2xl flex items-center justify-center text-sm font-extrabold flex-shrink-0">{selMember.profile?.full_name?.[0]}</div>
+              <div className="w-9 h-9 bg-brand-500 text-white rounded-2xl flex items-center justify-center text-sm font-extrabold flex-shrink-0">
+                {selMember.profile?.full_name?.[0]}
+              </div>
               <div className="flex-1">
                 <div className="font-extrabold text-sm text-slate-800">{selMember.profile?.full_name}</div>
-                <div className="text-xs text-slate-400 flex items-center gap-1"><Lock size={10}/> سرية</div>
+                <div className="text-xs text-slate-400 flex items-center gap-1"><Lock size={10}/> خاص</div>
               </div>
-              <span className="badge badge-gray text-xs">خاص</span>
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2" style={{ background: '#FAFBFC' }}>
               {loading ? <div className="flex justify-center py-8"><Spinner/></div>
                 : msgs.length === 0
-                  ? <div className="flex flex-col items-center justify-center h-full gap-2 text-center"><div className="text-3xl">👋</div><p className="text-sm font-bold text-slate-500">ابدأ المحادثة</p></div>
+                  ? <div className="flex flex-col items-center justify-center h-full gap-2 text-center">
+                      <div className="text-3xl">👋</div>
+                      <p className="text-sm font-bold text-slate-500">ابدأ المحادثة</p>
+                    </div>
                   : msgs.map(m => {
                       const isMe = m.sender_id === user?.id
                       return (
@@ -247,11 +289,12 @@ function DMTab({ teamId, user, allowedContactIds }: {
 export default function ChatPage() {
   const { teamId } = useParams()
   const { user } = useAuth()
-  const [myRole, setMyRole] = useState('')
-  const [myPerms, setMyPerms] = useState<string[]>([])
-  const [unreadDM, setUnreadDM] = useState(0)
-  const [allowedContactIds, setAllowedContactIds] = useState<string[] | undefined>(undefined)
-  const [tab, setTab] = useState<string>('')
+  const [myRole, setMyRole]                             = useState('')
+  const [myPerms, setMyPerms]                           = useState<string[]>([])
+  const [unreadDM, setUnreadDM]                         = useState(0)
+  const [allowedContactIds, setAllowedContactIds]       = useState<string[] | undefined>(undefined)
+  const [parentChatContactIds, setParentChatContactIds] = useState<string[] | undefined>(undefined)
+  const [tab, setTab]                                   = useState<string>('')
 
   useEffect(() => {
     if (!teamId || !user) return
@@ -259,11 +302,28 @@ export default function ChatPage() {
       const role = r || ''
       setMyRole(role)
       setTab(role === 'parent' ? 'parents' : 'general')
-      const perms = await permissionService.getUserPermissions(teamId, user.id)
+      const [perms, allMembers] = await Promise.all([
+        permissionService.getUserPermissions(teamId, user.id),
+        teamService.getMembers(teamId),
+      ])
       setMyPerms(perms)
+
+      // Compute who this user can chat with in the parents tab
       if (role === 'parent') {
-        const ids = perms.filter((p: string) => p.startsWith('parent_dm:')).map((p: string) => p.replace('parent_dm:', ''))
-        setAllowedContactIds(ids)
+        // Parent → can message staff (coaches + admins)
+        const staffIds = allMembers
+          .filter((m: any) => STAFF_ROLES.includes(m.role))
+          .map((m: any) => m.user_id)
+        setParentChatContactIds(staffIds)
+        // DM tab: specific contacts from permissions, or all staff if none configured
+        const dmIds = perms.filter((p: string) => p.startsWith('parent_dm:')).map((p: string) => p.replace('parent_dm:', ''))
+        setAllowedContactIds(dmIds.length > 0 ? dmIds : undefined)
+      } else if (STAFF_ROLES.includes(role)) {
+        // Staff → can message all parents in parents tab
+        const parentIds = allMembers
+          .filter((m: any) => m.role === 'parent')
+          .map((m: any) => m.user_id)
+        setParentChatContactIds(parentIds)
       }
     })
     dmService.getConversations(teamId, user.id).then(convs =>
@@ -312,12 +372,26 @@ export default function ChatPage() {
             placeholder="اكتب رسالة للفريق..." emptyTitle="ابدأ المحادثة الأولى 👋"/>
         )}
         {tab === 'parents' && (
-          <ChatPanel teamId={teamId} user={user} chatType="parents"
-            placeholder="رسالة لأولياء الأمور..." emptyTitle="شات أولياء الأمور 👨‍👩‍👧"/>
+          <DMTab
+            teamId={teamId} user={user}
+            allowedContactIds={parentChatContactIds}
+            headerIcon={<Baby size={11} className="text-brand-500"/>}
+            chatLabel="أولياء الأمور"
+            emptyContactMsg={
+              isParentRole
+                ? 'لا يوجد مشرفون مسجلون في الفريق'
+                : 'لا يوجد أولياء أمور مسجلون في الفريق'
+            }
+          />
         )}
         {tab === 'dm' && (
-          <DMTab teamId={teamId} user={user}
-            allowedContactIds={isParentRole ? (allowedContactIds ?? []) : undefined}/>
+          <DMTab
+            teamId={teamId} user={user}
+            allowedContactIds={allowedContactIds}
+            headerIcon={<Lock size={11} className="text-brand-500"/>}
+            chatLabel="خاص"
+            emptyContactMsg="لا توجد جهات تواصل مسموح بها"
+          />
         )}
       </div>
     </div>

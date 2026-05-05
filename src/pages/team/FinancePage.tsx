@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { Plus, DollarSign } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { financeService, teamService } from '../../services'
+import { supabase } from '../../lib/supabase'
 import { Spinner, PageHeader, StatCard, Modal, FormField, ProgressBar, EmptyState, Tabs, CheckboxList } from '../../components/ui'
 import { canManageFinance, RIYAL, ROLE_LABELS, formatDate } from '../../utils/helpers'
 
@@ -23,6 +24,7 @@ export default function FinancePage() {
   })
   const [payAmt, setPayAmt] = useState('')
   const [saving, setSaving] = useState(false)
+  const [payError, setPayError] = useState<string | null>(null)
   const set = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }))
 
   useEffect(() => {
@@ -47,8 +49,9 @@ export default function FinancePage() {
   }
 
   function getPaid(obId: string, userId: string): number {
+    // payments is already ordered created_at DESC, so find() returns the latest record
     const p = payments.find(p => p.obligation_id === obId && p.user_id === userId)
-    return p?.paid_amount || 0
+    return p?.paid_amount ?? 0
   }
 
   async function addObligation() {
@@ -67,15 +70,29 @@ export default function FinancePage() {
   }
 
   async function doUpsert(paidTotal: number, ob: any, userId: string) {
-    if (!teamId || !user) return
-    const { error } = await financeService.upsertPayment({
-      obligation_id: ob.id, user_id: userId, team_id: teamId,
-      amount: ob.amount, paid_amount: paidTotal,
-      status: paidTotal >= ob.amount ? 'paid' : paidTotal > 0 ? 'partial' : 'unpaid',
-      paid_at: new Date().toISOString(), recorded_by: user.id
+    if (!teamId || !user) { setSaving(false); return }
+    setPayError(null)
+
+    const { error } = await supabase.rpc('record_payment', {
+      p_obligation_id: ob.id,
+      p_user_id:       userId,
+      p_team_id:       teamId,
+      p_paid_amount:   paidTotal,
+      p_amount:        ob.amount,
+      p_recorded_by:   user.id,
     })
-    if (error) { console.error('[upsertPayment]', error); setSaving(false); return }
-    await load(); setShowPay(null); setPayAmt(''); setSaving(false)
+
+    if (error) {
+      console.error('[record_payment RPC]', error)
+      setPayError(error.message || `خطأ في تسجيل الدفعة`)
+      setSaving(false)
+      return
+    }
+
+    await load()
+    setShowPay(null)
+    setPayAmt('')
+    setSaving(false)
   }
 
   async function recordPayment() {
@@ -295,7 +312,7 @@ export default function FinancePage() {
       </Modal>
 
       {/* Payment Modal */}
-      <Modal open={!!showPay} onClose={() => setShowPay(null)} title={`دفعة — ${showPay?.name}`}>
+      <Modal open={!!showPay} onClose={() => { setShowPay(null); setPayAmt(''); setPayError(null) }} title={`دفعة — ${showPay?.name}`}>
         {showPay && (
           <>
             <div className="bg-slate-50 rounded-xl p-3 mb-4 text-sm">
@@ -304,6 +321,11 @@ export default function FinancePage() {
                 المطلوب: {showPay.ob.amount} {RIYAL} · المدفوع: {getPaid(showPay.ob.id, showPay.userId)} {RIYAL}
               </div>
             </div>
+            {payError && (
+              <div className="bg-red-50 border border-red-200 rounded-xl px-3 py-2 mb-3 text-xs text-red-700 font-bold">
+                ⚠️ {payError}
+              </div>
+            )}
             <FormField label={`مبلغ الدفعة (${RIYAL})`}>
               <input className="form-input" type="number" min="0.01"
                 value={payAmt}

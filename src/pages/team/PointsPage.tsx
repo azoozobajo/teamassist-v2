@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom'
 import { Plus, Settings, Star, X, Trash2 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { pointsService, teamService, levelService, streakService, badgeService } from '../../services'
-import { Spinner, PageHeader, Modal, FormField, Tabs, EmptyState, ProgressBar, CheckboxList } from '../../components/ui'
+import { Spinner, PageHeader, Modal, FormField, EmptyState, ProgressBar, CheckboxList } from '../../components/ui'
 import { POINT_CATEGORIES, canManageTeam, ROLE_LABELS } from '../../utils/helpers'
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -125,6 +125,12 @@ export default function PointsPage() {
   const [filterFrom, setFilterFrom]         = useState('')
   const [filterTo, setFilterTo]             = useState('')
 
+  // Leaderboard date range filter
+  const [lbFrom, setLbFrom]           = useState('')
+  const [lbTo, setLbTo]               = useState('')
+  const [lbFiltered, setLbFiltered]   = useState<any[] | null>(null)
+  const [lbLoading, setLbLoading]     = useState(false)
+
   // Settings edit states
   const [editLevel, setEditLevel]   = useState<any>(null)
   const [editBadge, setEditBadge]   = useState<any>(null)
@@ -196,6 +202,25 @@ export default function PointsPage() {
 
   const filteredTotal = playerTxns.reduce((s, t) => s + t.points, 0)
 
+  async function applyLbFilter() {
+    if (!teamId || !lbFrom || !lbTo) return
+    setLbLoading(true)
+    const txns = await pointsService.getHistoryByRange(teamId, lbFrom, lbTo)
+    const totals: Record<string, { name: string; avatar: string | null; pts: number; userId: string }> = {}
+    members.filter((m: any) => m.role === 'player').forEach((m: any) => {
+      totals[m.user_id] = { name: m.profile?.full_name || '?', avatar: m.profile?.avatar_url || null, pts: 0, userId: m.user_id }
+    })
+    txns.forEach((t: any) => {
+      if (totals[t.user_id]) totals[t.user_id].pts += t.points
+    })
+    setLbFiltered(Object.values(totals).sort((a, b) => b.pts - a.pts))
+    setLbLoading(false)
+  }
+
+  function resetLbFilter() {
+    setLbFrom(''); setLbTo(''); setLbFiltered(null)
+  }
+
   async function addPoints() {
     if (!form.reason.trim() || !form.points || !teamId || !user) return
     setSaving(true)
@@ -263,7 +288,8 @@ export default function PointsPage() {
   }
 
   const isAdmin = canManageTeam(myRole)
-  const maxPts  = lb[0]?.pts || 1
+  const activeLb = lbFiltered ?? lb
+  const maxPts  = activeLb[0]?.pts || 1
   const memberItems = members.map(m => ({ value: m.user_id, label: m.profile?.full_name || '?', sub: ROLE_LABELS[m.role] }))
 
   // Helper: get next level
@@ -284,18 +310,58 @@ export default function PointsPage() {
           </div>
         )} />
 
-      <Tabs
-        tabs={[{ key: 'leaderboard', label: '🏆 الترتيب' }, { key: 'history', label: '📋 السجل' }, { key: 'competitions', label: '🎯 المسابقات' }]}
-        active={tab} onChange={setTab} />
+      {/* Tabs + compact date filter on one row */}
+      <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+        <div className="flex bg-white rounded-2xl border border-slate-100 p-1 gap-0.5">
+          {[
+            { key: 'leaderboard', label: '🏆 الترتيب' },
+            { key: 'history',     label: '📋 السجل' },
+            { key: 'competitions', label: '🎯 المسابقات' },
+          ].map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                tab === t.key ? 'bg-brand-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'leaderboard' && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-bold text-slate-400 flex-shrink-0">الفترة</span>
+            <input type="date"
+              className="border border-slate-200 rounded-lg text-xs py-1 px-1.5 bg-white w-[118px]"
+              value={lbFrom} onChange={e => setLbFrom(e.target.value)}/>
+            <span className="text-slate-400 text-xs flex-shrink-0">←</span>
+            <input type="date"
+              className="border border-slate-200 rounded-lg text-xs py-1 px-1.5 bg-white w-[118px]"
+              value={lbTo} onChange={e => setLbTo(e.target.value)}/>
+            <button onClick={applyLbFilter} disabled={!lbFrom || !lbTo || lbLoading}
+              className="btn btn-primary btn-sm px-2.5 py-1 text-xs disabled:opacity-40 flex-shrink-0">
+              {lbLoading ? <Spinner size="sm"/> : 'عرض'}
+            </button>
+            {lbFiltered && (
+              <button onClick={resetLbFilter} className="btn btn-ghost btn-sm p-1 flex-shrink-0">
+                <X size={12}/>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
 
       {loading ? <div className="flex justify-center py-10"><Spinner /></div> : (
         <>
           {/* ── Leaderboard ── */}
           {tab === 'leaderboard' && (
-            lb.length === 0
-              ? <div className="card"><EmptyState icon={<Star size={28} />} title="لا يوجد لاعبون بعد" /></div>
-              : <div className="space-y-2.5">
-                  {lb.map((p, i) => {
+            <>
+              {lbLoading ? (
+                <div className="flex justify-center py-8"><Spinner/></div>
+              ) : activeLb.length === 0 ? (
+                <div className="card"><EmptyState icon={<Star size={28} />} title="لا يوجد لاعبون بعد" /></div>
+              ) : (
+                <div className="space-y-2.5">
+                  {activeLb.map((p, i) => {
                     const isTop    = i < 3
                     const topBg    = ['bg-yellow-50 border-yellow-200', 'bg-slate-50 border-slate-200', 'bg-orange-50 border-orange-200'][i] || ''
                     const ptColor  = ['text-yellow-600', 'text-slate-500', 'text-orange-500'][i] || 'text-amber-600'
@@ -316,18 +382,20 @@ export default function PointsPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="font-extrabold text-sm text-slate-900 truncate">{p.name}</span>
-                            {levels.length > 0 && <LevelBadge pts={p.pts} levels={levels} />}
+                            {!lbFiltered && levels.length > 0 && <LevelBadge pts={p.pts} levels={levels} />}
                           </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            {streak && streak.current_streak >= 2 && (
-                              <span className="text-xs text-orange-500 font-bold flex items-center gap-0.5">
-                                🔥 {streak.current_streak}
-                              </span>
-                            )}
-                            {badgeCount > 0 && (
-                              <span className="text-xs text-amber-600 font-bold">🏅 {badgeCount}</span>
-                            )}
-                          </div>
+                          {!lbFiltered && (
+                            <div className="flex items-center gap-2 mt-1">
+                              {streak && streak.current_streak >= 2 && (
+                                <span className="text-xs text-orange-500 font-bold flex items-center gap-0.5">
+                                  🔥 {streak.current_streak}
+                                </span>
+                              )}
+                              {badgeCount > 0 && (
+                                <span className="text-xs text-amber-600 font-bold">🏅 {badgeCount}</span>
+                              )}
+                            </div>
+                          )}
                           <div className="mt-1.5">
                             <ProgressBar value={maxPts > 0 ? Math.round(p.pts / maxPts * 100) : 0}
                               color={isTop ? 'bg-yellow-400' : 'bg-brand-400'} height="h-2" />
@@ -342,6 +410,8 @@ export default function PointsPage() {
                     )
                   })}
                 </div>
+              )}
+            </>
           )}
 
           {/* ── History ── */}

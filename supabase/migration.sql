@@ -855,3 +855,61 @@ CREATE POLICY "bpv_delete" ON best_player_votes FOR DELETE USING (auth.uid() = v
 -- Track whether poll results were publicly announced
 ALTER TABLE best_player_polls ADD COLUMN IF NOT EXISTS result_announced BOOLEAN DEFAULT FALSE;
 ALTER TABLE best_player_polls ADD COLUMN IF NOT EXISTS points_awarded INTEGER DEFAULT 0;
+
+-- =============================================
+-- Fix: payments UPDATE policy — add WITH CHECK so admins can update any payment row
+-- =============================================
+DROP POLICY IF EXISTS "pay_update" ON payments;
+CREATE POLICY "pay_update" ON payments
+  FOR UPDATE
+  USING     (is_team_admin(team_id, auth.uid()))
+  WITH CHECK (is_team_admin(team_id, auth.uid()));
+
+-- Fix: payments INSERT policy — ensure admin can always insert regardless of user_id
+DROP POLICY IF EXISTS "pay_upsert" ON payments;
+CREATE POLICY "pay_upsert" ON payments
+  FOR INSERT
+  WITH CHECK (is_team_admin(team_id, auth.uid()) OR auth.uid() = user_id);
+
+-- =============================================
+-- RPC: record_payment — bypasses RLS entirely (SECURITY DEFINER)
+-- =============================================
+CREATE OR REPLACE FUNCTION record_payment(
+  p_obligation_id UUID,
+  p_user_id       UUID,
+  p_team_id       UUID,
+  p_paid_amount   NUMERIC,
+  p_amount        NUMERIC,
+  p_recorded_by   UUID
+) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  v_status TEXT;
+  v_id     UUID;
+BEGIN
+  IF NOT is_team_admin(p_team_id, auth.uid()) THEN
+    RAISE EXCEPTION 'غير مصرح';
+  END IF;
+
+  v_status := CASE
+    WHEN p_paid_amount >= p_amount THEN 'paid'
+    WHEN p_paid_amount  > 0        THEN 'partial'
+    ELSE 'unpaid'
+  END;
+
+  SELECT id INTO v_id FROM payments
+    WHERE obligation_id = p_obligation_id AND user_id = p_user_id;
+
+  IF v_id IS NOT NULL THEN
+    UPDATE payments SET
+      paid_amount = p_paid_amount, amount = p_amount,
+      status = v_status, paid_at = NOW(), recorded_by = p_recorded_by
+    WHERE id = v_id;
+  ELSE
+    INSERT INTO payments
+      (obligation_id, user_id, team_id, paid_amount, amount, status, paid_at, recorded_by)
+    VALUES
+      (p_obligation_id, p_user_id, p_team_id, p_paid_amount, p_amount, v_status, NOW(), p_recorded_by);
+  END IF;
+END;
+$$;
