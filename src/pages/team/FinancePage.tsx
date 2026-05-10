@@ -368,6 +368,9 @@ export default function FinancePage() {
   const isAdmin = canManageFinance(myRole)
   const canManageExpenses = isAdmin || hasPermission(myPerms, myRole, 'manage_team_expenses' as any)
   const isPlayer = !isAdmin && myRole !== ''
+  const myMember = members.find((m: any) => m.user_id === user?.id)
+  const isParent = myMember?.role === 'parent'
+  const linkedPlayerId: string | null = isParent ? (myMember?.linked_player_id || null) : null
 
   const totalReq = obs.reduce((s, o) => s + o.amount * getTargetMembers(o).length, 0)
   const totalPaidObl = obs.reduce((s, o) => s + getTargetMembers(o).reduce((ss: number, m: any) => ss + getPaid(o.id, m.user_id), 0), 0)
@@ -432,8 +435,8 @@ export default function FinancePage() {
       <Tabs
         tabs={[
           { key: 'obligations', label: '﷼ الالتزامات' },
-          { key: 'subscriptions', label: '📅 الاشتراكات' },
-          { key: 'expenses', label: '🧾 مصاريف الفريق' }
+          { key: 'subscriptions', label: isPlayer ? '📅 اشتراكاتي' : '📅 الاشتراكات' },
+          ...(canManageExpenses ? [{ key: 'expenses', label: '🧾 مصاريف الفريق' }] : [])
         ]}
         active={tab} onChange={setTab}/>
 
@@ -777,28 +780,50 @@ export default function FinancePage() {
                 </>
               )}
 
-              {/* ── Player view ── */}
+              {/* ── Player / Parent view ── */}
               {isPlayer && (
                 <div>
                   {(() => {
-                    const myAllSubs = allSubs.filter(s => s.player_id === user?.id)
+                    // Parent: show linked child's subscriptions; Player: show own
+                    const viewPlayerId = isParent ? linkedPlayerId : (user?.id || null)
+                    const playerName = isParent
+                      ? (members.find((m: any) => m.user_id === linkedPlayerId)?.profile?.full_name || 'الابن')
+                      : null
+                    const myAllSubs = viewPlayerId
+                      ? allSubs.filter(s => s.player_id === viewPlayerId)
+                      : []
                     const latestSub = myAllSubs[0] || null
                     const status = getSubStatus(latestSub)
                     const myTotalPaid = myAllSubs.reduce((s, sub) => s + Number(sub.paid_amount || 0), 0)
                     const myDebt = myAllSubs.reduce((s, sub) => s + Math.max(0, Number(sub.final_amount) - Number(sub.paid_amount || 0)), 0)
+
+                    if (isParent && !linkedPlayerId) return (
+                      <div className="card text-center py-10">
+                        <Calendar size={40} className="text-slate-300 mx-auto mb-3"/>
+                        <div className="font-bold text-slate-600 mb-1">لم يتم ربطك بلاعب بعد</div>
+                        <p className="text-xs text-slate-400">تواصل مع مسؤول الفريق لربط حسابك بحساب ابنك</p>
+                      </div>
+                    )
+
                     if (myAllSubs.length === 0) return (
                       <div className="card text-center py-10">
                         <Calendar size={40} className="text-slate-300 mx-auto mb-3"/>
-                        <div className="font-bold text-slate-600 mb-1">لا يوجد اشتراك نشط</div>
-                        <p className="text-xs text-slate-400">تواصل مع مسؤول الفريق لتفعيل اشتراكك</p>
+                        <div className="font-bold text-slate-600 mb-1">
+                          {isParent ? `لا يوجد اشتراك نشط لـ ${playerName}` : 'لا يوجد اشتراك نشط'}
+                        </div>
+                        <p className="text-xs text-slate-400">تواصل مع مسؤول الفريق لتفعيل الاشتراك</p>
                       </div>
                     )
+
                     const borderCl = { none: '', expired: 'border-r-4 border-red-400', warning: 'border-r-4 border-amber-400', active: 'border-r-4 border-emerald-400' }[status]
                     return (
                       <div>
+                        <div className="font-extrabold text-slate-700 text-base mb-3">
+                          {isParent ? `اشتراكات ${playerName}` : 'اشتراكاتي'}
+                        </div>
                         {latestSub && (
                           <div className={`card ${borderCl} mb-4`}>
-                            <div className="font-extrabold text-slate-800 mb-3">اشتراكك الحالي</div>
+                            <div className="font-extrabold text-slate-800 mb-3">الاشتراك الحالي</div>
                             <div className="flex justify-between text-sm text-slate-500 mb-2"><span>من: {latestSub.start_date}</span><span>حتى: {latestSub.end_date}</span></div>
                             <div className="flex justify-between items-center mb-2">
                               <span className="font-extrabold text-brand-700 text-lg">{latestSub.final_amount} {RIYAL}</span>
@@ -817,7 +842,7 @@ export default function FinancePage() {
                         </div>
                         {myAllSubs.length > 1 && (
                           <div className="card">
-                            <div className="font-bold text-sm mb-3">سجل اشتراكاتك ({myAllSubs.length})</div>
+                            <div className="font-bold text-sm mb-3">سجل الاشتراكات ({myAllSubs.length})</div>
                             <div className="space-y-2">
                               {myAllSubs.map((s: any) => {
                                 const debt = Math.max(0, Number(s.final_amount) - Number(s.paid_amount || 0))
@@ -851,7 +876,7 @@ export default function FinancePage() {
       {/* ══════════════════════════════════════════════════════════════════ */}
       {/* EXPENSES TAB                                                      */}
       {/* ══════════════════════════════════════════════════════════════════ */}
-      {tab === 'expenses' && (
+      {tab === 'expenses' && canManageExpenses && (
         loading ? <div className="flex justify-center py-10"><Spinner/></div> : (
           <div>
             {/* Date filter */}

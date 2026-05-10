@@ -1,22 +1,24 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Plus, Stethoscope, ChevronDown, ChevronUp, Paperclip, Send, AlertCircle } from 'lucide-react'
+import {
+  Plus, Stethoscope, ChevronDown, ChevronUp, Paperclip,
+  Send, AlertCircle, X, FileText, Image
+} from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { medicalService, teamService, permissionService } from '../../services'
-import { supabase } from '../../lib/supabase'
 import { Spinner, PageHeader, Modal, FormField, EmptyState, Tabs } from '../../components/ui'
 import { canManageTeam, hasPermission } from '../../utils/helpers'
 
 const REPORT_TYPES = [
-  { key: 'injury',   label: '🦴 إصابة',         color: 'bg-red-100 text-red-700' },
-  { key: 'checkup',  label: '🩺 كشف دوري',      color: 'bg-blue-100 text-blue-700' },
-  { key: 'followup', label: '📋 متابعة',         color: 'bg-amber-100 text-amber-700' },
-  { key: 'other',    label: '📝 أخرى',           color: 'bg-slate-100 text-slate-600' },
+  { key: 'injury',   label: '🦴 إصابة',    color: 'bg-red-100 text-red-700' },
+  { key: 'checkup',  label: '🩺 كشف دوري', color: 'bg-blue-100 text-blue-700' },
+  { key: 'followup', label: '📋 متابعة',    color: 'bg-amber-100 text-amber-700' },
+  { key: 'other',    label: '📝 أخرى',      color: 'bg-slate-100 text-slate-600' },
 ]
 const STATUS_CONFIG = {
-  active:     { label: 'نشط',      color: 'bg-red-100 text-red-700' },
-  monitoring: { label: 'تحت المراقبة', color: 'bg-amber-100 text-amber-700' },
-  recovered:  { label: 'متعافٍ',   color: 'bg-emerald-100 text-emerald-700' },
+  active:     { label: 'نشط',           color: 'bg-red-100 text-red-700' },
+  monitoring: { label: 'تحت المراقبة',  color: 'bg-amber-100 text-amber-700' },
+  recovered:  { label: 'متعافٍ',        color: 'bg-emerald-100 text-emerald-700' },
 }
 const NOTE_TYPES = [
   { key: 'comment',      label: 'تعليق عام' },
@@ -25,6 +27,17 @@ const NOTE_TYPES = [
   { key: 'xray',         label: 'أشعة / MRI' },
   { key: 'therapy',      label: 'جلسات علاج' },
 ]
+
+function sanitizeFileName(name: string) {
+  return name.replace(/\s+/g, '_').replace(/[^\w.\-]/g, '')
+}
+
+function FileIcon({ name }: { name: string }) {
+  const isPdf = name.toLowerCase().endsWith('.pdf')
+  return isPdf
+    ? <FileText size={14} className="text-red-500 flex-shrink-0"/>
+    : <Image size={14} className="text-blue-500 flex-shrink-0"/>
+}
 
 export default function MedicalPage() {
   const { teamId } = useParams()
@@ -41,14 +54,23 @@ export default function MedicalPage() {
 
   // New report form
   const [showAdd, setShowAdd] = useState(false)
-  const [form, setForm] = useState({ title: '', report_type: 'injury', description: '', injury_date: '', status: 'active', player_id: '' })
+  const [form, setForm] = useState({
+    title: '', report_type: 'injury', description: '',
+    injury_date: '', status: 'active', player_id: ''
+  })
   const [attachFile, setAttachFile] = useState<File | null>(null)
+  const [attachUploading, setAttachUploading] = useState(false)
+  const [attachError, setAttachError] = useState('')
   const [saving, setSaving] = useState(false)
+  const reportFileRef = useRef<HTMLInputElement>(null)
 
-  // Note form
+  // Note form state — shared (only one report expanded at a time)
   const [noteText, setNoteText] = useState('')
   const [noteType, setNoteType] = useState('followup')
   const [noteAttach, setNoteAttach] = useState<File | null>(null)
+  const [noteAttachKey, setNoteAttachKey] = useState(0) // increment = reset file input
+  const [noteAttachError, setNoteAttachError] = useState('')
+  const [noteUploading, setNoteUploading] = useState(false)
   const [sendingNote, setSendingNote] = useState(false)
   const [updatingStatus, setUpdatingStatus] = useState<string | null>(null)
 
@@ -65,7 +87,6 @@ export default function MedicalPage() {
       setMyRole(r)
       setMembers(mems.filter((x: any) => x.role === 'player'))
       setMyPerms(perms)
-      // Load after we know role/perms
       const isAdm = canManageTeam(r)
       const isDoc = r === 'medical' || perms.includes('manage_medical') || perms.includes('view_medical')
       setLoading(true)
@@ -78,6 +99,12 @@ export default function MedicalPage() {
       setLoading(false)
     })
   }, [teamId, user])
+
+  const isAdminUser = canManageTeam(myRole)
+  const isDoctor = myRole === 'medical'
+    || hasPermission(myPerms, myRole, 'manage_medical' as any)
+    || hasPermission(myPerms, myRole, 'view_medical' as any)
+  const canWrite = isAdminUser || isDoctor
 
   async function load() {
     if (!teamId || !user) return
@@ -94,6 +121,8 @@ export default function MedicalPage() {
   async function expandReport(id: string) {
     if (expandedId === id) { setExpandedId(null); return }
     setExpandedId(id)
+    // clear note form when switching reports
+    setNoteText(''); setNoteAttach(null); setNoteAttachKey(k => k + 1); setNoteAttachError('')
     if (!notes[id]) {
       setLoadingNotes(id)
       const data = await medicalService.getNotes(id)
@@ -104,12 +133,21 @@ export default function MedicalPage() {
 
   async function addReport() {
     if (!form.title || !teamId || !user) return
-    setSaving(true)
+    setSaving(true); setAttachError('')
     let attachment_url: string | null = null
+
     if (attachFile) {
-      const path = `${teamId}/${user.id}/${Date.now()}_${attachFile.name}`
-      attachment_url = await medicalService.uploadAttachment(attachFile, path)
+      setAttachUploading(true)
+      const path = `${teamId}/${user.id}/${Date.now()}_${sanitizeFileName(attachFile.name)}`
+      const { url, error } = await medicalService.uploadAttachment(attachFile, path)
+      setAttachUploading(false)
+      if (error || !url) {
+        setAttachError('فشل رفع الملف: ' + (error || 'خطأ غير معروف'))
+        setSaving(false); return
+      }
+      attachment_url = url
     }
+
     const targetPlayer = isAdminUser || isDoctor ? (form.player_id || user.id) : user.id
     await medicalService.createReport({
       team_id: teamId, player_id: targetPlayer,
@@ -122,17 +160,28 @@ export default function MedicalPage() {
     await load()
     setShowAdd(false)
     setForm({ title: '', report_type: 'injury', description: '', injury_date: '', status: 'active', player_id: '' })
-    setAttachFile(null); setSaving(false)
+    setAttachFile(null)
+    if (reportFileRef.current) reportFileRef.current.value = ''
+    setSaving(false)
   }
 
   async function addNote(reportId: string) {
     if (!noteText.trim() || !user || !teamId) return
-    setSendingNote(true)
+    setSendingNote(true); setNoteAttachError('')
     let attachment_url: string | null = null
+
     if (noteAttach) {
-      const path = `${teamId}/notes/${Date.now()}_${noteAttach.name}`
-      attachment_url = await medicalService.uploadAttachment(noteAttach, path)
+      setNoteUploading(true)
+      const path = `${teamId}/notes/${Date.now()}_${sanitizeFileName(noteAttach.name)}`
+      const { url, error } = await medicalService.uploadAttachment(noteAttach, path)
+      setNoteUploading(false)
+      if (error || !url) {
+        setNoteAttachError('فشل رفع الملف: ' + (error || 'خطأ غير معروف'))
+        setSendingNote(false); return
+      }
+      attachment_url = url
     }
+
     await medicalService.addNote({
       report_id: reportId, team_id: teamId,
       author_id: user.id, note: noteText,
@@ -140,7 +189,12 @@ export default function MedicalPage() {
     })
     const updated = await medicalService.getNotes(reportId)
     setNotes(prev => ({ ...prev, [reportId]: updated }))
-    setNoteText(''); setNoteAttach(null); setSendingNote(false)
+    // reset form
+    setNoteText('')
+    setNoteAttach(null)
+    setNoteAttachKey(k => k + 1) // forces file input DOM remount → clears browser file selection
+    setNoteAttachError('')
+    setSendingNote(false)
   }
 
   async function updateStatus(reportId: string, status: string) {
@@ -150,12 +204,7 @@ export default function MedicalPage() {
     setUpdatingStatus(null)
   }
 
-  const isAdminUser = canManageTeam(myRole)
-  const isDoctor = myRole === 'medical' || hasPermission(myPerms, myRole, 'manage_medical' as any) || hasPermission(myPerms, myRole, 'view_medical' as any)
-  const canWrite = isAdminUser || isDoctor || hasPermission(myPerms, myRole, 'manage_medical' as any)
-
   const filtered = tab === 'all' ? reports : reports.filter(r => r.status === tab)
-
   const tabCounts = {
     all: reports.length,
     active: reports.filter(r => r.status === 'active').length,
@@ -167,12 +216,11 @@ export default function MedicalPage() {
     <div>
       <PageHeader title="التقارير الطبية"
         action={
-          <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}>
-            <Plus size={13}/> {isDoctor || isAdminUser ? 'تقرير جديد' : 'رفع تقرير'}
+          <button className="btn btn-primary btn-sm" onClick={() => { setShowAdd(true); setAttachError('') }}>
+            <Plus size={13}/> {canWrite ? 'تقرير جديد' : 'رفع تقرير'}
           </button>
         }/>
 
-      {/* Info banner for players */}
       {!isDoctor && !isAdminUser && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex gap-2 text-xs text-blue-700">
           <AlertCircle size={14} className="flex-shrink-0 mt-0.5"/>
@@ -201,7 +249,7 @@ export default function MedicalPage() {
 
             return (
               <div key={report.id} className="card mb-0 p-0 overflow-hidden">
-                {/* Report header — click to expand */}
+                {/* Report header */}
                 <button className="w-full text-right p-4 border-none bg-transparent cursor-pointer"
                   onClick={() => expandReport(report.id)}>
                   <div className="flex items-start gap-3">
@@ -209,7 +257,7 @@ export default function MedicalPage() {
                       <div className="flex flex-wrap items-center gap-2 mb-1">
                         {rtConf && <span className={`badge text-xs ${rtConf.color}`}>{rtConf.label}</span>}
                         <span className={`badge text-xs ${stConf?.color}`}>{stConf?.label}</span>
-                        {report.player?.full_name && isDoctor && (
+                        {report.player?.full_name && (isDoctor || isAdminUser) && (
                           <span className="text-xs text-slate-500">👤 {report.player.full_name}</span>
                         )}
                       </div>
@@ -227,7 +275,7 @@ export default function MedicalPage() {
                       {report.attachment_url && (
                         <a href={report.attachment_url} target="_blank" rel="noreferrer"
                           onClick={e => e.stopPropagation()}
-                          className="text-brand-500 hover:text-brand-700">
+                          className="text-brand-500 hover:text-brand-700" title="عرض المرفق">
                           <Paperclip size={15}/>
                         </a>
                       )}
@@ -239,7 +287,7 @@ export default function MedicalPage() {
                 {/* Expanded content */}
                 {isExpanded && (
                   <div className="border-t border-slate-100">
-                    {/* Status change (doctor/admin only) */}
+                    {/* Status update — doctor/admin */}
                     {(isDoctor || isAdminUser) && (
                       <div className="px-4 py-3 bg-slate-50 flex flex-wrap items-center gap-2">
                         <span className="text-xs font-bold text-slate-500">تحديث الحالة:</span>
@@ -277,8 +325,8 @@ export default function MedicalPage() {
                                 <p className="text-xs text-slate-700 whitespace-pre-wrap">{n.note}</p>
                                 {n.attachment_url && (
                                   <a href={n.attachment_url} target="_blank" rel="noreferrer"
-                                    className="flex items-center gap-1 text-xs text-brand-600 mt-1.5 hover:underline">
-                                    <Paperclip size={11}/> مرفق
+                                    className="inline-flex items-center gap-1 text-xs text-brand-600 mt-1.5 hover:underline bg-brand-50 rounded-lg px-2 py-1">
+                                    <Paperclip size={11}/> عرض المرفق
                                   </a>
                                 )}
                               </div>
@@ -287,9 +335,10 @@ export default function MedicalPage() {
                         })
                       )}
 
-                      {/* Add note — doctor/admin only */}
-                      {(isDoctor || isAdminUser) && (
+                      {/* Add note form — doctor/admin */}
+                      {canWrite && (
                         <div className="border-t border-slate-100 pt-3">
+                          {/* Note type selector */}
                           <div className="flex flex-wrap gap-1.5 mb-2">
                             {NOTE_TYPES.map(t => (
                               <button key={t.key} onClick={() => setNoteType(t.key)}
@@ -298,23 +347,72 @@ export default function MedicalPage() {
                               </button>
                             ))}
                           </div>
+
+                          {/* Attachment preview */}
+                          {noteAttach && (
+                            <div className="flex items-center gap-2 mb-2 bg-brand-50 border border-brand-200 rounded-xl px-3 py-2">
+                              <FileIcon name={noteAttach.name}/>
+                              <span className="text-xs text-brand-700 font-bold flex-1 truncate">{noteAttach.name}</span>
+                              <span className="text-xs text-slate-400">({(noteAttach.size / 1024).toFixed(0)} KB)</span>
+                              <button
+                                onClick={() => { setNoteAttach(null); setNoteAttachKey(k => k + 1); setNoteAttachError('') }}
+                                className="text-red-400 hover:text-red-600 border-none bg-transparent cursor-pointer flex-shrink-0">
+                                <X size={13}/>
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Error message */}
+                          {noteAttachError && (
+                            <div className="flex items-center gap-2 mb-2 bg-red-50 border border-red-200 rounded-xl px-3 py-2 text-xs text-red-700">
+                              <AlertCircle size={12} className="flex-shrink-0"/>
+                              {noteAttachError}
+                            </div>
+                          )}
+
+                          {/* Text + actions row */}
                           <div className="flex gap-2">
                             <textarea rows={2} value={noteText} onChange={e => setNoteText(e.target.value)}
                               placeholder="اكتب تعليق أو متابعة..."
                               className="form-input flex-1 resize-none text-xs"/>
                             <div className="flex flex-col gap-1">
-                              <label className="cursor-pointer flex items-center justify-center w-8 h-8 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
-                                <Paperclip size={14} className="text-slate-500"/>
-                                <input type="file" className="hidden" accept="image/*,.pdf"
-                                  onChange={e => setNoteAttach(e.target.files?.[0] || null)}/>
+                              {/* Attach file button */}
+                              <label
+                                className={`cursor-pointer flex items-center justify-center w-8 h-8 rounded-lg transition-colors border-none ${noteAttach ? 'bg-brand-100' : 'bg-slate-100 hover:bg-slate-200'}`}
+                                title="إرفاق ملف">
+                                {noteUploading
+                                  ? <Spinner size="sm"/>
+                                  : <Paperclip size={14} className={noteAttach ? 'text-brand-600' : 'text-slate-500'}/>
+                                }
+                                <input
+                                  key={noteAttachKey}
+                                  type="file"
+                                  className="hidden"
+                                  accept="image/*,.pdf"
+                                  onChange={e => {
+                                    const f = e.target.files?.[0] || null
+                                    setNoteAttach(f)
+                                    setNoteAttachError('')
+                                  }}
+                                />
                               </label>
-                              {noteAttach && <span className="text-[10px] text-brand-600 text-center">مرفق</span>}
-                              <button onClick={() => addNote(report.id)} disabled={sendingNote || !noteText.trim()}
-                                className="w-8 h-8 bg-brand-500 rounded-lg flex items-center justify-center text-white hover:bg-brand-600 transition-colors border-none cursor-pointer disabled:opacity-50">
+
+                              {/* Send button */}
+                              <button
+                                onClick={() => addNote(report.id)}
+                                disabled={sendingNote || !noteText.trim() || noteUploading}
+                                className="w-8 h-8 bg-brand-500 rounded-lg flex items-center justify-center text-white hover:bg-brand-600 transition-colors border-none cursor-pointer disabled:opacity-50"
+                                title="إرسال">
                                 {sendingNote ? <Spinner size="sm"/> : <Send size={13}/>}
                               </button>
                             </div>
                           </div>
+
+                          {!noteAttach && (
+                            <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1">
+                              <Paperclip size={9}/> يمكنك إرفاق صورة أو PDF (حتى 20 MB)
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
@@ -327,14 +425,13 @@ export default function MedicalPage() {
       )}
 
       {/* Add Report Modal */}
-      <Modal open={showAdd} onClose={() => { setShowAdd(false); setAttachFile(null) }}
-        title={isDoctor || isAdminUser ? '🏥 تقرير طبي جديد' : '📋 رفع تقرير طبي'} width="max-w-lg">
+      <Modal open={showAdd} onClose={() => { setShowAdd(false); setAttachFile(null); setAttachError('') }}
+        title={canWrite ? '🏥 تقرير طبي جديد' : '📋 رفع تقرير طبي'} width="max-w-lg">
 
-        {/* Player selector — only for doctor/admin */}
         {(isDoctor || isAdminUser) && members.length > 0 && (
           <FormField label="اللاعب">
             <select className="form-input" value={form.player_id} onChange={e => set('player_id', e.target.value)}>
-              <option value="">— اختر لاعباً (أو اتركه فارغاً لتقرير عام) —</option>
+              <option value="">— اختر لاعباً —</option>
               {members.map((m: any) => (
                 <option key={m.user_id} value={m.user_id}>{m.profile?.full_name}</option>
               ))}
@@ -354,7 +451,8 @@ export default function MedicalPage() {
         </FormField>
 
         <FormField label="العنوان" required>
-          <input className="form-input" value={form.title} onChange={e => set('title', e.target.value)} placeholder="إصابة في الركبة اليمنى..."/>
+          <input className="form-input" value={form.title} onChange={e => set('title', e.target.value)}
+            placeholder="إصابة في الركبة اليمنى..."/>
         </FormField>
 
         <div className="grid grid-cols-2 gap-3">
@@ -369,22 +467,53 @@ export default function MedicalPage() {
         </div>
 
         <FormField label="التفاصيل">
-          <textarea className="form-input" rows={3} value={form.description} onChange={e => set('description', e.target.value)}
+          <textarea className="form-input" rows={3} value={form.description}
+            onChange={e => set('description', e.target.value)}
             placeholder="وصف الإصابة أو الحالة الطبية..."/>
         </FormField>
 
+        {/* File attachment for report */}
         <FormField label="إرفاق صورة / تقرير مستشفى (اختياري)">
-          <label className="flex items-center gap-2 cursor-pointer p-3 border-2 border-dashed border-slate-200 rounded-xl hover:border-brand-300 transition-colors">
-            <Paperclip size={16} className="text-slate-400"/>
-            <span className="text-sm text-slate-500">{attachFile ? attachFile.name : 'اضغط لاختيار ملف (صورة أو PDF)'}</span>
-            <input type="file" className="hidden" accept="image/*,.pdf"
-              onChange={e => setAttachFile(e.target.files?.[0] || null)}/>
-          </label>
+          {attachFile ? (
+            <div className="flex items-center gap-2 bg-brand-50 border border-brand-200 rounded-xl px-3 py-2.5">
+              <FileIcon name={attachFile.name}/>
+              <span className="text-sm text-brand-700 font-bold flex-1 truncate">{attachFile.name}</span>
+              <span className="text-xs text-slate-400">({(attachFile.size / 1024).toFixed(0)} KB)</span>
+              <button
+                onClick={() => { setAttachFile(null); setAttachError(''); if (reportFileRef.current) reportFileRef.current.value = '' }}
+                className="text-red-400 hover:text-red-600 border-none bg-transparent cursor-pointer flex-shrink-0">
+                <X size={14}/>
+              </button>
+            </div>
+          ) : (
+            <label className="flex items-center gap-2 cursor-pointer p-3 border-2 border-dashed border-slate-200 rounded-xl hover:border-brand-300 hover:bg-brand-50/30 transition-colors">
+              <Paperclip size={16} className="text-slate-400 flex-shrink-0"/>
+              <span className="text-sm text-slate-500">اضغط لاختيار ملف (صورة أو PDF — حتى 20 MB)</span>
+              <input
+                ref={reportFileRef}
+                type="file"
+                className="hidden"
+                accept="image/*,.pdf"
+                onChange={e => { setAttachFile(e.target.files?.[0] || null); setAttachError('') }}
+              />
+            </label>
+          )}
+          {attachError && (
+            <div className="flex items-center gap-2 mt-2 bg-red-50 border border-red-200 rounded-xl px-3 py-2 text-xs text-red-700">
+              <AlertCircle size={12} className="flex-shrink-0"/>
+              {attachError}
+            </div>
+          )}
+          {attachUploading && (
+            <div className="flex items-center gap-2 mt-2 text-xs text-brand-600">
+              <Spinner size="sm"/> جارٍ رفع الملف...
+            </div>
+          )}
         </FormField>
 
         <div className="flex gap-2 justify-end mt-4">
-          <button className="btn btn-ghost" onClick={() => setShowAdd(false)}>إلغاء</button>
-          <button className="btn btn-primary" onClick={addReport} disabled={saving || !form.title}>
+          <button className="btn btn-ghost" onClick={() => { setShowAdd(false); setAttachFile(null); setAttachError('') }}>إلغاء</button>
+          <button className="btn btn-primary" onClick={addReport} disabled={saving || attachUploading || !form.title}>
             {saving ? <Spinner size="sm"/> : 'إرسال التقرير'}
           </button>
         </div>

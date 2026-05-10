@@ -881,16 +881,30 @@ CREATE POLICY "mednote_insert" ON medical_report_notes FOR INSERT WITH CHECK (
 
 -- =============================================
 -- STORAGE BUCKETS
--- Run in Supabase Dashboard > Storage (manually create) or:
 -- =============================================
--- INSERT INTO storage.buckets (id, name, public) VALUES ('medical-files', 'medical-files', false)
--- ON CONFLICT (id) DO NOTHING;
---
--- CREATE POLICY "med_files_select" ON storage.objects FOR SELECT
---   USING (bucket_id = 'medical-files' AND auth.uid() IS NOT NULL);
--- CREATE POLICY "med_files_insert" ON storage.objects FOR INSERT
---   WITH CHECK (bucket_id = 'medical-files' AND auth.uid() IS NOT NULL);
--- NOTE: Create the "medical-files" bucket manually in Supabase Storage dashboard with Public = OFF
+
+-- medical-files bucket (private — for medical reports & notes attachments)
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'medical-files', 'medical-files', false,
+  20971520,
+  ARRAY['image/jpeg','image/png','image/gif','image/webp','application/pdf']
+)
+ON CONFLICT (id) DO NOTHING;
+
+DROP POLICY IF EXISTS "med_files_select" ON storage.objects;
+DROP POLICY IF EXISTS "med_files_insert" ON storage.objects;
+DROP POLICY IF EXISTS "med_files_update" ON storage.objects;
+DROP POLICY IF EXISTS "med_files_delete" ON storage.objects;
+
+CREATE POLICY "med_files_select" ON storage.objects FOR SELECT
+  USING (bucket_id = 'medical-files' AND auth.uid() IS NOT NULL);
+CREATE POLICY "med_files_insert" ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'medical-files' AND auth.uid() IS NOT NULL);
+CREATE POLICY "med_files_update" ON storage.objects FOR UPDATE
+  USING (bucket_id = 'medical-files' AND auth.uid() IS NOT NULL);
+CREATE POLICY "med_files_delete" ON storage.objects FOR DELETE
+  USING (bucket_id = 'medical-files' AND auth.uid() IS NOT NULL);
 
 -- =============================================
 -- V13: PLATFORM ADMIN DASHBOARD

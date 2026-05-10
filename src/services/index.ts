@@ -836,11 +836,15 @@ export const medicalService = {
   async addNote(data: any) {
     return supabase.from('medical_report_notes').insert(data).select().single()
   },
-  async uploadAttachment(file: File, path: string) {
-    const { data, error } = await supabase.storage.from('medical-files').upload(path, file, { upsert: true })
-    if (error) return null
-    const { data: { publicUrl } } = supabase.storage.from('medical-files').getPublicUrl(data.path)
-    return publicUrl
+  async uploadAttachment(file: File, path: string): Promise<{ url: string | null; error: string | null }> {
+    try {
+      const { data, error } = await supabase.storage.from('medical-files').upload(path, file, { upsert: true })
+      if (error) return { url: null, error: error.message }
+      const { data: { publicUrl } } = supabase.storage.from('medical-files').getPublicUrl(data.path)
+      return { url: publicUrl, error: null }
+    } catch (e: any) {
+      return { url: null, error: e?.message || 'فشل رفع الملف' }
+    }
   }
 }
 
