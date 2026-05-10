@@ -31,6 +31,11 @@ import PermissionsPage from './pages/team/PermissionsPage'
 import ArchivePage from './pages/team/ArchivePage'
 import MyChildPage from './pages/team/MyChildPage'
 import RegulationsPage from './pages/team/RegulationsPage'
+import MedicalPage from './pages/team/MedicalPage'
+import AdminLayout from './components/layout/AdminLayout'
+import AdminDashboardPage from './pages/admin/AdminDashboardPage'
+import AdminTeamsPage from './pages/admin/AdminTeamsPage'
+import AdminUsersPage from './pages/admin/AdminUsersPage'
 
 function RequireAuth() {
   const { user, loading } = useAuth()
@@ -87,9 +92,18 @@ export default function App() {
               <Route path="/archive/:teamId" element={<ArchivePage/>}/>
               <Route path="/team/:teamId/my-child" element={<MyChildPage/>}/>
               <Route path="/team/:teamId/regulations" element={<RegulationsPage/>}/>
+              <Route path="/team/:teamId/medical" element={<MedicalPage/>}/>
             </Route>
           </Route>
           <Route path="/join/:code" element={<JoinViaLink/>}/>
+          {/* Platform Admin Panel */}
+          <Route element={<RequireAuth/>}>
+            <Route element={<AdminLayout/>}>
+              <Route path="/admin" element={<AdminDashboardPage/>}/>
+              <Route path="/admin/teams" element={<AdminTeamsPage/>}/>
+              <Route path="/admin/users" element={<AdminUsersPage/>}/>
+            </Route>
+          </Route>
           <Route path="*" element={<Navigate to="/" replace/>}/>
         </Routes>
       </AuthProvider>

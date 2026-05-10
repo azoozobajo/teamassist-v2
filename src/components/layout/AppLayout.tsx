@@ -4,12 +4,12 @@ import {
   Home, Users, Calendar, CheckSquare, MessageCircle, Bell, Swords, Star as StarIcon,
   DollarSign, FileText, Mail, Settings, Star,
   Umbrella, Trophy, LogOut, Menu, ChevronDown, Shield, UserCircle,
-  Plus, LogIn, Archive, Baby, BookOpen
+  Plus, LogIn, Archive, Baby, BookOpen, Stethoscope
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { Avatar } from '../ui'
 import { supabase } from '../../lib/supabase'
-import { teamService, notificationService, dmService } from '../../services'
+import { teamService, notificationService, dmService, adminService } from '../../services'
 import { cn, ROLE_LABELS, canManageTeam, canManageEvents, canViewReports, canManageFinance, isParent } from '../../utils/helpers'
 
 export default function AppLayout() {
@@ -24,11 +24,12 @@ export default function AppLayout() {
   const [unreadN, setUnreadN] = useState(0)
   const [unreadDM, setUnreadDM] = useState(0)
   const [teamName, setTeamName] = useState('')
-  const [teamsOpen, setTeamsOpen] = useState(true)
   const [showLeave, setShowLeave] = useState(false)
   const [leavePassword, setLeavePassword] = useState('')
   const [leaving, setLeaving] = useState(false)
   const [leaveError, setLeaveError] = useState('')
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false)
+  const [isFrozen, setIsFrozen] = useState(false)
 
   useEffect(() => {
     if (!user) return
@@ -36,14 +37,24 @@ export default function AppLayout() {
     teamService.getMyArchivedTeams(user.id).then(setArchivedTeams)
     notificationService.getAll(user.id).then(ns =>
       setUnreadN(ns.filter((n: any) => !n.is_read).length))
+    adminService.isPlatformAdmin(user.id).then(setIsPlatformAdmin)
   }, [user])
 
   useEffect(() => {
     if (!teamId || !user) return
+    setIsFrozen(false)
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
     teamService.getTeam(teamId).then(t => setTeamName(t?.name || ''))
     dmService.getConversations(teamId, user.id).then(convs =>
       setUnreadDM(convs.reduce((s: number, c: any) => s + c.unread, 0)))
+    // Check if this member is frozen
+    supabase.from('team_members')
+      .select('is_frozen')
+      .eq('team_id', teamId)
+      .eq('user_id', user.id)
+      .eq('status', 'active')
+      .maybeSingle()
+      .then(({ data }) => setIsFrozen(data?.is_frozen ?? false))
   }, [teamId, user])
 
   async function handleLeave() {
@@ -80,6 +91,7 @@ export default function AppLayout() {
     { to: `/team/${teamId}/invite`,       icon: Mail,          label: 'الدعوات',            adminOnly: true },
     { to: `/team/${teamId}/my-child`,      icon: Baby,          label: 'ابني في الفريق',    parentOnly: true },
     { to: `/team/${teamId}/regulations`,  icon: BookOpen,      label: 'اللوائح والأنظمة' },
+    { to: `/team/${teamId}/medical`,      icon: Stethoscope,   label: 'التقارير الطبية',   medicalNav: true },
     { to: `/team/${teamId}/permissions`,  icon: Shield,        label: 'الصلاحيات',         ownerOnly: true, hiddenNav: true },
     { to: `/team/${teamId}/settings`,     icon: Settings,      label: 'الإعدادات',          adminOnly: true },
   ]
@@ -92,6 +104,8 @@ export default function AppLayout() {
     if ((n as any).ownerOnly && myRole !== 'owner') return false
     if ((n as any).coachOnly && !canManageEvents(myRole)) return false
     if ((n as any).requireReports && !canReports) return false
+    // Medical nav: show for admin, medical role, or players (they submit their own)
+    if ((n as any).medicalNav && !canAdmin && myRole !== 'medical' && myRole !== 'player') return false
     return true
   }) : []
 
@@ -154,38 +168,6 @@ export default function AppLayout() {
       {/* ── Nav (scrollable) ── */}
       <div className="flex-1 overflow-y-auto py-1 px-2 space-y-0.5">
 
-        {/* ── Teams list ── */}
-        {myTeams.length > 0 && (
-          <div>
-            <button onClick={() => setTeamsOpen(o => !o)}
-              className="flex items-center gap-3 px-3 py-2.5 text-sm rounded-xl w-full text-slate-500 hover:bg-slate-50 transition-all mt-1 select-none">
-              <Users size={17} />
-              <span className="flex-1 text-right font-bold">فرقي ({myTeams.length})</span>
-              <ChevronDown size={13} className={cn('transition-transform flex-shrink-0', teamsOpen && 'rotate-180')} />
-            </button>
-            {teamsOpen && myTeams.map((t: any) => (
-              <button key={t.id}
-                onClick={() => { navigate(`/team/${t.id}`); setOpen(false) }}
-                className={cn(
-                  'flex items-center gap-3 px-3 py-2 text-sm rounded-xl w-full text-right transition-all',
-                  teamId === t.id
-                    ? 'bg-brand-50 text-brand-700 font-bold'
-                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-                )}>
-                <div className={cn(
-                  'w-7 h-7 rounded-xl flex items-center justify-center text-xs font-bold flex-shrink-0 overflow-hidden',
-                  teamId === t.id ? 'bg-brand-500 text-white' : 'bg-brand-100 text-brand-700'
-                )}>
-                  {t.logo_url
-                    ? <img src={t.logo_url} className="w-full h-full object-cover" />
-                    : t.name[0]}
-                </div>
-                <span className="flex-1 truncate text-right">{t.name}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
         {/* ── Team pages ── */}
         {teamNav.length > 0 && (
           <>
@@ -193,10 +175,23 @@ export default function AppLayout() {
             {teamNav.map(n => <NavItem key={n.to} {...n} />)}
           </>
         )}
+
+        {/* ── No team in sidebar ── */}
+        {!teamId && myTeams.length === 0 && (
+          <div className="px-3 py-6 text-center">
+            <p className="text-xs text-slate-400 leading-relaxed">لم تنضم لأي فريق بعد</p>
+          </div>
+        )}
       </div>
 
       {/* ── Footer ── */}
       <div className="border-t border-slate-100 px-3 py-3 flex-shrink-0 space-y-2">
+        {isPlatformAdmin && (
+          <button onClick={() => { navigate('/admin'); setOpen(false) }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 rounded-xl transition-colors border border-emerald-200">
+            <Shield size={13}/> لوحة إدارة المنصة
+          </button>
+        )}
         {teamId && myRole && myRole !== 'owner' && (
           <button onClick={() => { setShowLeave(true); setLeavePassword(''); setLeaveError('') }}
             className="w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-red-500 hover:bg-red-50 rounded-xl transition-colors">
@@ -265,22 +260,41 @@ export default function AppLayout() {
             <Menu size={20} className="text-slate-600" />
           </button>
 
-          {/* Team Switcher */}
+          {/* ── Team Switcher Dropdown ── */}
           <div className="relative flex-1 min-w-0">
             <button
               onClick={() => setSwitcherOpen(o => !o)}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl hover:bg-slate-100 transition-colors max-w-full">
-              <div className="w-7 h-7 rounded-xl bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-bold flex-shrink-0 overflow-hidden">
-                {(() => {
-                  const cur = myTeams.find((t: any) => t.id === teamId)
-                  return cur?.logo_url
-                    ? <img src={cur.logo_url} className="w-full h-full object-cover" alt="" />
-                    : (teamName?.[0] || 'T')
-                })()}
-              </div>
+              className={cn(
+                'flex items-center gap-2 px-2.5 py-1.5 rounded-xl hover:bg-slate-100 transition-colors max-w-full',
+                !teamId && myTeams.length === 0 && 'border border-dashed border-slate-300'
+              )}>
+
+              {/* Team icon / placeholder */}
+              {teamId || myTeams.length > 0 ? (
+                <div className="w-7 h-7 rounded-xl bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-bold flex-shrink-0 overflow-hidden">
+                  {(() => {
+                    const cur = myTeams.find((t: any) => t.id === teamId)
+                    return cur?.logo_url
+                      ? <img src={cur.logo_url} className="w-full h-full object-cover" alt="" />
+                      : (teamName?.[0] || myTeams[0]?.name?.[0] || '؟')
+                  })()}
+                </div>
+              ) : (
+                <div className="w-7 h-7 rounded-xl bg-slate-100 flex items-center justify-center flex-shrink-0">
+                  <Users size={14} className="text-slate-400" />
+                </div>
+              )}
+
               <div className="hidden sm:flex flex-col items-start min-w-0">
-                <span className="text-sm font-bold text-slate-700 truncate max-w-[160px] leading-tight">
-                  {teamName || 'TeamAssist'}
+                <span className={cn(
+                  'text-sm font-bold truncate max-w-[160px] leading-tight',
+                  teamId ? 'text-slate-700' : 'text-slate-400'
+                )}>
+                  {teamId
+                    ? (teamName || 'الفريق')
+                    : myTeams.length > 0
+                      ? 'اختر فريقاً'
+                      : 'لا يوجد فريق'}
                 </span>
                 {teamId && myRole && (
                   <span className="text-[11px] text-slate-400 leading-tight">{ROLE_LABELS[myRole] || myRole}</span>
@@ -292,13 +306,13 @@ export default function AppLayout() {
             {switcherOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setSwitcherOpen(false)} />
-                <div className="absolute top-full mt-2 right-0 w-72 bg-white rounded-2xl shadow-xl border border-slate-100 z-50 overflow-hidden animate-scale-in">
+                <div className="absolute top-full mt-2 right-0 w-72 bg-white rounded-2xl shadow-xl border border-slate-100 z-50 overflow-hidden" style={{ animation: 'scaleIn .12s ease' }}>
 
                   {/* Active teams */}
-                  {myTeams.length > 0 && (
+                  {myTeams.length > 0 ? (
                     <div>
                       <p className="text-[11px] font-extrabold text-slate-400 px-4 pt-3 pb-1 tracking-widest uppercase">
-                        فرقي النشطة
+                        فرقي النشطة ({myTeams.length})
                       </p>
                       {myTeams.map((t: any) => (
                         <button key={t.id}
@@ -327,6 +341,11 @@ export default function AppLayout() {
                         </button>
                       ))}
                     </div>
+                  ) : (
+                    <div className="px-4 py-5 text-center">
+                      <p className="text-sm text-slate-500 font-bold mb-1">لم تنضم لأي فريق بعد</p>
+                      <p className="text-xs text-slate-400">أنشئ فريقاً أو انضم برمز الدعوة</p>
+                    </div>
                   )}
 
                   {/* Archived teams */}
@@ -348,10 +367,7 @@ export default function AppLayout() {
                             <div className="font-bold truncate text-sm text-slate-500">{t.name}</div>
                             <div className="text-xs text-slate-400 flex items-center gap-1">
                               <Archive size={10} />
-                              <span>
-                                أرشيف
-                                {t.removedAt ? ` · ${new Date(t.removedAt).toLocaleDateString('ar-SA')}` : ''}
-                              </span>
+                              <span>أرشيف{t.removedAt ? ` · ${new Date(t.removedAt).toLocaleDateString('ar-SA')}` : ''}</span>
                             </div>
                           </div>
                         </button>
@@ -362,11 +378,11 @@ export default function AppLayout() {
                   {/* Quick actions */}
                   <div className="border-t border-slate-100 p-2 grid grid-cols-2 gap-1">
                     <button onClick={() => { navigate('/create-team'); setSwitcherOpen(false) }}
-                      className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-brand-700 hover:bg-brand-50 transition-colors">
+                      className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-bold text-brand-700 hover:bg-brand-50 transition-colors border border-brand-100">
                       <Plus size={13} /> فريق جديد
                     </button>
                     <button onClick={() => { navigate('/join-team'); setSwitcherOpen(false) }}
-                      className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors">
+                      className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors border border-slate-200">
                       <LogIn size={13} /> انضمام
                     </button>
                   </div>
@@ -411,7 +427,19 @@ export default function AppLayout() {
         {/* ── Page content ── */}
         <main className="flex-1 overflow-y-auto pb-24 lg:pb-6">
           <div className="max-w-5xl mx-auto p-4 lg:p-6">
-            <Outlet />
+            {isFrozen && teamId ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <div className="w-20 h-20 rounded-full bg-cyan-100 flex items-center justify-center mb-5">
+                  <span className="text-4xl">❄️</span>
+                </div>
+                <h2 className="text-xl font-extrabold text-slate-700 mb-2">عضويتك مجمّدة</h2>
+                <p className="text-slate-500 text-sm max-w-xs">
+                  تم تجميد عضويتك في هذا الفريق مؤقتاً. تواصل مع مسؤول الفريق لمعرفة السبب أو لرفع التجميد.
+                </p>
+              </div>
+            ) : (
+              <Outlet />
+            )}
           </div>
         </main>
 

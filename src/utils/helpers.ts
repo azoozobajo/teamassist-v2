@@ -31,7 +31,7 @@ export const isAdmin = (role: string) => ['owner', 'administrator'].includes(rol
 export const isCoach = (role: string) => ['owner', 'head_coach', 'assistant_coach', 'administrator'].includes(role)
 export const canManageTeam = (role: string) => ['owner', 'administrator'].includes(role)
 export const canManageEvents = (role: string) => ['owner', 'head_coach', 'assistant_coach', 'administrator'].includes(role)
-export const canManageFinance = (role: string) => ['owner', 'administrator'].includes(role)
+export const canManageFinance = (role: string) => ['owner', 'administrator', 'head_coach'].includes(role)
 export const canViewReports = (role: string) => ['owner', 'head_coach', 'assistant_coach', 'administrator'].includes(role)
 export const isParent = (role: string) => role === 'parent'
 
@@ -66,6 +66,8 @@ export const ATT_CONFIG: Record<string, { label: string; color: string; bg: stri
 }
 
 export const POINT_CATEGORIES = ['مكافأة', 'تطور', 'تعاون', 'مبادرة', 'أداء', 'نتائج'] as const
+export const DEDUCTION_REASONS = ['سوء سلوك', 'اعتداء', 'غياب بدون عذر', 'تأخر متكرر', 'مخالفة النظام', 'عدم الالتزام'] as const
+export const EXPENSE_CATEGORIES = ['معدات وكور', 'ملابس وزي', 'مياه وتغذية', 'مواصلات', 'سكن وفندق', 'طيران', 'أكل ووجبات', 'رسوم وتسجيل', 'أخرى'] as const
 export const REPORT_TAGS = ['إصابة', 'مشكلة', 'مكافأة', 'موقف', 'إنجاز', 'تغيير', 'ملاحظة', 'طارئ'] as const
 export const NOTE_TYPES = ['مدح', 'توجيه', 'تحذير', 'تطوير'] as const
 export const SPORT_TYPES = ['كرة القدم', 'كرة السلة', 'كرة الطائرة', 'السباحة', 'التنس', 'الجري', 'أخرى']
@@ -93,11 +95,14 @@ export const PERMISSIONS = [
   { key: 'invite_members',       label: 'دعوة أعضاء وقبولهم' },
   { key: 'grant_points',         label: 'منح النقاط' },
   { key: 'manage_points_system', label: 'إدارة نظام النقاط' },
-  { key: 'manage_finance_add',   label: 'إضافة الالتزامات المالية' },
-  { key: 'manage_finance_pay',   label: 'تسجيل المدفوعات' },
-  { key: 'make_announcements',   label: 'نشر الإعلانات والتذكيرات' },
-  { key: 'manage_permissions',   label: 'إدارة صلاحيات الأعضاء' },
-  { key: 'view_parent_chat',    label: 'رؤية شات أولياء الأمور' },
+  { key: 'manage_finance_add',      label: 'إضافة الالتزامات المالية' },
+  { key: 'manage_finance_pay',      label: 'تسجيل المدفوعات' },
+  { key: 'manage_team_expenses',    label: 'إدارة مصاريف الفريق' },
+  { key: 'make_announcements',      label: 'نشر الإعلانات والتذكيرات' },
+  { key: 'manage_permissions',      label: 'إدارة صلاحيات الأعضاء' },
+  { key: 'view_parent_chat',        label: 'رؤية شات أولياء الأمور' },
+  { key: 'view_medical',            label: 'عرض التقارير الطبية (طبيب)' },
+  { key: 'manage_medical',          label: 'إدارة التقارير الطبية (طبيب)' },
 ] as const
 
 export type PermissionKey = typeof PERMISSIONS[number]['key']

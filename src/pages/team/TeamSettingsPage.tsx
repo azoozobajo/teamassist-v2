@@ -3,7 +3,23 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 import { teamService } from '../../services'
 import { Spinner, PageHeader, Alert, FormField, ImageUpload } from '../../components/ui'
-import { SPORT_TYPES, SAUDI_CITIES, AGE_CATEGORIES } from '../../utils/helpers'
+import { SPORT_TYPES, SAUDI_CITIES, AGE_CATEGORIES, RIYAL } from '../../utils/helpers'
+
+function Toggle({ checked, onChange, label, sub }: { checked: boolean; onChange: (v: boolean) => void; label: string; sub?: string }) {
+  return (
+    <label className="flex items-center justify-between cursor-pointer p-3 bg-slate-50 rounded-xl">
+      <div>
+        <div className="font-bold text-sm">{label}</div>
+        {sub && <div className="text-xs text-slate-400">{sub}</div>}
+      </div>
+      <div className="relative inline-flex items-center cursor-pointer">
+        <input type="checkbox" className="sr-only peer" checked={checked} onChange={e => onChange(e.target.checked)}/>
+        <div className="w-11 h-6 bg-slate-200 peer-checked:bg-brand-500 rounded-full transition-colors peer-focus:ring-2 peer-focus:ring-brand-300"/>
+        <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0'}`}/>
+      </div>
+    </label>
+  )
+}
 
 export default function TeamSettingsPage() {
   const { teamId } = useParams()
@@ -20,9 +36,21 @@ export default function TeamSettingsPage() {
     teamService.getTeam(teamId).then(t => { setForm(t || {}); setLoading(false) })
   }, [teamId])
 
-  async function save(e: React.FormEvent) {
-    e.preventDefault(); setSaving(true); setError(''); setSuccess(false)
-    const { error: err } = await teamService.updateTeam(teamId!, form)
+  async function save(e?: React.FormEvent) {
+    e?.preventDefault(); setSaving(true); setError(''); setSuccess(false)
+    const safeFields: Record<string, any> = {
+      name: form.name,
+      sport_type: form.sport_type,
+      age_category: form.age_category,
+      city: form.city,
+      description: form.description,
+      logo_url: form.logo_url,
+      invite_code_enabled: form.invite_code_enabled,
+      require_approval: form.require_approval,
+      subscriptions_enabled: form.subscriptions_enabled ?? false,
+      subscription_fee: form.subscription_fee ?? null,
+    }
+    const { error: err } = await teamService.updateTeam(teamId!, safeFields)
     if (err) setError('حدث خطأ في الحفظ')
     else setSuccess(true)
     setSaving(false); setTimeout(() => setSuccess(false), 3000)
@@ -33,6 +61,9 @@ export default function TeamSettingsPage() {
   return (
     <div className="max-w-lg mx-auto">
       <PageHeader title="إعدادات الفريق" back={() => navigate(`/team/${teamId}`)}/>
+
+      {success && <div className="mb-4"><Alert type="success" message="تم حفظ التغييرات بنجاح"/></div>}
+      {error && <div className="mb-4"><Alert type="error" message={error} onClose={() => setError('')}/></div>}
 
       {/* Team Logo */}
       <div className="card mb-4">
@@ -51,8 +82,6 @@ export default function TeamSettingsPage() {
       {/* Basic Info */}
       <div className="card mb-4">
         <div className="font-bold text-sm mb-3">معلومات الفريق</div>
-        {success && <div className="mb-4"><Alert type="success" message="تم حفظ التغييرات بنجاح"/></div>}
-        {error && <div className="mb-4"><Alert type="error" message={error} onClose={() => setError('')}/></div>}
         <form onSubmit={save} className="space-y-0">
           <FormField label="اسم الفريق" required>
             <input className="form-input" value={form.name || ''} onChange={e => set('name', e.target.value)}/>
@@ -84,38 +113,55 @@ export default function TeamSettingsPage() {
       </div>
 
       {/* Invite Settings */}
-      <div className="card">
+      <div className="card mb-4">
         <div className="font-bold text-sm mb-3">إعدادات الانضمام</div>
         <div className="space-y-3">
-          <label className="flex items-center justify-between cursor-pointer p-3 bg-slate-50 rounded-xl">
-            <div>
-              <div className="font-bold text-sm">تفعيل كود الدعوة</div>
-              <div className="text-xs text-slate-400">السماح بالانضمام عبر الكود</div>
-            </div>
-            <div className="relative inline-flex items-center cursor-pointer">
-              <input type="checkbox" className="sr-only peer"
-                checked={form.invite_code_enabled ?? true}
-                onChange={e => set('invite_code_enabled', e.target.checked)}/>
-              <div className="w-11 h-6 bg-slate-200 peer-checked:bg-brand-500 rounded-full transition-colors peer-focus:ring-2 peer-focus:ring-brand-300"/>
-              <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${(form.invite_code_enabled ?? true) ? 'translate-x-5' : 'translate-x-0'}`}/>
-            </div>
-          </label>
-          <label className="flex items-center justify-between cursor-pointer p-3 bg-slate-50 rounded-xl">
-            <div>
-              <div className="font-bold text-sm">موافقة قبل الانضمام</div>
-              <div className="text-xs text-slate-400">طلبات الانضمام تحتاج موافقة المسؤول</div>
-            </div>
-            <div className="relative inline-flex items-center cursor-pointer">
-              <input type="checkbox" className="sr-only peer"
-                checked={form.require_approval ?? false}
-                onChange={e => set('require_approval', e.target.checked)}/>
-              <div className="w-11 h-6 bg-slate-200 peer-checked:bg-brand-500 rounded-full transition-colors peer-focus:ring-2 peer-focus:ring-brand-300"/>
-              <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${form.require_approval ? 'translate-x-5' : 'translate-x-0'}`}/>
-            </div>
-          </label>
+          <Toggle
+            checked={form.invite_code_enabled ?? true}
+            onChange={v => set('invite_code_enabled', v)}
+            label="تفعيل كود الدعوة"
+            sub="السماح بالانضمام عبر الكود"/>
+          <Toggle
+            checked={form.require_approval ?? false}
+            onChange={v => set('require_approval', v)}
+            label="موافقة قبل الانضمام"
+            sub="طلبات الانضمام تحتاج موافقة المسؤول"/>
         </div>
-        <button onClick={save} disabled={saving} className="btn btn-primary mt-4">
+        <button onClick={() => save()} disabled={saving} className="btn btn-primary mt-4">
           {saving ? <Spinner size="sm"/> : 'حفظ إعدادات الانضمام'}
+        </button>
+      </div>
+
+      {/* Subscription Settings */}
+      <div className="card">
+        <div className="font-bold text-sm mb-1">نظام الاشتراكات الشهرية</div>
+        <p className="text-xs text-slate-400 mb-4">فعّل هذا الخيار إذا كان فريقك يتطلب رسوم اشتراك شهرية من اللاعبين</p>
+        <div className="space-y-3 mb-4">
+          <Toggle
+            checked={form.subscriptions_enabled ?? false}
+            onChange={v => set('subscriptions_enabled', v)}
+            label="تفعيل نظام الاشتراكات"
+            sub="إدارة اشتراكات اللاعبين وتتبع تواريخ الانتهاء"/>
+        </div>
+
+        {(form.subscriptions_enabled) && (
+          <FormField label={`قيمة الاشتراك الشهري (${RIYAL})`}>
+            <input
+              className="form-input"
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.subscription_fee ?? ''}
+              onChange={e => set('subscription_fee', e.target.value ? parseFloat(e.target.value) : null)}
+              placeholder="مثال: 300"/>
+            <p className="text-xs text-slate-400 mt-1">
+              تُستخدم هذه القيمة تلقائياً عند تجديد اشتراك أي لاعب من صفحة المالية
+            </p>
+          </FormField>
+        )}
+
+        <button onClick={() => save()} disabled={saving} className="btn btn-primary mt-3">
+          {saving ? <Spinner size="sm"/> : 'حفظ إعدادات الاشتراك'}
         </button>
       </div>
     </div>

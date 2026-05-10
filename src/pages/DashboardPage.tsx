@@ -1,9 +1,9 @@
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, LogIn, Shield, Calendar, DollarSign, Users, Zap, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Plus, LogIn, Shield, Calendar, DollarSign, Users, Zap, ChevronLeft, ChevronRight, MoreVertical, LogOut, Trash2 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { teamService, eventService, financeService } from '../services'
-import { Spinner, EmptyState, AttendanceButton, Avatar } from '../components/ui'
+import { Spinner, EmptyState, AttendanceButton, Avatar, Modal } from '../components/ui'
 import { formatDate, EVENT_CONFIG, isEventLocked, ROLE_LABELS, cn } from '../utils/helpers'
 import { format } from 'date-fns'
 import { arSA } from 'date-fns/locale'
@@ -19,6 +19,10 @@ export default function DashboardPage() {
   const [myStats, setMyStats] = useState({ teamCount: 0, upcomingCount: 0, unpaidCount: 0 })
   const [statsPerTeam, setStatsPerTeam] = useState<any[]>([])
   const [selStatTeam, setSelStatTeam] = useState<string | null>(null)
+  const [showTeamMenu, setShowTeamMenu] = useState(false)
+  const [confirmAction, setConfirmAction] = useState<{ type: 'leave' | 'delete'; teamId: string; teamName: string } | null>(null)
+  const [actionLoading, setActionLoading] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   const monthLabel = format(new Date(), 'MMMM', { locale: arSA })
 
@@ -120,6 +124,20 @@ export default function DashboardPage() {
     setTimeout(() => setAttFeedback(null), 2500)
   }
 
+  async function handleTeamAction() {
+    if (!confirmAction || !user) return
+    setActionLoading(true)
+    if (confirmAction.type === 'leave') {
+      await teamService.leaveSelf(confirmAction.teamId, user.id)
+    } else {
+      await teamService.deleteTeam(confirmAction.teamId)
+    }
+    setConfirmAction(null)
+    setActionLoading(false)
+    // Reload page to refresh teams list
+    window.location.reload()
+  }
+
   const derivedStats = useMemo(() => {
     const playerTeams = statsPerTeam.filter(s => s.myRole === 'player')
     const rel = selStatTeam ? playerTeams.filter(s => s.teamId === selStatTeam) : playerTeams
@@ -136,6 +154,50 @@ export default function DashboardPage() {
   }, [statsPerTeam, selStatTeam])
 
   const currentTeam = teams[teamIdx]
+
+  /* ── No teams: show welcome page ── */
+  if (!loading && teams.length === 0) {
+    return (
+      <div className="animate-fade flex flex-col items-center justify-center min-h-[70vh] text-center px-4">
+        {/* Logo / illustration */}
+        <div className="w-24 h-24 rounded-3xl flex items-center justify-center mb-6 flex-shrink-0"
+          style={{ background: 'linear-gradient(135deg,#0f766e,#1D9E75)', boxShadow: '0 8px 30px rgba(29,158,117,0.35)' }}>
+          <Shield size={44} className="text-white" />
+        </div>
+
+        <h1 className="text-2xl font-extrabold text-slate-800 mb-2">
+          أهلاً {profile?.full_name?.split(' ')[0]} 👋
+        </h1>
+        <p className="text-slate-500 text-sm max-w-xs mb-8 leading-relaxed">
+          لم تنضم لأي فريق بعد. أنشئ فريقاً جديداً أو انضم لفريق موجود برمز الدعوة.
+        </p>
+
+        <div className="w-full max-w-sm space-y-3">
+          <button onClick={() => navigate('/create-team')} className="hero-card text-right w-full">
+            <div className="absolute top-0 right-0 w-24 h-24 rounded-full opacity-10 bg-white -translate-y-8 translate-x-8"/>
+            <div className="relative flex items-center gap-4">
+              <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center flex-shrink-0">
+                <Plus size={28} className="text-white" />
+              </div>
+              <div className="text-right">
+                <div className="font-extrabold text-white text-lg">إنشاء فريق جديد</div>
+                <div className="text-white/70 text-sm mt-0.5">أنشئ فريقك وكن المؤسس</div>
+              </div>
+            </div>
+          </button>
+
+          <button onClick={() => navigate('/join-team')}
+            className="w-full flex items-center gap-4 p-4 bg-white rounded-2xl border border-slate-200 hover:border-brand-300 hover:bg-brand-50/30 transition-all shadow-sm">
+            <div className="icon-box-blue flex-shrink-0"><LogIn size={22} /></div>
+            <div className="text-right flex-1">
+              <div className="font-extrabold text-slate-800">الانضمام لفريق موجود</div>
+              <div className="text-sm text-slate-400 mt-0.5">أدخل رمز الدعوة</div>
+            </div>
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="animate-fade space-y-5">
@@ -169,35 +231,6 @@ export default function DashboardPage() {
       {/* ── Team Picker ── */}
       {loading ? (
         <div className="flex justify-center py-12"><Spinner size="lg" /></div>
-      ) : teams.length === 0 ? (
-        /* No teams — show join/create */
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <div className="icon-box-brand"><Shield size={18} /></div>
-            <h2 className="text-base font-extrabold text-slate-800">ابدأ الآن</h2>
-          </div>
-          <div className="grid grid-cols-1 gap-3">
-            <button onClick={() => navigate('/create-team')} className="hero-card text-right">
-              <div className="absolute top-0 right-0 w-24 h-24 rounded-full opacity-10 bg-white -translate-y-8 translate-x-8"/>
-              <div className="relative flex items-center gap-4">
-                <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center flex-shrink-0">
-                  <Plus size={28} className="text-white" />
-                </div>
-                <div>
-                  <div className="font-extrabold text-white text-lg">إنشاء فريق جديد</div>
-                  <div className="text-white/70 text-sm mt-0.5">أنشئ فريقك وكن المؤسس</div>
-                </div>
-              </div>
-            </button>
-            <button onClick={() => navigate('/join-team')} className="card-hover flex items-center gap-4 p-4">
-              <div className="icon-box-blue flex-shrink-0"><LogIn size={22} /></div>
-              <div className="text-right">
-                <div className="font-extrabold text-slate-800">الانضمام لفريق</div>
-                <div className="text-sm text-slate-400 mt-0.5">بكود الدعوة</div>
-              </div>
-            </button>
-          </div>
-        </div>
       ) : (
         /* Team carousel */
         <div>
@@ -263,6 +296,41 @@ export default function DashboardPage() {
                   <ChevronRight size={18} />
                 </button>
               </>
+            )}
+          </div>
+
+          {/* Team quick-action menu (leave / delete) */}
+          <div className="relative mt-2 flex justify-end" ref={menuRef}>
+            <button
+              onClick={e => { e.stopPropagation(); setShowTeamMenu(v => !v) }}
+              className="flex items-center gap-1 text-xs text-white/60 hover:text-white/90 transition-colors px-2 py-1 rounded-lg border border-white/20 hover:border-white/40 bg-transparent cursor-pointer">
+              <MoreVertical size={13}/> خيارات الفريق
+            </button>
+            {showTeamMenu && (
+              <div className="absolute top-full left-0 mt-1 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 z-30 overflow-hidden">
+                {currentTeam.myRole !== 'owner' && (
+                  <button
+                    onClick={() => { setShowTeamMenu(false); setConfirmAction({ type: 'leave', teamId: currentTeam.id, teamName: currentTeam.name }) }}
+                    className="w-full flex items-center gap-2.5 px-4 py-3 text-sm text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer border-none bg-transparent text-right">
+                    <LogOut size={15}/> مغادرة الفريق
+                  </button>
+                )}
+                {currentTeam.myRole === 'owner' && (
+                  <>
+                    <button
+                      onClick={() => { setShowTeamMenu(false); setConfirmAction({ type: 'leave', teamId: currentTeam.id, teamName: currentTeam.name }) }}
+                      className="w-full flex items-center gap-2.5 px-4 py-3 text-sm text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer border-none bg-transparent text-right">
+                      <LogOut size={15}/> الخروج من الفريق
+                    </button>
+                    <div className="border-t border-slate-100"/>
+                    <button
+                      onClick={() => { setShowTeamMenu(false); setConfirmAction({ type: 'delete', teamId: currentTeam.id, teamName: currentTeam.name }) }}
+                      className="w-full flex items-center gap-2.5 px-4 py-3 text-sm text-red-600 hover:bg-red-50 transition-colors cursor-pointer border-none bg-transparent text-right">
+                      <Trash2 size={15}/> حذف الفريق نهائياً
+                    </button>
+                  </>
+                )}
+              </div>
             )}
           </div>
 
@@ -453,6 +521,46 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+
+      {/* ── Confirm Leave / Delete Modal ── */}
+      <Modal open={!!confirmAction} onClose={() => !actionLoading && setConfirmAction(null)}
+        title={confirmAction?.type === 'delete' ? '🗑️ حذف الفريق نهائياً' : '🚪 الخروج من الفريق'}>
+        {confirmAction && (
+          <div>
+            {confirmAction.type === 'delete' ? (
+              <div className="space-y-3">
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                  <p className="font-bold text-red-700 text-sm mb-1">⚠️ تحذير: هذا الإجراء لا يمكن التراجع عنه</p>
+                  <p className="text-red-600 text-xs">سيتم حذف فريق <strong>"{confirmAction.teamName}"</strong> بشكل نهائي مع جميع البيانات المرتبطة به:</p>
+                  <ul className="text-xs text-red-600 mt-2 space-y-1 list-disc list-inside">
+                    <li>جميع الأعضاء سيُخرَجون تلقائياً</li>
+                    <li>جميع المواعيد والتدريبات والمباريات</li>
+                    <li>سجلات الحضور والنقاط والمالية</li>
+                    <li>الرسائل والإعلانات والتقارير</li>
+                    <li>الأرشيف الكامل للفريق</li>
+                  </ul>
+                </div>
+                <p className="text-sm text-slate-600">هل أنت متأكد من حذف الفريق نهائياً؟</p>
+              </div>
+            ) : (
+              <div>
+                <p className="text-sm text-slate-700 mb-3">
+                  هل تريد الخروج من فريق <strong>"{confirmAction.teamName}"</strong>؟
+                </p>
+                <p className="text-xs text-slate-400">يمكنك الانضمام مجدداً برمز الدعوة.</p>
+              </div>
+            )}
+            <div className="flex gap-2 justify-end mt-5">
+              <button className="btn btn-ghost" onClick={() => setConfirmAction(null)} disabled={actionLoading}>إلغاء</button>
+              <button
+                className={`btn ${confirmAction.type === 'delete' ? 'btn-danger' : 'bg-amber-500 text-white hover:bg-amber-600 border-none'}`}
+                onClick={handleTeamAction} disabled={actionLoading}>
+                {actionLoading ? <Spinner size="sm"/> : confirmAction.type === 'delete' ? 'حذف نهائياً' : 'تأكيد الخروج'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

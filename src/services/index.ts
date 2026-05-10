@@ -34,13 +34,14 @@ export const teamService = {
       .eq('invite_code', code.toUpperCase()).eq('invite_code_enabled', true).single()
     return data
   },
-  async joinTeamByCode(teamId: string, userId: string, requireApproval: boolean) {
-    if (requireApproval) {
-      return supabase.from('join_requests')
-        .insert({ team_id: teamId, user_id: userId, status: 'pending' })
-    }
-    return supabase.from('team_members')
-      .insert({ team_id: teamId, user_id: userId, role: 'player', status: 'active', is_visible: true })
+  async joinTeamByCode(teamId: string, userId: string) {
+    // Always create a join request — admin always approves and sets the role
+    // First check if a pending request already exists
+    const { data: existing } = await supabase.from('join_requests')
+      .select('id').eq('team_id', teamId).eq('user_id', userId).eq('status', 'pending').maybeSingle()
+    if (existing) return { data: existing, error: null }
+    return supabase.from('join_requests')
+      .insert({ team_id: teamId, user_id: userId, status: 'pending' })
   },
   async getMembers(teamId: string) {
     const { data } = await supabase.from('team_members')
@@ -95,6 +96,9 @@ export const teamService = {
     await supabase.from('teams').update({ invite_code: code }).eq('id', teamId)
     return code
   },
+  async deleteTeam(teamId: string) {
+    return supabase.from('teams').delete().eq('id', teamId)
+  },
   // Join requests
   async getJoinRequests(teamId: string) {
     const { data } = await supabase.from('join_requests')
@@ -115,6 +119,38 @@ export const teamService = {
       .select('*, team:teams(*)')
       .eq('user_id', userId).order('created_at', { ascending: false })
     return data ?? []
+  },
+  // Search registered users to add directly (admin action)
+  async searchUsers(query: string, teamId: string) {
+    if (!query.trim()) return []
+    const { data: existing } = await supabase
+      .from('team_members').select('user_id').eq('team_id', teamId).eq('status', 'active').is('removed_at', null)
+    const existingIds = (existing ?? []).map((r: any) => r.user_id)
+    const { data } = await supabase.from('profiles')
+      .select('id, full_name, email, phone, avatar_url')
+      .or(`full_name.ilike.%${query}%,email.ilike.%${query}%,phone.ilike.%${query}%`)
+      .limit(10)
+    return (data ?? []).filter((u: any) => !existingIds.includes(u.id))
+  },
+  // Add a registered user directly to team using SECURITY DEFINER RPC
+  async addMemberDirect(teamId: string, userId: string, role: string) {
+    return supabase.rpc('add_member_direct', {
+      p_team_id: teamId, p_user_id: userId, p_role: role
+    })
+  },
+  // Notify all team admins about a new join request
+  async notifyAdminsJoinRequest(teamId: string, requesterName: string) {
+    const { data: admins } = await supabase.from('team_members')
+      .select('user_id').eq('team_id', teamId).eq('status', 'active')
+      .in('role', ['owner', 'administrator', 'head_coach'])
+    if (!admins) return
+    const notifs = admins.map((a: any) => ({
+      user_id: a.user_id, team_id: teamId,
+      title: '🔔 طلب انضمام جديد',
+      body: `${requesterName} يطلب الانضمام للفريق — راجع الأعضاء ← طلبات الانضمام`,
+      type: 'general', is_read: false
+    }))
+    await supabase.from('notifications').insert(notifs)
   }
 }
 
@@ -538,9 +574,48 @@ export const inviteService = {
       .eq('team_id', teamId).order('created_at', { ascending: false })
     return data ?? []
   },
-  async create(data: any) {
-    const token = Math.random().toString(36).substring(2, 16)
-    return supabase.from('invitations').insert({ ...data, token, status: 'pending' }).select().single()
+  async create(teamId: string, email: string, role: string, invitedBy: string) {
+    const token = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10)
+    const { data, error } = await supabase.from('invitations')
+      .insert({ team_id: teamId, email, role, invited_by: invitedBy, token, status: 'pending' })
+      .select().single()
+    return { data, error, token }
+  },
+  // Look up invite by token using SECURITY DEFINER RPC
+  async getByToken(token: string) {
+    const { data, error } = await supabase.rpc('get_invite_by_token', { p_token: token })
+    if (error || !data) return null
+    return data as any
+  },
+  // Accept invite: add user to team with pre-set role, mark accepted, notify admin
+  async acceptByToken(token: string, userId: string, userName: string) {
+    const { data: inv } = await supabase.from('invitations')
+      .select('*').eq('token', token).eq('status', 'pending').maybeSingle()
+    if (!inv) return { error: 'الدعوة غير موجودة أو تم استخدامها' }
+    // Check not already member
+    const { data: existing } = await supabase.from('team_members')
+      .select('id').eq('team_id', inv.team_id).eq('user_id', userId).eq('status', 'active').maybeSingle()
+    if (existing) return { error: 'أنت عضو في هذا الفريق بالفعل' }
+    // Add to team with pre-set role
+    await supabase.from('team_members')
+      .insert({ team_id: inv.team_id, user_id: userId, role: inv.role, status: 'active', is_visible: true })
+    // Mark invite as accepted
+    await supabase.from('invitations').update({ status: 'accepted' }).eq('id', inv.id)
+    // Notify admins
+    const { data: admins } = await supabase.from('team_members')
+      .select('user_id').eq('team_id', inv.team_id).eq('status', 'active')
+      .in('role', ['owner', 'administrator', 'head_coach'])
+    if (admins?.length) {
+      await supabase.from('notifications').insert(
+        admins.map((a: any) => ({
+          user_id: a.user_id, team_id: inv.team_id,
+          title: '✅ قبل دعوتك',
+          body: `${userName} قبل دعوتك وانضم كـ ${inv.role}`,
+          type: 'general', is_read: false
+        }))
+      )
+    }
+    return { teamId: inv.team_id, role: inv.role, error: null }
   },
   async getMyInvitations(email: string) {
     const { data } = await supabase.from('invitations')
@@ -548,12 +623,8 @@ export const inviteService = {
       .eq('email', email).eq('status', 'pending')
     return data ?? []
   },
-  async acceptInvitation(id: string, userId: string) {
-    const { data: inv } = await supabase.from('invitations').select('*').eq('id', id).single()
-    if (!inv) return { error: 'not found' }
-    await supabase.from('team_members')
-      .insert({ team_id: inv.team_id, user_id: userId, role: inv.role, status: 'active', is_visible: true })
-    return supabase.from('invitations').update({ status: 'accepted' }).eq('id', id)
+  async cancelInvite(id: string) {
+    return supabase.from('invitations').update({ status: 'cancelled' }).eq('id', id)
   }
 }
 
@@ -695,6 +766,201 @@ export const monthlyStarService = {
   }
 }
 
+
+// ── TEAM EXPENSES ─────────────────────────────────────────────────────
+export const teamExpensesService = {
+  async getAll(teamId: string) {
+    const { data } = await supabase.from('team_expenses')
+      .select('*, creator:profiles!created_by(full_name)')
+      .eq('team_id', teamId).order('expense_date', { ascending: false })
+    return data ?? []
+  },
+  async create(data: any) {
+    return supabase.from('team_expenses').insert(data).select().single()
+  },
+  async update(id: string, data: any) {
+    return supabase.from('team_expenses').update(data).eq('id', id)
+  },
+  async delete(id: string) {
+    return supabase.from('team_expenses').delete().eq('id', id)
+  },
+  async uploadReceiptImage(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const img = new Image()
+        img.onload = () => {
+          const canvas = document.createElement('canvas')
+          const maxW = 1200
+          const scale = img.width > maxW ? maxW / img.width : 1
+          canvas.width = img.width * scale
+          canvas.height = img.height * scale
+          canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
+          resolve(canvas.toDataURL('image/jpeg', 0.75))
+        }
+        img.onerror = reject
+        img.src = e.target?.result as string
+      }
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  },
+}
+
+// ── MEDICAL REPORTS ───────────────────────────────────────────────────
+export const medicalService = {
+  async getReports(teamId: string) {
+    const { data } = await supabase.from('medical_reports')
+      .select('*, player:profiles!player_id(id, full_name, avatar_url), submitter:profiles!submitted_by(full_name)')
+      .eq('team_id', teamId).order('created_at', { ascending: false })
+    return data ?? []
+  },
+  async getMyReports(teamId: string, userId: string) {
+    const { data } = await supabase.from('medical_reports')
+      .select('*').eq('team_id', teamId).eq('player_id', userId)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+  async createReport(data: any) {
+    return supabase.from('medical_reports').insert(data).select().single()
+  },
+  async updateReport(id: string, data: any) {
+    return supabase.from('medical_reports').update(data).eq('id', id)
+  },
+  async getNotes(reportId: string) {
+    const { data } = await supabase.from('medical_report_notes')
+      .select('*, author:profiles!author_id(full_name, avatar_url)')
+      .eq('report_id', reportId).order('created_at', { ascending: true })
+    return data ?? []
+  },
+  async addNote(data: any) {
+    return supabase.from('medical_report_notes').insert(data).select().single()
+  },
+  async uploadAttachment(file: File, path: string) {
+    const { data, error } = await supabase.storage.from('medical-files').upload(path, file, { upsert: true })
+    if (error) return null
+    const { data: { publicUrl } } = supabase.storage.from('medical-files').getPublicUrl(data.path)
+    return publicUrl
+  }
+}
+
+// ── PLATFORM ADMIN ─────────────────────────────────────────────────────
+export const adminService = {
+  async isPlatformAdmin(userId: string) {
+    const { data } = await supabase.from('profiles')
+      .select('is_platform_admin').eq('id', userId).single()
+    return !!(data as any)?.is_platform_admin
+  },
+  async getStats() {
+    const { data, error } = await supabase.rpc('get_platform_stats')
+    if (error) throw error
+    return data as any
+  },
+  async getTeams(limit = 50, offset = 0) {
+    const { data, error } = await supabase.rpc('admin_get_teams', { p_limit: limit, p_offset: offset })
+    if (error) throw error
+    return (data ?? []) as any[]
+  },
+  async getUsers(limit = 50, offset = 0, search = '') {
+    const { data, error } = await supabase.rpc('admin_get_users', { p_limit: limit, p_offset: offset, p_search: search })
+    if (error) throw error
+    return (data ?? []) as any[]
+  },
+  async getTeamDetail(teamId: string) {
+    const { data, error } = await supabase.rpc('admin_get_team_detail', { p_team_id: teamId })
+    if (error) throw error
+    return data as any
+  },
+  async toggleTeam(teamId: string, active: boolean) {
+    return supabase.rpc('admin_toggle_team', { p_team_id: teamId, p_active: active })
+  },
+  async setPlatformAdmin(userId: string, value: boolean) {
+    return supabase.rpc('admin_set_platform_admin', { p_user_id: userId, p_value: value })
+  },
+}
+
+// ── SUBSCRIPTIONS ──────────────────────────────────────────────────────
+export const subscriptionService = {
+  async getTeamSubscriptions(teamId: string) {
+    const { data } = await supabase.rpc('get_team_subscriptions', { p_team_id: teamId })
+    return (data ?? []) as any[]
+  },
+
+  async getTeamSubscriptionsAll(teamId: string) {
+    const { data } = await supabase.rpc('get_team_subscriptions_all', { p_team_id: teamId })
+    return (data ?? []) as any[]
+  },
+
+  async renewSubscription(teamId: string, playerId: string, opts: {
+    months: number
+    startDate: string
+    originalAmount: number
+    discountType: 'percent' | 'fixed' | null
+    discountValue: number
+    paymentStatus: 'paid' | 'partial' | 'unpaid'
+    paidAmount: number | null
+    notes: string
+    renewedBy: string
+  }) {
+    const startDate = new Date(opts.startDate)
+    const endDate = new Date(opts.startDate)
+    endDate.setMonth(endDate.getMonth() + opts.months)
+
+    let finalAmount = opts.originalAmount * opts.months
+    if (opts.discountType === 'percent')
+      finalAmount = finalAmount * (1 - opts.discountValue / 100)
+    else if (opts.discountType === 'fixed')
+      finalAmount = Math.max(0, finalAmount - opts.discountValue)
+    finalAmount = Math.round(finalAmount * 100) / 100
+
+    const paidAmt = opts.paymentStatus === 'paid' ? finalAmount
+      : opts.paymentStatus === 'partial' ? (opts.paidAmount || 0)
+      : 0
+
+    return supabase.from('member_subscriptions').insert({
+      team_id: teamId,
+      player_id: playerId,
+      start_date: startDate.toISOString().slice(0, 10),
+      end_date: endDate.toISOString().slice(0, 10),
+      months: opts.months,
+      original_amount: opts.originalAmount,
+      discount_type: opts.discountType,
+      discount_value: opts.discountValue,
+      final_amount: finalAmount,
+      payment_status: opts.paymentStatus,
+      paid_amount: paidAmt,
+      notes: opts.notes || null,
+      renewed_by: opts.renewedBy,
+    })
+  },
+
+  async getMySubscription(teamId: string, playerId: string) {
+    const { data } = await supabase
+      .from('member_subscriptions')
+      .select('*')
+      .eq('team_id', teamId)
+      .eq('player_id', playerId)
+      .order('end_date', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    return data
+  },
+
+  async checkNotifications(teamId: string) {
+    await supabase.rpc('check_subscription_notifications', { p_team_id: teamId })
+  },
+}
+
+// ── MEMBER FREEZE ──────────────────────────────────────────────────────
+export const memberFreezeService = {
+  async toggleFreeze(teamId: string, userId: string, freeze: boolean) {
+    return supabase.rpc('toggle_member_freeze', {
+      p_team_id: teamId,
+      p_user_id: userId,
+      p_freeze: freeze,
+    })
+  },
+}
 
 // ── REGULATIONS ────────────────────────────────────────────────────────
 export const regulationsService = {

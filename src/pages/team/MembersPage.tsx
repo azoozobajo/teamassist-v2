@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { UserPlus, Edit2, Trash2, CheckCircle, XCircle, Shield, Save, Check, Link, MessageSquare } from 'lucide-react'
+import { UserPlus, Edit2, Trash2, CheckCircle, XCircle, Shield, Save, Check, Link, MessageSquare, Search, Plus, Snowflake } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, inviteService, notificationService, permissionService } from '../../services'
+import { teamService, inviteService, notificationService, permissionService, memberFreezeService } from '../../services'
 import { Spinner, PageHeader, SearchBox, Avatar, Modal, FormField, ConfirmDialog, EmptyState, Tabs } from '../../components/ui'
 import { ROLE_LABELS, canManageTeam, formatDate, PERMISSIONS } from '../../utils/helpers'
 
@@ -60,6 +60,19 @@ export default function MembersPage() {
   const [approveReq, setApproveReq] = useState<any>(null)
   const [approveRole, setApproveRole] = useState('player')
   const [saving, setSaving] = useState(false)
+
+  // Freeze
+  const [freezing, setFreezing] = useState<string | null>(null)
+
+  // Direct add member
+  const [showDirectAdd, setShowDirectAdd] = useState(false)
+  const [directQuery, setDirectQuery] = useState('')
+  const [directResults, setDirectResults] = useState<any[]>([])
+  const [directSearching, setDirectSearching] = useState(false)
+  const [directSelected, setDirectSelected] = useState<any>(null)
+  const [directRole, setDirectRole] = useState('player')
+  const [directAdding, setDirectAdding] = useState(false)
+  const directTimer = useRef<any>(null)
 
   useEffect(() => {
     if (!teamId || !user) return
@@ -194,30 +207,73 @@ export default function MembersPage() {
   async function sendInvite() {
     if (!inviteForm.email.trim() || !teamId || !user) return
     setSaving(true)
-    await inviteService.create({ ...inviteForm, team_id: teamId, invited_by: user.id })
+    await inviteService.create(teamId, inviteForm.email, inviteForm.role, user.id)
     setShowInvite(false); setInviteForm({ email: '', role: 'player' }); setSaving(false)
+  }
+
+  // Direct search with debounce
+  function handleDirectSearch(val: string) {
+    setDirectQuery(val); setDirectSelected(null)
+    clearTimeout(directTimer.current)
+    if (!val.trim()) { setDirectResults([]); return }
+    directTimer.current = setTimeout(async () => {
+      if (!teamId) return
+      setDirectSearching(true)
+      const res = await teamService.searchUsers(val, teamId)
+      setDirectResults(res); setDirectSearching(false)
+    }, 400)
+  }
+
+  async function addMemberDirect() {
+    if (!directSelected || !teamId) return
+    setDirectAdding(true)
+    await teamService.addMemberDirect(teamId, directSelected.id, directRole)
+    await notificationService.create({
+      user_id: directSelected.id, team_id: teamId,
+      title: 'تمت إضافتك للفريق', body: `تمت إضافتك كـ ${ROLE_LABELS[directRole]} في الفريق`,
+      type: 'general', is_read: false
+    })
+    await load()
+    setShowDirectAdd(false); setDirectQuery(''); setDirectResults([]); setDirectSelected(null); setDirectRole('player')
+    setDirectAdding(false)
+  }
+
+  async function toggleFreeze(m: any) {
+    if (!teamId) return
+    setFreezing(m.user_id)
+    await memberFreezeService.toggleFreeze(teamId, m.user_id, !m.is_frozen)
+    setMembers(prev => prev.map(x => x.id === m.id ? { ...x, is_frozen: !m.is_frozen } : x))
+    setFreezing(null)
   }
 
   const isAdmin = canManageTeam(myRole)
   const isOwner = myRole === 'owner'
-  const visibleMembers = members.filter(m => isAdmin || (m.role !== 'parent' && m.is_visible !== false))
-  const filtered = visibleMembers.filter(m => m.profile?.full_name?.includes(q))
-  const players = members.filter(m => m.role === 'player')
+  const visibleMembers = members.filter(m => isAdmin || (m.role !== 'parent' && m.is_visible !== false && !m.is_frozen))
+  const activeMembers = visibleMembers.filter(m => !m.is_frozen)
+  const frozenMembers = isAdmin ? members.filter(m => m.is_frozen) : []
+  const filtered = activeMembers.filter(m => m.profile?.full_name?.includes(q))
+  const filteredFrozen = frozenMembers.filter(m => m.profile?.full_name?.includes(q))
+  const players = members.filter(m => m.role === 'player' && !m.is_frozen)
   const nonOwnerMembers = members.filter(m => m.role !== 'owner')
 
   const tabs = [
-    { key: 'members', label: `الأعضاء (${visibleMembers.length})` },
+    { key: 'members', label: `الأعضاء (${activeMembers.length})` },
     ...(isAdmin ? [{ key: 'requests', label: 'طلبات الانضمام', badge: requests.length }] : []),
     ...(isOwner ? [{ key: 'permissions', label: '⚙️ إدارة الصلاحيات' }] : []),
   ]
 
   return (
     <div>
-      <PageHeader title={`الأعضاء (${visibleMembers.length})`}
+      <PageHeader title={`الأعضاء (${activeMembers.length})`}
         action={isAdmin && (
-          <button className="btn btn-primary btn-sm" onClick={() => setShowInvite(true)}>
-            <UserPlus size={14}/> دعوة
-          </button>
+          <div className="flex gap-2">
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowInvite(true)}>
+              <UserPlus size={14}/> دعوة بالبريد
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={() => { setShowDirectAdd(true); setDirectQuery(''); setDirectResults([]); setDirectSelected(null); setDirectRole('player') }}>
+              <Plus size={14}/> إضافة عضو
+            </button>
+          </div>
         )} />
 
       <Tabs tabs={tabs} active={tab} onChange={setTab} />
@@ -227,51 +283,92 @@ export default function MembersPage() {
         <>
           <SearchBox placeholder="ابحث عن عضو..." value={q} onChange={setQ} />
           {loading ? <div className="flex justify-center py-10"><Spinner/></div>
-            : filtered.length === 0 ? <div className="card"><EmptyState title="لا يوجد أعضاء"/></div>
-            : <div className="card p-0 overflow-hidden divide-y divide-slate-50">
-                {filtered.map(m => {
-                  // linked children for parents
-                  const linkedIds = (allPerms[m.user_id] || [])
-                    .filter(p => p.startsWith('linked_player:'))
-                    .map(p => p.replace('linked_player:', ''))
-                  const linkedNames = linkedIds
-                    .map(uid => members.find(x => x.user_id === uid)?.profile?.full_name)
-                    .filter(Boolean)
-                  return (
-                    <div key={m.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50/70 transition-colors">
-                      <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md"/>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-extrabold text-sm text-slate-800 truncate">{m.profile?.full_name || 'مجهول'}</div>
-                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                          <span className={`badge text-xs ${roleColor[m.role] || 'bg-slate-100 text-slate-600'}`}>
-                            {ROLE_LABELS[m.role] || m.role}
-                          </span>
-                          {m.position_label && <span className="text-xs text-slate-400">{m.position_label}</span>}
-                          {m.role === 'parent' && linkedNames.length > 0 && (
-                            <span className="text-xs text-brand-600 flex items-center gap-1">
-                              <Link size={9}/> {linkedNames.join(' · ')}
-                            </span>
-                          )}
+            : filtered.length === 0 && filteredFrozen.length === 0
+              ? <div className="card"><EmptyState title="لا يوجد أعضاء"/></div>
+              : <>
+                  <div className="card p-0 overflow-hidden divide-y divide-slate-50">
+                    {filtered.map(m => {
+                      const linkedIds = (allPerms[m.user_id] || [])
+                        .filter(p => p.startsWith('linked_player:'))
+                        .map(p => p.replace('linked_player:', ''))
+                      const linkedNames = linkedIds
+                        .map(uid => members.find(x => x.user_id === uid)?.profile?.full_name)
+                        .filter(Boolean)
+                      return (
+                        <div key={m.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50/70 transition-colors">
+                          <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md"/>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-extrabold text-sm text-slate-800 truncate">{m.profile?.full_name || 'مجهول'}</div>
+                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                              <span className={`badge text-xs ${roleColor[m.role] || 'bg-slate-100 text-slate-600'}`}>
+                                {ROLE_LABELS[m.role] || m.role}
+                              </span>
+                              {m.position_label && <span className="text-xs text-slate-400">{m.position_label}</span>}
+                              {m.role === 'parent' && linkedNames.length > 0 && (
+                                <span className="text-xs text-brand-600 flex items-center gap-1">
+                                  <Link size={9}/> {linkedNames.join(' · ')}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {isAdmin && m.user_id !== user?.id && (
+                              <>
+                                <button onClick={() => openEdit(m)}
+                                  className="p-2 text-slate-300 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors">
+                                  <Edit2 size={14}/>
+                                </button>
+                                <button onClick={() => toggleFreeze(m)} disabled={freezing === m.user_id}
+                                  title="تجميد العضوية"
+                                  className="p-2 text-slate-300 hover:text-cyan-600 hover:bg-cyan-50 rounded-xl transition-colors">
+                                  {freezing === m.user_id ? <Spinner size="sm"/> : <Snowflake size={14}/>}
+                                </button>
+                                <button onClick={() => setConfirmRemove(m)}
+                                  className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors">
+                                  <Trash2 size={14}/>
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* Frozen members section — admin only */}
+                  {isAdmin && filteredFrozen.length > 0 && (
+                    <div className="mt-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Snowflake size={14} className="text-cyan-500"/>
+                        <span className="text-xs font-bold text-slate-500">الأعضاء المجمّدون ({filteredFrozen.length})</span>
                       </div>
-                      <div className="flex items-center gap-1">
-                        {isAdmin && m.user_id !== user?.id && (
-                          <>
-                            <button onClick={() => openEdit(m)}
-                              className="p-2 text-slate-300 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors">
-                              <Edit2 size={14}/>
+                      <div className="card p-0 overflow-hidden divide-y divide-slate-50 border-cyan-200 opacity-80">
+                        {filteredFrozen.map(m => (
+                          <div key={m.id} className="flex items-center gap-3 px-4 py-3 bg-cyan-50/50">
+                            <div className="relative">
+                              <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md"/>
+                              <Snowflake size={12} className="absolute -bottom-1 -right-1 text-cyan-500 bg-white rounded-full p-0.5"/>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="font-extrabold text-sm text-slate-600 truncate">{m.profile?.full_name || 'مجهول'}</div>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                <span className={`badge text-xs ${roleColor[m.role] || 'bg-slate-100 text-slate-600'} opacity-60`}>
+                                  {ROLE_LABELS[m.role] || m.role}
+                                </span>
+                                <span className="badge bg-cyan-100 text-cyan-700 text-xs">مجمّد</span>
+                              </div>
+                            </div>
+                            <button onClick={() => toggleFreeze(m)} disabled={freezing === m.user_id}
+                              title="رفع التجميد"
+                              className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-cyan-700 bg-cyan-100 hover:bg-cyan-200 rounded-xl transition-colors border-none cursor-pointer">
+                              {freezing === m.user_id ? <Spinner size="sm"/> : <><Snowflake size={11}/> رفع التجميد</>}
                             </button>
-                            <button onClick={() => setConfirmRemove(m)}
-                              className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors">
-                              <Trash2 size={14}/>
-                            </button>
-                          </>
-                        )}
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  )
-                })}
-              </div>}
+                  )}
+                </>}
         </>
       )}
 
@@ -554,6 +651,69 @@ export default function MembersPage() {
       <ConfirmDialog open={!!confirmRemove} title="إزالة العضو" danger
         message={`هل تريد إزالة ${confirmRemove?.profile?.full_name} من الفريق؟`}
         onConfirm={removeMember} onCancel={() => setConfirmRemove(null)}/>
+
+      {/* ══ DIRECT ADD MEMBER MODAL ══ */}
+      <Modal open={showDirectAdd} onClose={() => setShowDirectAdd(false)} title="إضافة عضو مباشرة">
+        <p className="text-xs text-slate-500 mb-4">ابحث عن مستخدم مسجّل في النظام بالاسم أو البريد أو الجوال وأضفه مباشرة</p>
+        {/* Search box */}
+        <div className="relative mb-3">
+          <Search size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"/>
+          <input className="form-input pr-9" value={directQuery}
+            onChange={e => handleDirectSearch(e.target.value)}
+            placeholder="اسم، بريد، أو رقم جوال..."/>
+        </div>
+        {/* Results */}
+        {directSearching && <div className="flex justify-center py-4"><Spinner/></div>}
+        {!directSearching && directQuery && directResults.length === 0 && (
+          <div className="text-center py-4 text-slate-400 text-sm">
+            لا يوجد مستخدم بهذه البيانات — تأكد أنه سجّل في التطبيق أولاً
+          </div>
+        )}
+        {directResults.length > 0 && !directSelected && (
+          <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100 mb-3 max-h-52 overflow-y-auto">
+            {directResults.map(u => (
+              <button key={u.id} onClick={() => { setDirectSelected(u); setDirectQuery(u.full_name); setDirectResults([]) }}
+                className="flex items-center gap-3 w-full px-3 py-2.5 hover:bg-brand-50 transition-colors text-right">
+                <Avatar name={u.full_name || '?'} src={u.avatar_url} size="sm"/>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-bold text-slate-800 truncate">{u.full_name}</div>
+                  <div className="text-xs text-slate-400 truncate">{u.email || u.phone || ''}</div>
+                </div>
+                <Plus size={16} className="text-brand-500 flex-shrink-0"/>
+              </button>
+            ))}
+          </div>
+        )}
+        {/* Selected user + role */}
+        {directSelected && (
+          <div className="bg-brand-50 border border-brand-200 rounded-xl p-3 flex items-center gap-3 mb-4">
+            <Avatar name={directSelected.full_name || '?'} src={directSelected.avatar_url} size="md"/>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-slate-800">{directSelected.full_name}</div>
+              <div className="text-xs text-slate-500">{directSelected.email || directSelected.phone}</div>
+            </div>
+            <button onClick={() => { setDirectSelected(null); setDirectQuery('') }}
+              className="text-slate-400 hover:text-red-500 text-xs">✕</button>
+          </div>
+        )}
+        <FormField label="الدور في الفريق">
+          <div className="grid grid-cols-3 gap-1.5">
+            {ROLES_NO_OWNER.map(r => (
+              <button key={r} onClick={() => setDirectRole(r)}
+                className={`p-2 rounded-xl border text-xs font-bold transition-all ${directRole === r ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>
+                {ROLE_LABELS[r] || r}
+              </button>
+            ))}
+          </div>
+        </FormField>
+        <div className="flex gap-2 justify-end mt-4">
+          <button className="btn btn-ghost" onClick={() => setShowDirectAdd(false)}>إلغاء</button>
+          <button className="btn btn-primary" onClick={addMemberDirect}
+            disabled={!directSelected || directAdding}>
+            {directAdding ? <Spinner size="sm"/> : <><UserPlus size={14}/> إضافة</>}
+          </button>
+        </div>
+      </Modal>
 
       {/* ══ APPROVE REQUEST MODAL ══ */}
       <Modal open={!!approveReq} onClose={() => setApproveReq(null)} title={`قبول — ${approveReq?.profile?.full_name}`}>

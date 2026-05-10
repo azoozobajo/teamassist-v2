@@ -137,7 +137,8 @@ export default function PermissionsPage() {
     { label: '✅ الحضور والإجازات', keys: ['view_attendance','manage_attendance','manage_leaves'] },
     { label: '📊 التقارير', keys: ['view_reports','add_reports'] },
     { label: '⭐ النقاط', keys: ['grant_points','manage_points_system'] },
-    { label: '﷼ المالية', keys: ['manage_finance_add','manage_finance_pay'] },
+    { label: '﷼ المالية', keys: ['manage_finance_add','manage_finance_pay','manage_team_expenses'] },
+    { label: '🏥 الطبي', keys: ['view_medical','manage_medical'] },
     { label: '📢 الإعلانات', keys: ['make_announcements'] },
     { label: '🔒 الإدارة', keys: ['manage_permissions'] },
   ]
