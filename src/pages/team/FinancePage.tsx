@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
   Plus, DollarSign, Trash2, Receipt, RefreshCw, Calendar,
-  Settings, ChevronDown, ChevronUp, FileText, ImageIcon, X, Eye
+  Settings, ChevronDown, ChevronUp, FileText, ImageIcon, X,
+  Download, Printer
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import {
@@ -15,11 +16,15 @@ import {
 } from '../../components/ui'
 import { canManageFinance, RIYAL, ROLE_LABELS, EXPENSE_CATEGORIES, hasPermission } from '../../utils/helpers'
 
+function todayStr() { return new Date().toISOString().slice(0, 10) }
+function monthAgoStr() {
+  const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 10)
+}
+
 export default function FinancePage() {
   const { teamId } = useParams()
   const { user } = useAuth()
 
-  // ── existing state ────────────────────────────────────────────────────
   const [obs, setObs] = useState<any[]>([])
   const [payments, setPayments] = useState<any[]>([])
   const [expenses, setExpenses] = useState<any[]>([])
@@ -49,8 +54,15 @@ export default function FinancePage() {
   const [team, setTeam] = useState<any>(null)
   const [allSubs, setAllSubs] = useState<any[]>([])
   const [subsLoading, setSubsLoading] = useState(false)
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+
+  // subs date filter — default last month → today
+  const [dateFrom, setDateFrom] = useState(monthAgoStr)
+  const [dateTo, setDateTo] = useState(todayStr)
+
+  // expenses date filter
+  const [expDateFrom, setExpDateFrom] = useState('')
+  const [expDateTo, setExpDateTo] = useState('')
+
   const [expandedPlayers, setExpandedPlayers] = useState<Set<string>>(new Set())
   const [showStatement, setShowStatement] = useState<any>(null)
   const [showRenew, setShowRenew] = useState<any>(null)
@@ -60,12 +72,11 @@ export default function FinancePage() {
     paymentStatus: 'paid' | 'partial' | 'unpaid'; paidAmount: number
     notes: string
   }>({
-    months: 1, startDate: new Date().toISOString().slice(0, 10),
+    months: 1, startDate: todayStr(),
     discountType: null, discountValue: 0,
     paymentStatus: 'paid', paidAmount: 0, notes: ''
   })
 
-  // ── receipt image upload ──────────────────────────────────────────────
   const [uploadingImg, setUploadingImg] = useState(false)
   const [previewImg, setPreviewImg] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -88,7 +99,6 @@ export default function FinancePage() {
       teamExpensesService.getAll(teamId)
     ])
     setObs(o); setPayments(p); setExpenses(e); setLoading(false)
-    // load subs in background for combined view
     loadSubs()
   }
 
@@ -103,34 +113,58 @@ export default function FinancePage() {
     setSubsLoading(false)
   }
 
-  // ── derived: filtered subs ────────────────────────────────────────────
+  // ── quick filter helpers ──────────────────────────────────────────────
+  function setQuickSub(t: 'week' | 'month' | 'year') {
+    const to = new Date(); const from = new Date()
+    if (t === 'week') from.setDate(from.getDate() - 7)
+    else if (t === 'month') from.setMonth(from.getMonth() - 1)
+    else from.setFullYear(from.getFullYear() - 1)
+    setDateFrom(from.toISOString().slice(0, 10)); setDateTo(to.toISOString().slice(0, 10))
+  }
+  function setQuickExp(t: 'week' | 'month' | 'year') {
+    const to = new Date(); const from = new Date()
+    if (t === 'week') from.setDate(from.getDate() - 7)
+    else if (t === 'month') from.setMonth(from.getMonth() - 1)
+    else from.setFullYear(from.getFullYear() - 1)
+    setExpDateFrom(from.toISOString().slice(0, 10)); setExpDateTo(to.toISOString().slice(0, 10))
+  }
+
+  // ── filtered subs ─────────────────────────────────────────────────────
   const filteredSubs = allSubs.filter(s =>
     (!dateFrom || s.start_date >= dateFrom) &&
     (!dateTo || s.start_date <= dateTo)
   )
 
-  // group filtered subs by player (already ordered DESC by start_date from RPC)
+  // ── filtered expenses ─────────────────────────────────────────────────
+  const filteredExpenses = expenses.filter(e =>
+    (!expDateFrom || e.expense_date >= expDateFrom) &&
+    (!expDateTo || e.expense_date <= expDateTo)
+  )
+
+  // group filtered subs by player
   const playerSubsMap: Record<string, any[]> = {}
   filteredSubs.forEach(s => {
     if (!playerSubsMap[s.player_id]) playerSubsMap[s.player_id] = []
     playerSubsMap[s.player_id].push(s)
   })
 
-  // merge with members list so every active member appears
-  const allPlayerRows = members.map(m => {
-    const subs = playerSubsMap[m.user_id] || []
-    return {
-      player_id: m.user_id,
-      full_name: m.profile?.full_name,
-      avatar_url: m.profile?.avatar_url,
-      role: m.role,
-      subs,
-      latestSub: subs[0] || null,
-    }
-  })
+  // ── only players in subscriptions list ───────────────────────────────
+  const allPlayerRows = members
+    .filter(m => m.role === 'player')
+    .map(m => {
+      const subs = playerSubsMap[m.user_id] || []
+      return {
+        player_id: m.user_id,
+        full_name: m.profile?.full_name,
+        avatar_url: m.profile?.avatar_url,
+        role: m.role,
+        subs,
+        latestSub: subs[0] || null,
+      }
+    })
 
-  const totalPaid = filteredSubs.reduce((s, sub) => s + Number(sub.paid_amount || 0), 0)
-  const totalRemaining = filteredSubs.reduce(
+  const totalSubPaid = filteredSubs.reduce((s, sub) => s + Number(sub.paid_amount || 0), 0)
+  const totalSubRemaining = filteredSubs.reduce(
     (s, sub) => s + Math.max(0, Number(sub.final_amount) - Number(sub.paid_amount || 0)), 0
   )
 
@@ -147,7 +181,6 @@ export default function FinancePage() {
     expired: allPlayerRows.filter(p => ['expired', 'none'].includes(getSubStatus(p.latestSub))).length,
   }
 
-  // ── renewal calc ──────────────────────────────────────────────────────
   const renewTotal = (() => {
     if (!team?.subscription_fee) return 0
     let t = parseFloat(team.subscription_fee) * renewForm.months
@@ -167,12 +200,85 @@ export default function FinancePage() {
     const p = payments.find(p => p.obligation_id === obId && p.user_id === userId)
     return p?.paid_amount || 0
   }
+  function getPaidAt(obId: string, userId: string): string {
+    const p = payments.find(p => p.obligation_id === obId && p.user_id === userId)
+    return p?.paid_at ? new Date(p.paid_at).toLocaleString('ar-SA') : '—'
+  }
   function toggleExpand(pid: string) {
     setExpandedPlayers(prev => {
-      const next = new Set(prev)
-      if (next.has(pid)) next.delete(pid); else next.add(pid)
-      return next
+      const next = new Set(prev); if (next.has(pid)) next.delete(pid); else next.add(pid); return next
     })
+  }
+
+  // ── combined financial summary — ALL members ──────────────────────────
+  const memberFinanceSummary = members.map(m => {
+    const obDebt = obs.reduce((total, ob) => {
+      const targets = getTargetMembers(ob)
+      if (!targets.some((t: any) => t.user_id === m.user_id)) return total
+      return total + Math.max(0, ob.amount - getPaid(ob.id, m.user_id))
+    }, 0)
+    const subDebt = allSubs
+      .filter(s => s.player_id === m.user_id)
+      .reduce((t, s) => t + Math.max(0, Number(s.final_amount) - Number(s.paid_amount || 0)), 0)
+    return { ...m, obDebt, subDebt, totalDebt: obDebt + subDebt }
+  })
+
+  // ── export helpers ────────────────────────────────────────────────────
+  function downloadCSV(filename: string, rows: string[][]) {
+    const csv = '﻿' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = filename; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function exportStatementCSV(playerName: string, stObs: any[], stSubs: any[]) {
+    const rows: string[][] = [
+      ['النوع', 'التفاصيل', 'تاريخ الإصدار', 'المبلغ', 'المدفوع', 'تاريخ السداد', 'المتبقي', 'الحالة']
+    ]
+    stObs.forEach(({ ob, paid, paidAt }) => {
+      const rem = Math.max(0, ob.amount - paid)
+      rows.push(['التزام', ob.title, ob.due_date || '—', ob.amount, paid, paidAt, rem, paid >= ob.amount ? 'مسدد' : paid > 0 ? 'جزئي' : 'غير مسدد'])
+    })
+    stSubs.forEach(s => {
+      const rem = Math.max(0, Number(s.final_amount) - Number(s.paid_amount || 0))
+      rows.push(['اشتراك', `${s.start_date} ← ${s.end_date} (${s.months} شهر)`, s.start_date, s.final_amount, s.paid_amount || 0, '—', rem, s.payment_status || '—'])
+    })
+    downloadCSV(`كشف-حساب-${playerName}.csv`, rows)
+  }
+
+  function printStatement(playerName: string, stObs: any[], stSubs: any[], summary: any) {
+    const w = window.open('', '_blank', 'width=900,height=700')
+    if (!w) return
+    const obRows = stObs.map(({ ob, paid, paidAt }) => {
+      const rem = Math.max(0, ob.amount - paid)
+      return `<tr><td>${ob.title}</td><td>${ob.due_date || '—'}</td><td>${ob.amount}</td><td>${paid}</td><td>${paidAt}</td><td style="color:${rem > 0 ? '#dc2626' : '#16a34a'}">${rem > 0 ? rem : '—'}</td><td>${paid >= ob.amount ? '✅ مسدد' : paid > 0 ? '🔶 جزئي' : '❌ غير مسدد'}</td></tr>`
+    }).join('')
+    const subRows = stSubs.map(s => {
+      const rem = Math.max(0, Number(s.final_amount) - Number(s.paid_amount || 0))
+      return `<tr><td>${s.start_date} ← ${s.end_date}</td><td>${s.months} شهر</td><td>${s.final_amount}</td><td>${s.paid_amount || 0}</td><td style="color:${rem > 0 ? '#dc2626' : '#16a34a'}">${rem > 0 ? rem : '—'}</td><td>${{ paid: '✅ مسدد', partial: '🔶 جزئي', unpaid: '❌ لم يسدد' }[s.payment_status as string] || '—'}</td></tr>`
+    }).join('')
+    w.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>كشف حساب - ${playerName}</title>
+    <style>body{font-family:Arial,sans-serif;padding:24px;direction:rtl}h2{color:#1D9E75;margin-bottom:4px}p{color:#666;margin:0 0 16px}
+    table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}th,td{border:1px solid #ddd;padding:7px 10px;text-align:right}
+    th{background:#f3f4f6;font-weight:bold}.summary{display:flex;gap:12px;margin:16px 0}.sc{flex:1;border:1px solid #ddd;padding:12px;border-radius:8px;text-align:center}
+    .sc .val{font-size:20px;font-weight:bold}.sc .lbl{font-size:11px;color:#666;margin-top:4px}h3{margin:20px 0 6px;color:#374151}
+    @media print{button{display:none!important}}</style></head><body>
+    <h2>كشف حساب — ${playerName}</h2>
+    <p>تاريخ الإصدار: ${new Date().toLocaleDateString('ar-SA')}</p>
+    <div class="summary">
+      <div class="sc"><div class="val">${summary.total}</div><div class="lbl">إجمالي المبالغ المصدرة</div></div>
+      <div class="sc"><div class="val" style="color:#16a34a">${summary.paid}</div><div class="lbl">إجمالي المدفوع</div></div>
+      <div class="sc"><div class="val" style="color:${summary.remaining > 0 ? '#dc2626' : '#16a34a'}">${summary.remaining > 0 ? summary.remaining : '0'}</div><div class="lbl">الرصيد المتبقي</div></div>
+    </div>
+    ${stObs.length > 0 ? `<h3>الالتزامات المالية (${stObs.length})</h3>
+    <table><tr><th>الالتزام</th><th>تاريخ الاستحقاق</th><th>المبلغ</th><th>المدفوع</th><th>تاريخ السداد</th><th>المتبقي</th><th>الحالة</th></tr>${obRows}</table>` : ''}
+    ${stSubs.length > 0 ? `<h3>سجل الاشتراكات (${stSubs.length})</h3>
+    <table><tr><th>الفترة</th><th>المدة</th><th>المبلغ</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th></tr>${subRows}</table>` : ''}
+    <br><button onclick="window.print()" style="padding:10px 20px;background:#1D9E75;color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px">🖨 طباعة</button>
+    </body></html>`)
+    w.document.close()
   }
 
   // ── actions ───────────────────────────────────────────────────────────
@@ -187,9 +293,9 @@ export default function FinancePage() {
       target_user_ids: form.target_type === 'specific' ? form.target_user_ids : null,
       created_by: user.id
     })
-    if (error) { setOpError('فشل إضافة الالتزام: ' + (error.message || 'خطأ غير معروف')); setSaving(false); return }
+    if (error) { setOpError('فشل إضافة الالتزام: ' + (error.message || 'خطأ')); setSaving(false); return }
     await load(); setShowAdd(false)
-    setForm({ title:'', amount:'', due_date:'', target_type:'all', target_role:'player', target_user_ids:[] })
+    setForm({ title: '', amount: '', due_date: '', target_type: 'all', target_role: 'player', target_user_ids: [] })
     setSaving(false)
   }
 
@@ -214,13 +320,13 @@ export default function FinancePage() {
     const { error } = await teamExpensesService.create({
       team_id: teamId, title: expForm.title,
       amount: parseFloat(expForm.amount), category: expForm.category,
-      expense_date: expForm.expense_date || new Date().toISOString().slice(0,10),
+      expense_date: expForm.expense_date || todayStr(),
       notes: expForm.notes || null, created_by: user.id,
       receipt_images: expForm.receipt_images.length > 0 ? expForm.receipt_images : null,
     })
-    if (error) { setOpError('فشل إضافة المصروف: ' + (error.message || 'خطأ غير معروف')); setSaving(false); return }
+    if (error) { setOpError('فشل إضافة المصروف: ' + (error.message || 'خطأ')); setSaving(false); return }
     await load(); setShowExpense(false)
-    setExpForm({ title:'', amount:'', category:'أخرى', expense_date:'', notes:'', receipt_images:[] })
+    setExpForm({ title: '', amount: '', category: 'أخرى', expense_date: '', notes: '', receipt_images: [] })
     setSaving(false)
   }
 
@@ -235,10 +341,7 @@ export default function FinancePage() {
     const newUrls: string[] = []
     for (const file of Array.from(files)) {
       if (expForm.receipt_images.length + newUrls.length >= 5) break
-      try {
-        const url = await teamExpensesService.uploadReceiptImage(file)
-        newUrls.push(url)
-      } catch {}
+      try { const url = await teamExpensesService.uploadReceiptImage(file); newUrls.push(url) } catch {}
     }
     setExpForm(p => ({ ...p, receipt_images: [...p.receipt_images, ...newUrls] }))
     setUploadingImg(false)
@@ -248,24 +351,16 @@ export default function FinancePage() {
     if (!showRenew || !teamId || !user || !team?.subscription_fee) return
     setSaving(true); setOpError('')
     const { error } = await subscriptionService.renewSubscription(teamId, showRenew.player_id, {
-      months: renewForm.months,
-      startDate: renewForm.startDate,
+      months: renewForm.months, startDate: renewForm.startDate,
       originalAmount: parseFloat(team.subscription_fee),
-      discountType: renewForm.discountType,
-      discountValue: renewForm.discountValue,
+      discountType: renewForm.discountType, discountValue: renewForm.discountValue,
       paymentStatus: renewForm.paymentStatus,
       paidAmount: renewForm.paymentStatus === 'partial' ? renewForm.paidAmount : null,
-      notes: renewForm.notes,
-      renewedBy: user.id,
+      notes: renewForm.notes, renewedBy: user.id,
     })
-    if (error) { setOpError('فشل تجديد الاشتراك: ' + (error.message || 'خطأ غير معروف')); setSaving(false); return }
-    await loadSubs()
-    setShowRenew(null)
-    setRenewForm({
-      months: 1, startDate: new Date().toISOString().slice(0, 10),
-      discountType: null, discountValue: 0,
-      paymentStatus: 'paid', paidAmount: 0, notes: ''
-    })
+    if (error) { setOpError('فشل تجديد الاشتراك: ' + (error.message || 'خطأ')); setSaving(false); return }
+    await loadSubs(); setShowRenew(null)
+    setRenewForm({ months: 1, startDate: todayStr(), discountType: null, discountValue: 0, paymentStatus: 'paid', paidAmount: 0, notes: '' })
     setSaving(false)
   }
 
@@ -288,12 +383,11 @@ export default function FinancePage() {
     value: m.user_id, label: m.profile?.full_name || '?', sub: ROLE_LABELS[m.role] || m.role
   }))
 
-  // sub status label helpers
-  const DOT_COLOR: Record<string,string> = { none:'bg-slate-300', expired:'bg-red-500', warning:'bg-amber-400', active:'bg-emerald-500' }
-  const BADGE_CLS: Record<string,string> = { none:'bg-slate-100 text-slate-500', expired:'bg-red-100 text-red-700', warning:'bg-amber-100 text-amber-700', active:'bg-emerald-100 text-emerald-700' }
-  const PAY_CLS: Record<string,string> = { paid:'bg-emerald-100 text-emerald-700', partial:'bg-amber-100 text-amber-700', unpaid:'bg-red-100 text-red-700' }
-  const PAY_LBL: Record<string,string> = { paid:'مسدد', partial:'جزئي', unpaid:'لم يسدد' }
-  const STATUS_LBL: Record<string,string> = { none:'لا اشتراك', expired:'منتهٍ', warning:'ينتهي قريباً', active:'نشط' }
+  const DOT_COLOR: Record<string, string> = { none: 'bg-slate-300', expired: 'bg-red-500', warning: 'bg-amber-400', active: 'bg-emerald-500' }
+  const BADGE_CLS: Record<string, string> = { none: 'bg-slate-100 text-slate-500', expired: 'bg-red-100 text-red-700', warning: 'bg-amber-100 text-amber-700', active: 'bg-emerald-100 text-emerald-700' }
+  const PAY_CLS: Record<string, string> = { paid: 'bg-emerald-100 text-emerald-700', partial: 'bg-amber-100 text-amber-700', unpaid: 'bg-red-100 text-red-700' }
+  const PAY_LBL: Record<string, string> = { paid: 'مسدد', partial: 'جزئي', unpaid: 'لم يسدد' }
+  const STATUS_LBL: Record<string, string> = { none: 'لا اشتراك', expired: 'منتهٍ', warning: 'ينتهي قريباً', active: 'نشط' }
 
   function subBadgeText(s: any, status: string) {
     if (status === 'none') return 'لا اشتراك'
@@ -302,18 +396,17 @@ export default function FinancePage() {
     return `${s.days_left} يوم متبقي`
   }
 
-  // ── per-member combined financial summary (obligations + subscription debts) ──
-  const memberFinanceSummary = members.map(m => {
-    const obDebt = obs.reduce((total, ob) => {
-      const targets = getTargetMembers(ob)
-      if (!targets.some((t: any) => t.user_id === m.user_id)) return total
-      return total + Math.max(0, ob.amount - getPaid(ob.id, m.user_id))
-    }, 0)
-    const subDebt = allSubs
-      .filter(s => s.player_id === m.user_id)
-      .reduce((t, s) => t + Math.max(0, Number(s.final_amount) - Number(s.paid_amount || 0)), 0)
-    return { ...m, obDebt, subDebt, totalDebt: obDebt + subDebt }
-  }).filter(m => m.totalDebt > 0)
+  // ── QUICK FILTER BUTTONS component ───────────────────────────────────
+  const QuickBtns = ({ onSet }: { onSet: (t: 'week' | 'month' | 'year') => void }) => (
+    <div className="flex gap-1.5 mt-2">
+      {([['week', 'آخر أسبوع'], ['month', 'آخر شهر'], ['year', 'آخر سنة']] as const).map(([t, l]) => (
+        <button key={t} onClick={() => onSet(t)}
+          className="text-xs px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-brand-100 hover:text-brand-700 text-slate-600 font-bold transition-colors border-none cursor-pointer">
+          {l}
+        </button>
+      ))}
+    </div>
+  )
 
   // ── RENDER ────────────────────────────────────────────────────────────
   return (
@@ -328,14 +421,10 @@ export default function FinancePage() {
         action={
           <div className="flex gap-2">
             {canManageExpenses && tab === 'expenses' && (
-              <button className="btn btn-primary btn-sm" onClick={() => setShowExpense(true)}>
-                <Plus size={14}/>مصروف
-              </button>
+              <button className="btn btn-primary btn-sm" onClick={() => setShowExpense(true)}><Plus size={14}/>مصروف</button>
             )}
             {isAdmin && tab === 'obligations' && (
-              <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}>
-                <Plus size={14}/>التزام جديد
-              </button>
+              <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}><Plus size={14}/>التزام جديد</button>
             )}
           </div>
         }/>
@@ -348,9 +437,12 @@ export default function FinancePage() {
         ]}
         active={tab} onChange={setTab}/>
 
-      {/* ── OBLIGATIONS TAB ── */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* OBLIGATIONS TAB                                                   */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
       {tab === 'obligations' && (
         <>
+          {/* Hero card — Admin */}
           {isAdmin && (
             <div className="hero-card mb-5">
               <div className="absolute top-0 left-0 w-40 h-40 rounded-full opacity-10 bg-white -translate-x-16 -translate-y-12"/>
@@ -370,42 +462,32 @@ export default function FinancePage() {
                 <div className="grid grid-cols-3 gap-3">
                   <div className="bg-white/15 rounded-2xl p-3 text-center">
                     <div className="text-white text-base font-extrabold leading-none mb-1">{totalReq.toLocaleString()}</div>
-                    <div className="text-white/70 text-xs">المطلوب {RIYAL}</div>
+                    <div className="text-white/70 text-xs">المطلوب</div>
                   </div>
                   <div className="bg-white/15 rounded-2xl p-3 text-center">
                     <div className="text-emerald-200 text-base font-extrabold leading-none mb-1">{totalPaidObl.toLocaleString()}</div>
-                    <div className="text-white/70 text-xs">المحصّل {RIYAL}</div>
+                    <div className="text-white/70 text-xs">المحصّل</div>
                   </div>
                   <div className="bg-white/15 rounded-2xl p-3 text-center">
                     <div className="text-red-300 text-base font-extrabold leading-none mb-1">{(totalReq - totalPaidObl).toLocaleString()}</div>
-                    <div className="text-white/70 text-xs">المتبقي {RIYAL}</div>
+                    <div className="text-white/70 text-xs">المتبقي</div>
                   </div>
                 </div>
               </div>
             </div>
           )}
 
+          {/* Player summary card */}
           {isPlayer && (() => {
-            const mySubDebt = allSubs
-              .filter(s => s.player_id === user?.id)
+            const mySubDebt = allSubs.filter(s => s.player_id === user?.id)
               .reduce((t, s) => t + Math.max(0, Number(s.final_amount) - Number(s.paid_amount || 0)), 0)
             const myObDebt = myObs.reduce((t: number, o: any) => t + Math.max(0, o.amount - o.myPaid), 0)
             const grandTotal = mySubDebt + myObDebt
             return grandTotal > 0 ? (
               <div className="card bg-orange-50 border-orange-200 mb-4">
                 <div className="font-extrabold text-slate-800 text-sm mb-3">📊 ملخصك المالي</div>
-                {myObDebt > 0 && (
-                  <div className="flex justify-between text-sm mb-2">
-                    <span className="text-slate-500">الالتزامات غير المسددة</span>
-                    <span className="font-bold text-red-600">{myObDebt} {RIYAL}</span>
-                  </div>
-                )}
-                {mySubDebt > 0 && (
-                  <div className="flex justify-between text-sm mb-2">
-                    <span className="text-slate-500">مديونية الاشتراكات</span>
-                    <span className="font-bold text-red-600">{mySubDebt} {RIYAL}</span>
-                  </div>
-                )}
+                {myObDebt > 0 && <div className="flex justify-between text-sm mb-2"><span className="text-slate-500">الالتزامات غير المسددة</span><span className="font-bold text-red-600">{myObDebt} {RIYAL}</span></div>}
+                {mySubDebt > 0 && <div className="flex justify-between text-sm mb-2"><span className="text-slate-500">مديونية الاشتراكات</span><span className="font-bold text-red-600">{mySubDebt} {RIYAL}</span></div>}
                 <div className="border-t border-orange-200 pt-2 flex justify-between items-center">
                   <span className="font-bold text-slate-700">إجمالي ما عليك</span>
                   <span className="font-extrabold text-red-700 text-xl">{grandTotal} {RIYAL}</span>
@@ -414,6 +496,7 @@ export default function FinancePage() {
             ) : null
           })()}
 
+          {/* Player obligations list */}
           {isPlayer && (
             <div>
               <p className="text-sm font-extrabold text-slate-600 mb-3">مستحقاتي المالية</p>
@@ -445,33 +528,37 @@ export default function FinancePage() {
             </div>
           )}
 
-          {/* Combined financial summary per member (admin) */}
-          {isAdmin && memberFinanceSummary.length > 0 && (
-            <div className="card mb-4 border-orange-200 bg-orange-50">
-              <div className="font-extrabold text-slate-800 text-sm mb-3">📊 ملخص الوضع المالي للأعضاء</div>
-              <div className="space-y-2">
+          {/* ── Admin: Combined financial summary for ALL members ── */}
+          {isAdmin && (
+            <div className="card mb-4 border-slate-200">
+              <div className="font-extrabold text-slate-800 text-sm mb-3">📊 الوضع المالي للأعضاء</div>
+              <div className="space-y-1">
                 {memberFinanceSummary.map(m => (
-                  <div key={m.user_id} className="flex items-center gap-2 py-2 border-b border-orange-100 last:border-0">
+                  <div key={m.user_id} className="flex items-center gap-2.5 py-2 border-b border-slate-50 last:border-0">
                     <div className="w-8 h-8 bg-brand-100 rounded-xl flex items-center justify-center text-xs font-bold text-brand-700 flex-shrink-0">
-                      {m.profile?.full_name?.[0]}
+                      {m.profile?.avatar_url
+                        ? <img src={m.profile.avatar_url} className="w-full h-full object-cover rounded-xl"/>
+                        : m.profile?.full_name?.[0]}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="font-bold text-sm text-slate-800">{m.profile?.full_name}</div>
-                      <div className="flex gap-3 text-xs text-slate-500 mt-0.5 flex-wrap">
-                        {m.obDebt > 0 && <span>التزامات: {m.obDebt} {RIYAL}</span>}
-                        {m.subDebt > 0 && <span>اشتراكات: {m.subDebt} {RIYAL}</span>}
-                      </div>
+                      <div className="font-bold text-sm text-slate-800 truncate">{m.profile?.full_name}</div>
+                      <div className="text-xs text-slate-400">{ROLE_LABELS[m.role] || m.role}</div>
                     </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="font-extrabold text-red-600 text-sm">{m.totalDebt} {RIYAL}</div>
-                      <div className="text-xs text-slate-400">إجمالي المديونية</div>
+                    <div className={`font-extrabold text-base flex-shrink-0 ${m.totalDebt > 0 ? 'text-red-600' : 'text-slate-300'}`}>
+                      {m.totalDebt > 0 ? `${m.totalDebt} ${RIYAL}` : '0'}
                     </div>
+                    <button
+                      onClick={() => setShowStatement({ player_id: m.user_id, full_name: m.profile?.full_name })}
+                      className="btn btn-sm btn-ghost px-2 text-slate-400 hover:text-brand-600 flex-shrink-0" title="كشف حساب">
+                      <FileText size={14}/>
+                    </button>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
+          {/* Admin: Per-obligation details */}
           {isAdmin && (
             loading ? <div className="flex justify-center py-10"><Spinner/></div>
             : obs.length === 0
@@ -489,41 +576,31 @@ export default function FinancePage() {
                           <div className="text-sm font-extrabold text-brand-600">{ob.amount} {RIYAL}</div>
                         </div>
                         <div className="flex justify-between text-xs text-slate-400 mb-3">
-                          <span className="flex items-center gap-1">
-                            <span>👥</span>
-                            {ob.target_type === 'all' ? 'الكل' : ob.target_type === 'role' ? ROLE_LABELS[ob.target_role] || ob.target_role : `${targets.length} أشخاص محددون`}
-                            · {targets.length} شخص
-                          </span>
+                          <span>👥 {ob.target_type === 'all' ? 'الكل' : ob.target_type === 'role' ? ROLE_LABELS[ob.target_role] || ob.target_role : `${targets.length} أشخاص`} · {targets.length} شخص</span>
                           {ob.due_date && <span className="text-amber-600 font-bold">الاستحقاق: {ob.due_date}</span>}
                         </div>
                         <div className="flex justify-between text-xs mb-1.5">
-                          <span className="text-slate-500 font-bold">التحصيل الكلي</span>
+                          <span className="text-slate-500 font-bold">التحصيل</span>
                           <span className="font-extrabold text-slate-700">{paidOb.toFixed(0)}/{totalOb} {RIYAL}
                             <span className={`mr-1.5 ${pct >= 100 ? 'text-emerald-600' : pct > 50 ? 'text-amber-600' : 'text-red-500'}`}>({pct}%)</span>
                           </span>
                         </div>
                         <ProgressBar value={pct} color={pct >= 100 ? 'bg-emerald-500' : pct > 50 ? 'bg-amber-400' : 'bg-red-400'}/>
-                        <div className="mt-3 space-y-2">
+                        <div className="mt-3 space-y-1.5">
                           {targets.map((m: any) => {
                             const paid = getPaid(ob.id, m.user_id)
-                            const p = Math.round(paid / ob.amount * 100)
-                            const st = paid >= ob.amount ? 'مسدد' : paid > 0 ? 'جزئي' : 'غير مسدد'
-                            const sc = paid >= ob.amount ? 'bg-emerald-100 text-emerald-700' : paid > 0 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
+                            const remaining = Math.max(0, ob.amount - paid)
                             return (
                               <div key={m.id} className="flex items-center gap-2 py-1.5 border-b border-slate-50 last:border-0">
                                 <div className="w-7 h-7 bg-brand-100 text-brand-700 rounded-xl flex items-center justify-center text-xs font-extrabold flex-shrink-0">
                                   {m.profile?.full_name?.[0]}
                                 </div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex justify-between text-xs mb-0.5">
-                                    <span className="font-bold truncate">{m.profile?.full_name}</span>
-                                    <span className="text-slate-400">{paid}/{ob.amount} {RIYAL}</span>
-                                  </div>
-                                  <ProgressBar value={p} height="h-1.5"/>
-                                </div>
-                                <span className={`badge text-xs ${sc}`}>{st}</span>
+                                <span className="font-bold text-sm text-slate-700 flex-1 truncate">{m.profile?.full_name}</span>
+                                <span className={`font-extrabold text-sm flex-shrink-0 ${remaining === 0 ? 'text-slate-300' : 'text-red-600'}`}>
+                                  {remaining === 0 ? '0' : `${remaining} ${RIYAL}`}
+                                </span>
                                 <button onClick={() => setShowPay({ ob, userId: m.user_id, name: m.profile?.full_name })}
-                                  className="text-xs bg-brand-50 hover:bg-brand-100 text-brand-700 font-bold px-2.5 py-1.5 rounded-xl transition-colors border-none cursor-pointer">
+                                  className="text-xs bg-brand-50 hover:bg-brand-100 text-brand-700 font-bold px-2.5 py-1.5 rounded-xl transition-colors border-none cursor-pointer flex-shrink-0">
                                   دفعة
                                 </button>
                               </div>
@@ -538,33 +615,28 @@ export default function FinancePage() {
         </>
       )}
 
-      {/* ── SUBSCRIPTIONS TAB ── */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* SUBSCRIPTIONS TAB                                                 */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
       {tab === 'subscriptions' && (
         <div>
           {!team?.subscriptions_enabled ? (
             <div className="card border-amber-200 bg-amber-50 text-center py-10">
               <Calendar size={40} className="text-amber-400 mx-auto mb-3"/>
               <div className="font-bold text-slate-700 mb-1">نظام الاشتراكات غير مفعّل</div>
-              <p className="text-xs text-slate-500 mb-4 max-w-xs mx-auto">
-                فعّل نظام الاشتراكات من إعدادات الفريق إذا كان فريقك يتطلب رسوم شهرية من اللاعبين
-              </p>
-              {isAdmin && (
-                <a href={`/team/${teamId}/settings`} className="btn btn-sm btn-ghost gap-1">
-                  <Settings size={13}/> إعدادات الفريق
-                </a>
-              )}
+              <p className="text-xs text-slate-500 mb-4 max-w-xs mx-auto">فعّل نظام الاشتراكات من إعدادات الفريق</p>
+              {isAdmin && <a href={`/team/${teamId}/settings`} className="btn btn-sm btn-ghost gap-1"><Settings size={13}/> إعدادات الفريق</a>}
             </div>
           ) : (
             <>
               {isAdmin && !team?.subscription_fee && (
                 <div className="card border-amber-200 bg-amber-50 mb-4 text-sm text-amber-700 flex items-center gap-2">
-                  ⚠️
-                  <span>لم تحدد قيمة الاشتراك الشهري.</span>
+                  ⚠️ <span>لم تحدد قيمة الاشتراك الشهري.</span>
                   <a href={`/team/${teamId}/settings`} className="underline font-bold">حددها من الإعدادات</a>
                 </div>
               )}
 
-              {/* ── ADMIN VIEW ── */}
+              {/* ── Admin view ── */}
               {isAdmin && (
                 <>
                   {/* Date filter */}
@@ -579,52 +651,38 @@ export default function FinancePage() {
                         <label className="text-xs text-slate-400 block mb-1">إلى</label>
                         <input type="date" className="form-input text-sm" value={dateTo} onChange={e => setDateTo(e.target.value)}/>
                       </div>
-                      {(dateFrom || dateTo) && (
-                        <button className="btn btn-sm btn-ghost text-red-500" onClick={() => { setDateFrom(''); setDateTo('') }}>
-                          مسح الفلتر
-                        </button>
-                      )}
+                      <button className="btn btn-sm btn-ghost text-slate-400" onClick={() => { setDateFrom(monthAgoStr()); setDateTo(todayStr()) }}>
+                        إعادة تعيين
+                      </button>
                     </div>
-                    {(dateFrom || dateTo) && (
-                      <div className="text-xs text-slate-400 mt-1.5">
-                        يعرض {filteredSubs.length} سجل اشتراك في الفترة المحددة
-                      </div>
-                    )}
+                    <QuickBtns onSet={setQuickSub}/>
+                    <div className="text-xs text-slate-400 mt-2">{filteredSubs.length} سجل اشتراك في الفترة المحددة</div>
                   </div>
 
-                  {/* Stats row */}
+                  {/* Stats */}
                   <div className="grid grid-cols-3 gap-2 mb-3">
-                    <div className="card text-center py-3 mb-0">
-                      <div className="text-xl font-extrabold text-emerald-600">{subCounts.active}</div>
-                      <div className="text-xs text-slate-400 mt-0.5">🟢 نشط</div>
-                    </div>
-                    <div className="card text-center py-3 mb-0">
-                      <div className="text-xl font-extrabold text-amber-500">{subCounts.warning}</div>
-                      <div className="text-xs text-slate-400 mt-0.5">🟡 ينتهي قريباً</div>
-                    </div>
-                    <div className="card text-center py-3 mb-0">
-                      <div className="text-xl font-extrabold text-red-500">{subCounts.expired}</div>
-                      <div className="text-xs text-slate-400 mt-0.5">🔴 منتهٍ / لا اشتراك</div>
-                    </div>
+                    <div className="card text-center py-3 mb-0"><div className="text-xl font-extrabold text-emerald-600">{subCounts.active}</div><div className="text-xs text-slate-400 mt-0.5">🟢 نشط</div></div>
+                    <div className="card text-center py-3 mb-0"><div className="text-xl font-extrabold text-amber-500">{subCounts.warning}</div><div className="text-xs text-slate-400 mt-0.5">🟡 ينتهي قريباً</div></div>
+                    <div className="card text-center py-3 mb-0"><div className="text-xl font-extrabold text-red-500">{subCounts.expired}</div><div className="text-xs text-slate-400 mt-0.5">🔴 منتهٍ / لا اشتراك</div></div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 mb-4">
-                    <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-3">
-                      <div className="text-xs text-emerald-600 font-bold mb-1">💰 إجمالي المحصّل</div>
-                      <div className="text-lg font-extrabold text-emerald-700">{totalPaid.toLocaleString()} {RIYAL}</div>
-                      {(dateFrom || dateTo) && <div className="text-xs text-slate-400 mt-0.5">في الفترة المحددة</div>}
+
+                  {/* Totals row */}
+                  <div className="flex items-stretch gap-2 mb-4">
+                    <div className="flex-1 rounded-2xl bg-emerald-50 border border-emerald-100 p-3">
+                      <div className="text-xs text-emerald-600 font-bold mb-1">💰 إجمالي الالتزامات للفريق</div>
+                      <div className="text-lg font-extrabold text-emerald-700">{totalSubPaid.toLocaleString()} {RIYAL}</div>
                     </div>
-                    <div className="rounded-2xl bg-red-50 border border-red-100 p-3">
-                      <div className="text-xs text-red-600 font-bold mb-1">📊 إجمالي المتبقي</div>
-                      <div className="text-lg font-extrabold text-red-600">{totalRemaining.toLocaleString()} {RIYAL}</div>
-                      {(dateFrom || dateTo) && <div className="text-xs text-slate-400 mt-0.5">في الفترة المحددة</div>}
+                    <div className="flex-1 rounded-2xl bg-red-50 border border-red-100 p-3">
+                      <div className="text-xs text-red-600 font-bold mb-1">📊 المبلغ المتبقي (لم يُسدَّد)</div>
+                      <div className="text-lg font-extrabold text-red-600">{totalSubRemaining.toLocaleString()} {RIYAL}</div>
                     </div>
                   </div>
 
-                  {/* Player list */}
+                  {/* Player list (players only) */}
                   {subsLoading
                     ? <div className="flex justify-center py-10"><Spinner/></div>
                     : allPlayerRows.length === 0
-                      ? <div className="card"><EmptyState icon={<Calendar size={24}/>} title="لا يوجد أعضاء نشطون"/></div>
+                      ? <div className="card"><EmptyState icon={<Calendar size={24}/>} title="لا يوجد لاعبون نشطون"/></div>
                       : <div className="space-y-2">
                           {allPlayerRows.map(p => {
                             const status = getSubStatus(p.latestSub)
@@ -633,27 +691,17 @@ export default function FinancePage() {
                             const playerDebt = p.subs.reduce((s: number, sub: any) => s + Math.max(0, Number(sub.final_amount) - Number(sub.paid_amount || 0)), 0)
                             return (
                               <div key={p.player_id} className="card mb-0">
-                                {/* Player row */}
                                 <div className="flex items-center gap-2">
                                   <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${DOT_COLOR[status]}`}/>
                                   <div className="w-9 h-9 bg-brand-100 rounded-xl flex items-center justify-center text-sm font-bold text-brand-700 flex-shrink-0 overflow-hidden">
-                                    {p.avatar_url
-                                      ? <img src={p.avatar_url} className="w-full h-full object-cover"/>
-                                      : p.full_name?.[0]}
+                                    {p.avatar_url ? <img src={p.avatar_url} className="w-full h-full object-cover"/> : p.full_name?.[0]}
                                   </div>
                                   <div className="flex-1 min-w-0">
                                     <div className="font-bold text-sm text-slate-800">{p.full_name}</div>
                                     <div className="flex items-center gap-1.5 text-xs text-slate-400 mt-0.5 flex-wrap">
-                                      <span>{ROLE_LABELS[p.role] || p.role}</span>
-                                      {p.latestSub && <span>· حتى: {p.latestSub.end_date}</span>}
-                                      {p.subs.length > 0 && (
-                                        <span className="text-brand-500 font-bold">
-                                          · {p.subs.length} {p.subs.length === 1 ? 'تجديد' : 'تجديدات'}
-                                        </span>
-                                      )}
-                                      {playerDebt > 0 && (
-                                        <span className="text-red-500 font-bold">· مديونية: {playerDebt} {RIYAL}</span>
-                                      )}
+                                      {p.latestSub && <span>حتى: {p.latestSub.end_date}</span>}
+                                      {p.subs.length > 0 && <span className="text-brand-500 font-bold">· {p.subs.length} تجديد</span>}
+                                      {playerDebt > 0 && <span className="text-red-500 font-bold">· مديونية: {playerDebt} {RIYAL}</span>}
                                     </div>
                                   </div>
                                   <div className="flex items-center gap-1 flex-shrink-0">
@@ -661,31 +709,20 @@ export default function FinancePage() {
                                       {p.latestSub ? subBadgeText(p.latestSub, status) : 'لا اشتراك'}
                                     </span>
                                     {p.subs.length > 0 && (
-                                      <button onClick={() => toggleExpand(p.player_id)}
-                                        className="btn btn-sm btn-ghost px-2" title="السجل">
+                                      <button onClick={() => toggleExpand(p.player_id)} className="btn btn-sm btn-ghost px-2">
                                         {isExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
                                       </button>
                                     )}
-                                    <button onClick={() => setShowStatement(p)}
-                                      className="btn btn-sm btn-ghost px-2 text-slate-500" title="كشف حساب">
+                                    <button onClick={() => setShowStatement(p)} className="btn btn-sm btn-ghost px-2 text-slate-500" title="كشف حساب">
                                       <FileText size={13}/>
                                     </button>
-                                    <button
-                                      onClick={() => {
-                                        setShowRenew(p)
-                                        setRenewForm({
-                                          months: 1, startDate: new Date().toISOString().slice(0, 10),
-                                          discountType: null, discountValue: 0,
-                                          paymentStatus: 'paid', paidAmount: 0, notes: ''
-                                        })
-                                      }}
+                                    <button onClick={() => { setShowRenew(p); setRenewForm({ months: 1, startDate: todayStr(), discountType: null, discountValue: 0, paymentStatus: 'paid', paidAmount: 0, notes: '' }) }}
                                       className="btn btn-sm btn-ghost gap-1">
                                       <RefreshCw size={13}/> تجديد
                                     </button>
                                   </div>
                                 </div>
 
-                                {/* Expanded history table */}
                                 {isExpanded && p.subs.length > 0 && (
                                   <div className="mt-3 pt-3 border-t border-slate-100">
                                     <div className="text-xs font-bold text-slate-500 mb-2">سجل الاشتراكات</div>
@@ -712,31 +749,19 @@ export default function FinancePage() {
                                                 <td className="py-1.5 text-slate-500">{s.months} شهر</td>
                                                 <td className="py-1.5 font-bold text-slate-700">{s.final_amount} {RIYAL}</td>
                                                 <td className="py-1.5 text-slate-600">{Number(s.paid_amount || 0).toLocaleString()} {RIYAL}</td>
-                                                <td className="py-1.5">
-                                                  <span className={`badge text-xs ${PAY_CLS[s.payment_status || 'paid']}`}>
-                                                    {PAY_LBL[s.payment_status || 'paid']}
-                                                  </span>
-                                                </td>
-                                                <td className="py-1.5">
-                                                  <span className={`badge text-xs ${BADGE_CLS[ss]}`}>{STATUS_LBL[ss]}</span>
-                                                </td>
+                                                <td className="py-1.5"><span className={`badge text-xs ${PAY_CLS[s.payment_status || 'paid']}`}>{PAY_LBL[s.payment_status || 'paid']}</span></td>
+                                                <td className="py-1.5"><span className={`badge text-xs ${BADGE_CLS[ss]}`}>{STATUS_LBL[ss]}</span></td>
                                               </tr>
                                             )
                                           })}
                                         </tbody>
                                         <tfoot>
                                           <tr className="border-t-2 border-slate-200 font-bold text-xs">
-                                            <td colSpan={3} className="pt-2 text-slate-500">
-                                              الإجمالي ({p.subs.length})
-                                            </td>
-                                            <td className="pt-2 text-slate-700">
-                                              {p.subs.reduce((s: number, x: any) => s + Number(x.final_amount), 0)} {RIYAL}
-                                            </td>
-                                            <td className="pt-2 text-emerald-700">
-                                              {playerTotalPaid.toLocaleString()} {RIYAL}
-                                            </td>
+                                            <td colSpan={3} className="pt-2 text-slate-500">الإجمالي ({p.subs.length})</td>
+                                            <td className="pt-2 text-slate-700">{p.subs.reduce((s: number, x: any) => s + Number(x.final_amount), 0)} {RIYAL}</td>
+                                            <td className="pt-2 text-emerald-700">{playerTotalPaid.toLocaleString()} {RIYAL}</td>
                                             <td colSpan={2} className={`pt-2 ${playerDebt > 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                                              {playerDebt > 0 ? `متبقي: ${playerDebt} ${RIYAL}` : 'مسدد بالكامل ✅'}
+                                              {playerDebt > 0 ? `متبقي: ${playerDebt} ${RIYAL}` : 'مسدد ✅'}
                                             </td>
                                           </tr>
                                         </tfoot>
@@ -752,7 +777,7 @@ export default function FinancePage() {
                 </>
               )}
 
-              {/* ── PLAYER VIEW ── */}
+              {/* ── Player view ── */}
               {isPlayer && (
                 <div>
                   {(() => {
@@ -761,32 +786,23 @@ export default function FinancePage() {
                     const status = getSubStatus(latestSub)
                     const myTotalPaid = myAllSubs.reduce((s, sub) => s + Number(sub.paid_amount || 0), 0)
                     const myDebt = myAllSubs.reduce((s, sub) => s + Math.max(0, Number(sub.final_amount) - Number(sub.paid_amount || 0)), 0)
-
-                    if (myAllSubs.length === 0) {
-                      return (
-                        <div className="card text-center py-10">
-                          <Calendar size={40} className="text-slate-300 mx-auto mb-3"/>
-                          <div className="font-bold text-slate-600 mb-1">لا يوجد اشتراك نشط</div>
-                          <p className="text-xs text-slate-400">تواصل مع مسؤول الفريق لتفعيل اشتراكك</p>
-                        </div>
-                      )
-                    }
-
-                    const borderCl = { none:'', expired:'border-r-4 border-red-400', warning:'border-r-4 border-amber-400', active:'border-r-4 border-emerald-400' }[status]
+                    if (myAllSubs.length === 0) return (
+                      <div className="card text-center py-10">
+                        <Calendar size={40} className="text-slate-300 mx-auto mb-3"/>
+                        <div className="font-bold text-slate-600 mb-1">لا يوجد اشتراك نشط</div>
+                        <p className="text-xs text-slate-400">تواصل مع مسؤول الفريق لتفعيل اشتراكك</p>
+                      </div>
+                    )
+                    const borderCl = { none: '', expired: 'border-r-4 border-red-400', warning: 'border-r-4 border-amber-400', active: 'border-r-4 border-emerald-400' }[status]
                     return (
                       <div>
                         {latestSub && (
                           <div className={`card ${borderCl} mb-4`}>
                             <div className="font-extrabold text-slate-800 mb-3">اشتراكك الحالي</div>
-                            <div className="flex justify-between text-sm text-slate-500 mb-2">
-                              <span>من: {latestSub.start_date}</span>
-                              <span>حتى: {latestSub.end_date}</span>
-                            </div>
+                            <div className="flex justify-between text-sm text-slate-500 mb-2"><span>من: {latestSub.start_date}</span><span>حتى: {latestSub.end_date}</span></div>
                             <div className="flex justify-between items-center mb-2">
                               <span className="font-extrabold text-brand-700 text-lg">{latestSub.final_amount} {RIYAL}</span>
-                              <span className={`badge ${BADGE_CLS[status]}`}>
-                                {subBadgeText(latestSub, status)}
-                              </span>
+                              <span className={`badge ${BADGE_CLS[status]}`}>{subBadgeText(latestSub, status)}</span>
                             </div>
                             {latestSub.payment_status !== 'paid' && (
                               <div className="text-xs font-bold text-red-600 bg-red-50 rounded-xl p-2 mt-2">
@@ -795,20 +811,10 @@ export default function FinancePage() {
                             )}
                           </div>
                         )}
-
                         <div className="grid grid-cols-2 gap-2 mb-4">
-                          <div className="rounded-2xl bg-emerald-50 p-3">
-                            <div className="text-xs text-emerald-600 font-bold">إجمالي المدفوع</div>
-                            <div className="font-extrabold text-emerald-700 mt-0.5">{myTotalPaid.toLocaleString()} {RIYAL}</div>
-                          </div>
-                          {myDebt > 0 && (
-                            <div className="rounded-2xl bg-red-50 p-3">
-                              <div className="text-xs text-red-600 font-bold">إجمالي المديونية</div>
-                              <div className="font-extrabold text-red-700 mt-0.5">{myDebt.toLocaleString()} {RIYAL}</div>
-                            </div>
-                          )}
+                          <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-emerald-600 font-bold">إجمالي المدفوع</div><div className="font-extrabold text-emerald-700 mt-0.5">{myTotalPaid.toLocaleString()} {RIYAL}</div></div>
+                          {myDebt > 0 && <div className="rounded-2xl bg-red-50 p-3"><div className="text-xs text-red-600 font-bold">إجمالي المديونية</div><div className="font-extrabold text-red-700 mt-0.5">{myDebt.toLocaleString()} {RIYAL}</div></div>}
                         </div>
-
                         {myAllSubs.length > 1 && (
                           <div className="card">
                             <div className="font-bold text-sm mb-3">سجل اشتراكاتك ({myAllSubs.length})</div>
@@ -842,10 +848,34 @@ export default function FinancePage() {
         </div>
       )}
 
-      {/* ── EXPENSES TAB ── */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* EXPENSES TAB                                                      */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
       {tab === 'expenses' && (
         loading ? <div className="flex justify-center py-10"><Spinner/></div> : (
           <div>
+            {/* Date filter */}
+            <div className="card mb-4 p-3">
+              <div className="text-xs font-bold text-slate-500 mb-2">فلترة حسب تاريخ المصروف</div>
+              <div className="flex gap-2 items-end flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <label className="text-xs text-slate-400 block mb-1">من</label>
+                  <input type="date" className="form-input text-sm" value={expDateFrom} onChange={e => setExpDateFrom(e.target.value)}/>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <label className="text-xs text-slate-400 block mb-1">إلى</label>
+                  <input type="date" className="form-input text-sm" value={expDateTo} onChange={e => setExpDateTo(e.target.value)}/>
+                </div>
+                {(expDateFrom || expDateTo) && (
+                  <button className="btn btn-sm btn-ghost text-red-500" onClick={() => { setExpDateFrom(''); setExpDateTo('') }}>
+                    مسح
+                  </button>
+                )}
+              </div>
+              <QuickBtns onSet={setQuickExp}/>
+              {(expDateFrom || expDateTo) && <div className="text-xs text-slate-400 mt-2">{filteredExpenses.length} مصروف في الفترة المحددة</div>}
+            </div>
+
             <div className="hero-card mb-5">
               <div className="absolute top-0 left-0 w-40 h-40 rounded-full opacity-10 bg-white -translate-x-16 -translate-y-12"/>
               <div className="relative flex items-center gap-4">
@@ -855,22 +885,22 @@ export default function FinancePage() {
                 <div>
                   <div className="text-white/70 text-xs font-bold mb-0.5">إجمالي مصاريف الفريق</div>
                   <div className="text-white text-2xl font-extrabold">
-                    {expenses.reduce((s, e) => s + Number(e.amount), 0).toLocaleString()} {RIYAL}
+                    {filteredExpenses.reduce((s, e) => s + Number(e.amount), 0).toLocaleString()} {RIYAL}
                   </div>
-                  <div className="text-white/60 text-xs mt-1">{expenses.length} بند مصروف</div>
+                  <div className="text-white/60 text-xs mt-1">{filteredExpenses.length} بند مصروف</div>
                 </div>
               </div>
             </div>
 
-            {expenses.length === 0
+            {filteredExpenses.length === 0
               ? <div className="card"><EmptyState icon={<Receipt size={24}/>} title="لا توجد مصاريف" description="أضف أول مصروف للفريق"/></div>
               : <div className="space-y-2.5">
-                  {expenses.map((exp: any) => {
+                  {filteredExpenses.map((exp: any) => {
                     const imgs: string[] = exp.receipt_images || []
                     return (
                       <div key={exp.id} className="card mb-0 flex items-start gap-3">
                         <div className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center flex-shrink-0 text-lg">
-                          {({ 'معدات وكور':'⚽','ملابس وزي':'👕','مياه وتغذية':'💧','مواصلات':'🚌','سكن وفندق':'🏨','طيران':'✈️','أكل ووجبات':'🍽️','رسوم وتسجيل':'📋' } as any)[exp.category] || '📦'}
+                          {({ 'معدات وكور': '⚽', 'ملابس وزي': '👕', 'مياه وتغذية': '💧', 'مواصلات': '🚌', 'سكن وفندق': '🏨', 'طيران': '✈️', 'أكل ووجبات': '🍽️', 'رسوم وتسجيل': '📋' } as any)[exp.category] || '📦'}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="font-bold text-sm text-slate-800">{exp.title}</div>
@@ -885,7 +915,7 @@ export default function FinancePage() {
                               {imgs.map((url, i) => (
                                 <button key={i} onClick={() => setPreviewImg(url)}
                                   className="w-14 h-14 rounded-xl overflow-hidden border-2 border-slate-200 flex-shrink-0 hover:border-brand-400 transition-colors">
-                                  <img src={url} className="w-full h-full object-cover" alt={`فاتورة ${i+1}`}/>
+                                  <img src={url} className="w-full h-full object-cover" alt={`فاتورة ${i + 1}`}/>
                                 </button>
                               ))}
                             </div>
@@ -894,8 +924,7 @@ export default function FinancePage() {
                         <div className="text-right flex-shrink-0">
                           <div className="font-extrabold text-brand-700">{Number(exp.amount).toLocaleString()} {RIYAL}</div>
                           {canManageExpenses && (
-                            <button onClick={() => deleteExpense(exp.id)}
-                              className="text-red-400 hover:text-red-600 mt-1 p-0.5 border-none bg-transparent cursor-pointer">
+                            <button onClick={() => deleteExpense(exp.id)} className="text-red-400 hover:text-red-600 mt-1 p-0.5 border-none bg-transparent cursor-pointer">
                               <Trash2 size={13}/>
                             </button>
                           )}
@@ -909,7 +938,11 @@ export default function FinancePage() {
         )
       )}
 
-      {/* ── Add Obligation Modal ── */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* MODALS                                                            */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+
+      {/* Add Obligation */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="إضافة التزام مالي" width="max-w-lg">
         <FormField label="الالتزام" required>
           <input className="form-input" value={form.title} onChange={e => set('title', e.target.value)} placeholder="اشتراك شهري..."/>
@@ -924,33 +957,25 @@ export default function FinancePage() {
         </div>
         <FormField label="يُطبّق على">
           <div className="flex gap-2 mb-3">
-            {[['all','الكل'],['role','فئة'],['specific','أشخاص محددون']].map(([v,l]) => (
+            {[['all', 'الكل'], ['role', 'فئة'], ['specific', 'أشخاص محددون']].map(([v, l]) => (
               <button key={v} onClick={() => set('target_type', v)}
-                className={`flex-1 py-2 rounded-xl border text-xs font-bold transition-all ${form.target_type===v ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>
-                {l}
-              </button>
+                className={`flex-1 py-2 rounded-xl border text-xs font-bold transition-all ${form.target_type === v ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>{l}</button>
             ))}
           </div>
           {form.target_type === 'role' && (
             <select className="form-input" value={form.target_role} onChange={e => set('target_role', e.target.value)}>
-              {['player','head_coach','assistant_coach','administrator'].map(r => (
-                <option key={r} value={r}>{ROLE_LABELS[r]}</option>
-              ))}
+              {['player', 'head_coach', 'assistant_coach', 'administrator'].map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
             </select>
           )}
-          {form.target_type === 'specific' && (
-            <CheckboxList items={memberItems} selected={form.target_user_ids} onChange={v => set('target_user_ids', v)}/>
-          )}
+          {form.target_type === 'specific' && <CheckboxList items={memberItems} selected={form.target_user_ids} onChange={v => set('target_user_ids', v)}/>}
         </FormField>
         <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowAdd(false)}>إلغاء</button>
-          <button className="btn btn-primary" onClick={addObligation} disabled={saving}>
-            {saving ? <Spinner size="sm"/> : 'إضافة'}
-          </button>
+          <button className="btn btn-primary" onClick={addObligation} disabled={saving}>{saving ? <Spinner size="sm"/> : 'إضافة'}</button>
         </div>
       </Modal>
 
-      {/* ── Add Expense Modal ── */}
+      {/* Add Expense */}
       <Modal open={showExpense} onClose={() => setShowExpense(false)} title="🧾 إضافة مصروف للفريق" width="max-w-md">
         <FormField label="البند" required>
           <input className="form-input" value={expForm.title} onChange={e => setExp('title', e.target.value)} placeholder="شراء كور تدريب..."/>
@@ -967,27 +992,17 @@ export default function FinancePage() {
           <div className="flex flex-wrap gap-1.5">
             {EXPENSE_CATEGORIES.map(c => (
               <button key={c} onClick={() => setExp('category', c)}
-                className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold transition-all ${expForm.category===c ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>
-                {c}
-              </button>
+                className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold transition-all ${expForm.category === c ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>{c}</button>
             ))}
           </div>
         </FormField>
         <FormField label="ملاحظات">
           <input className="form-input" value={expForm.notes} onChange={e => setExp('notes', e.target.value)} placeholder="تفاصيل إضافية..."/>
         </FormField>
-
-        {/* Receipt Images */}
         <FormField label="صور الفواتير (اختياري — حتى 5 صور)">
-          <input
-            ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
-            onChange={e => handleReceiptUpload(e.target.files)}/>
+          <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => handleReceiptUpload(e.target.files)}/>
           {expForm.receipt_images.length < 5 && (
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploadingImg}
-              className="btn btn-ghost btn-sm gap-2 mb-2">
+            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploadingImg} className="btn btn-ghost btn-sm gap-2 mb-2">
               {uploadingImg ? <Spinner size="sm"/> : <ImageIcon size={14}/>}
               {uploadingImg ? 'جارٍ الرفع...' : 'إضافة صورة فاتورة'}
             </button>
@@ -996,9 +1011,8 @@ export default function FinancePage() {
             <div className="flex gap-2 flex-wrap mt-1">
               {expForm.receipt_images.map((url, i) => (
                 <div key={i} className="relative w-16 h-16 rounded-xl overflow-hidden border-2 border-slate-200 flex-shrink-0">
-                  <img src={url} className="w-full h-full object-cover" alt={`فاتورة ${i+1}`}/>
-                  <button
-                    onClick={() => setExpForm(p => ({ ...p, receipt_images: p.receipt_images.filter((_,j) => j !== i) }))}
+                  <img src={url} className="w-full h-full object-cover"/>
+                  <button onClick={() => setExpForm(p => ({ ...p, receipt_images: p.receipt_images.filter((_, j) => j !== i) }))}
                     className="absolute top-0.5 right-0.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center border-none cursor-pointer">
                     <X size={10}/>
                   </button>
@@ -1006,45 +1020,34 @@ export default function FinancePage() {
               ))}
             </div>
           )}
-          <p className="text-xs text-slate-400 mt-1">يتم ضغط الصور تلقائياً للحفاظ على سرعة التحميل</p>
         </FormField>
-
         <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowExpense(false)}>إلغاء</button>
-          <button className="btn btn-primary" onClick={addExpense} disabled={saving || uploadingImg}>
-            {saving ? <Spinner size="sm"/> : 'إضافة'}
-          </button>
+          <button className="btn btn-primary" onClick={addExpense} disabled={saving || uploadingImg}>{saving ? <Spinner size="sm"/> : 'إضافة'}</button>
         </div>
       </Modal>
 
-      {/* ── Payment Modal ── */}
+      {/* Payment */}
       <Modal open={!!showPay} onClose={() => setShowPay(null)} title={`دفعة — ${showPay?.name}`}>
         {showPay && (
           <>
             <div className="bg-slate-50 rounded-xl p-3 mb-4 text-sm">
               <div className="font-bold">{showPay.ob.title}</div>
-              <div className="text-slate-500 text-xs mt-1">
-                المطلوب: {showPay.ob.amount} {RIYAL} · المدفوع: {getPaid(showPay.ob.id, showPay.userId)} {RIYAL}
-              </div>
+              <div className="text-slate-500 text-xs mt-1">المطلوب: {showPay.ob.amount} {RIYAL} · المدفوع: {getPaid(showPay.ob.id, showPay.userId)} {RIYAL}</div>
             </div>
             <FormField label={`مبلغ الدفعة (${RIYAL})`}>
-              <input className="form-input" type="number" value={payAmt}
-                onChange={e => setPayAmt(e.target.value)}
+              <input className="form-input" type="number" value={payAmt} onChange={e => setPayAmt(e.target.value)}
                 placeholder={String(showPay.ob.amount - getPaid(showPay.ob.id, showPay.userId))}/>
             </FormField>
             <div className="flex gap-2 justify-end mt-4">
-              <button className="btn btn-ghost btn-sm" onClick={() => { setPayAmt(String(showPay.ob.amount)); setTimeout(recordPayment, 100) }}>
-                مسدد كامل
-              </button>
-              <button className="btn btn-primary" onClick={recordPayment} disabled={saving}>
-                {saving ? <Spinner size="sm"/> : 'تسجيل'}
-              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setPayAmt(String(showPay.ob.amount)); setTimeout(recordPayment, 100) }}>مسدد كامل</button>
+              <button className="btn btn-primary" onClick={recordPayment} disabled={saving}>{saving ? <Spinner size="sm"/> : 'تسجيل'}</button>
             </div>
           </>
         )}
       </Modal>
 
-      {/* ── Renewal Modal ── */}
+      {/* Renewal */}
       <Modal open={!!showRenew} onClose={() => setShowRenew(null)} title={`تجديد اشتراك — ${showRenew?.full_name}`}>
         {showRenew && (
           <>
@@ -1058,38 +1061,24 @@ export default function FinancePage() {
                 <div className="bg-brand-50 border border-brand-200 rounded-xl p-3 mb-4 text-sm">
                   قيمة الاشتراك الشهري: <strong>{team.subscription_fee} {RIYAL}</strong>
                 </div>
-
-                {/* Duration + Start Date */}
                 <div className="grid grid-cols-2 gap-3">
                   <FormField label="تاريخ بداية الاشتراك">
-                    <input className="form-input" type="date" value={renewForm.startDate}
-                      onChange={e => setRenewForm(p => ({...p, startDate: e.target.value}))}/>
+                    <input className="form-input" type="date" value={renewForm.startDate} onChange={e => setRenewForm(p => ({ ...p, startDate: e.target.value }))}/>
                   </FormField>
                   <FormField label="عدد الشهور">
-                    <input className="form-input" type="number" min="1" max="36"
-                      value={renewForm.months}
-                      onChange={e => setRenewForm(p => ({...p, months: Math.max(1, parseInt(e.target.value)||1)}))}
-                      placeholder="1"/>
+                    <input className="form-input" type="number" min="1" max="36" value={renewForm.months}
+                      onChange={e => setRenewForm(p => ({ ...p, months: Math.max(1, parseInt(e.target.value) || 1) }))}/>
                   </FormField>
                 </div>
                 {renewForm.startDate && renewForm.months > 0 && (() => {
-                  const end = new Date(renewForm.startDate)
-                  end.setMonth(end.getMonth() + renewForm.months)
-                  return (
-                    <div className="text-xs text-slate-500 -mt-2 mb-3 flex items-center gap-1">
-                      <Calendar size={11}/>
-                      <span>ينتهي بتاريخ: <strong>{end.toISOString().slice(0,10)}</strong></span>
-                    </div>
-                  )
+                  const end = new Date(renewForm.startDate); end.setMonth(end.getMonth() + renewForm.months)
+                  return <div className="text-xs text-slate-500 -mt-2 mb-3 flex items-center gap-1"><Calendar size={11}/><span>ينتهي: <strong>{end.toISOString().slice(0, 10)}</strong></span></div>
                 })()}
-
-                {/* Discount */}
                 <FormField label="خصم (اختياري)">
                   <div className="flex gap-2 mb-2">
-                    {([null,'percent','fixed'] as const).map(dt => (
-                      <button key={String(dt)}
-                        onClick={() => setRenewForm(p => ({...p, discountType: dt, discountValue: 0}))}
-                        className={`flex-1 py-2 rounded-xl border text-xs font-bold transition-all ${renewForm.discountType===dt ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>
+                    {([null, 'percent', 'fixed'] as const).map(dt => (
+                      <button key={String(dt)} onClick={() => setRenewForm(p => ({ ...p, discountType: dt, discountValue: 0 }))}
+                        className={`flex-1 py-2 rounded-xl border text-xs font-bold transition-all ${renewForm.discountType === dt ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>
                         {dt === null ? 'بدون خصم' : dt === 'percent' ? 'نسبة %' : 'مبلغ ثابت'}
                       </button>
                     ))}
@@ -1098,11 +1087,9 @@ export default function FinancePage() {
                     <input className="form-input" type="number" min="0"
                       placeholder={renewForm.discountType === 'percent' ? 'مثال: 10 (10%)' : `مثال: 50 (${RIYAL})`}
                       value={renewForm.discountValue || ''}
-                      onChange={e => setRenewForm(p => ({...p, discountValue: parseFloat(e.target.value)||0}))}/>
+                      onChange={e => setRenewForm(p => ({ ...p, discountValue: parseFloat(e.target.value) || 0 }))}/>
                   )}
                 </FormField>
-
-                {/* Total */}
                 <div className="bg-slate-50 rounded-xl p-3 mb-4">
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-slate-600">المبلغ الإجمالي</span>
@@ -1110,56 +1097,35 @@ export default function FinancePage() {
                   </div>
                   <div className="text-xs text-slate-400 mt-1">
                     {team.subscription_fee} {RIYAL} × {renewForm.months} شهر
-                    {renewForm.discountType && ` − خصم ${renewForm.discountValue}${renewForm.discountType==='percent' ? '%' : ` ${RIYAL}`}`}
+                    {renewForm.discountType && ` − خصم ${renewForm.discountValue}${renewForm.discountType === 'percent' ? '%' : ` ${RIYAL}`}`}
                   </div>
                 </div>
-
-                {/* Payment Status */}
                 <FormField label="حالة السداد">
                   <div className="flex gap-2 mb-2">
-                    {([
-                      ['paid','مسدد كامل ✅'],
-                      ['partial','سداد جزئي 🔶'],
-                      ['unpaid','لم يسدد بعد ❌'],
-                    ] as const).map(([v, l]) => (
-                      <button key={v}
-                        onClick={() => setRenewForm(p => ({...p, paymentStatus: v, paidAmount: 0}))}
-                        className={`flex-1 py-2.5 rounded-xl border text-xs font-bold text-center transition-all ${renewForm.paymentStatus===v ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>
-                        {l}
-                      </button>
+                    {([['paid', 'مسدد كامل ✅'], ['partial', 'سداد جزئي 🔶'], ['unpaid', 'لم يسدد بعد ❌']] as const).map(([v, l]) => (
+                      <button key={v} onClick={() => setRenewForm(p => ({ ...p, paymentStatus: v, paidAmount: 0 }))}
+                        className={`flex-1 py-2.5 rounded-xl border text-xs font-bold text-center transition-all ${renewForm.paymentStatus === v ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>{l}</button>
                     ))}
                   </div>
                   {renewForm.paymentStatus === 'partial' && (
                     <div>
-                      <input className="form-input" type="number" min="0"
-                        placeholder={`المبلغ المدفوع (من ${renewTotal} ${RIYAL})`}
-                        value={renewForm.paidAmount || ''}
-                        onChange={e => setRenewForm(p => ({...p, paidAmount: parseFloat(e.target.value)||0}))}/>
+                      <input className="form-input" type="number" min="0" placeholder={`المبلغ المدفوع (من ${renewTotal} ${RIYAL})`}
+                        value={renewForm.paidAmount || ''} onChange={e => setRenewForm(p => ({ ...p, paidAmount: parseFloat(e.target.value) || 0 }))}/>
                       {renewForm.paidAmount > 0 && renewTotal > renewForm.paidAmount && (
-                        <div className="text-xs text-red-600 mt-1">
-                          متبقي كمديونية: {Math.max(0, renewTotal - renewForm.paidAmount).toFixed(2)} {RIYAL}
-                        </div>
+                        <div className="text-xs text-red-600 mt-1">متبقي كمديونية: {Math.max(0, renewTotal - renewForm.paidAmount).toFixed(2)} {RIYAL}</div>
                       )}
                     </div>
                   )}
                   {renewForm.paymentStatus === 'unpaid' && (
-                    <div className="text-xs text-red-600 bg-red-50 rounded-xl p-2.5 mt-1">
-                      ⚠️ سيُسجَّل المبلغ الكامل ({renewTotal} {RIYAL}) كمديونية في ملف اللاعب
-                    </div>
+                    <div className="text-xs text-red-600 bg-red-50 rounded-xl p-2.5 mt-1">⚠️ سيُسجَّل المبلغ الكامل ({renewTotal} {RIYAL}) كمديونية في ملف اللاعب</div>
                   )}
                 </FormField>
-
                 <FormField label="ملاحظات">
-                  <input className="form-input" placeholder="اختياري..."
-                    value={renewForm.notes}
-                    onChange={e => setRenewForm(p => ({...p, notes: e.target.value}))}/>
+                  <input className="form-input" placeholder="اختياري..." value={renewForm.notes} onChange={e => setRenewForm(p => ({ ...p, notes: e.target.value }))}/>
                 </FormField>
-
                 <div className="flex gap-2 justify-end mt-4">
                   <button className="btn btn-ghost" onClick={() => setShowRenew(null)}>إلغاء</button>
-                  <button className="btn btn-primary" onClick={doRenew} disabled={saving}>
-                    {saving ? <Spinner size="sm"/> : <><RefreshCw size={14}/> تجديد الاشتراك</>}
-                  </button>
+                  <button className="btn btn-primary" onClick={doRenew} disabled={saving}>{saving ? <Spinner size="sm"/> : <><RefreshCw size={14}/> تجديد الاشتراك</>}</button>
                 </div>
               </>
             )}
@@ -1171,95 +1137,159 @@ export default function FinancePage() {
       <Modal open={!!showStatement} onClose={() => setShowStatement(null)}
         title={`كشف حساب — ${showStatement?.full_name}`} width="max-w-lg">
         {showStatement && (() => {
-          const stSubs = allSubs.filter(s => s.player_id === showStatement.player_id)
-          const stTotal = stSubs.reduce((s, sub) => s + Number(sub.final_amount), 0)
-          const stPaid = stSubs.reduce((s, sub) => s + Number(sub.paid_amount || 0), 0)
-          const stDebt = stTotal - stPaid
+          const pid = showStatement.player_id
+          // Subscriptions
+          const stSubs = allSubs.filter(s => s.player_id === pid)
+          const stSubTotal = stSubs.reduce((s, sub) => s + Number(sub.final_amount), 0)
+          const stSubPaid = stSubs.reduce((s, sub) => s + Number(sub.paid_amount || 0), 0)
+
+          // Obligations
+          const stObs = obs
+            .filter(ob => getTargetMembers(ob).some((m: any) => m.user_id === pid))
+            .map(ob => ({
+              ob,
+              paid: getPaid(ob.id, pid),
+              paidAt: getPaidAt(ob.id, pid)
+            }))
+          const stObTotal = stObs.reduce((s, { ob }) => s + ob.amount, 0)
+          const stObPaid = stObs.reduce((s, { paid }) => s + paid, 0)
+
+          const grandTotal = stSubTotal + stObTotal
+          const grandPaid = stSubPaid + stObPaid
+          const grandRemaining = grandTotal - grandPaid
+
+          const summary = { total: grandTotal, paid: grandPaid, remaining: grandRemaining }
+
           return (
             <>
+              {/* Export buttons */}
+              <div className="flex gap-2 mb-4">
+                <button
+                  onClick={() => exportStatementCSV(showStatement.full_name, stObs, stSubs)}
+                  className="btn btn-sm btn-ghost gap-1.5 flex-1">
+                  <Download size={13}/> Excel / CSV
+                </button>
+                <button
+                  onClick={() => printStatement(showStatement.full_name, stObs, stSubs, summary)}
+                  className="btn btn-sm btn-ghost gap-1.5 flex-1">
+                  <Printer size={13}/> طباعة PDF
+                </button>
+              </div>
+
+              {/* Summary cards */}
               <div className="grid grid-cols-3 gap-2 mb-4">
                 <div className="bg-slate-50 rounded-xl p-2.5 text-center">
-                  <div className="text-xs text-slate-500">إجمالي الاشتراكات</div>
-                  <div className="font-extrabold text-slate-700 mt-0.5">{stTotal} {RIYAL}</div>
+                  <div className="text-xs text-slate-500">إجمالي المُصدَر</div>
+                  <div className="font-extrabold text-slate-700 mt-0.5">{grandTotal} {RIYAL}</div>
                 </div>
                 <div className="bg-emerald-50 rounded-xl p-2.5 text-center">
                   <div className="text-xs text-emerald-600">المسدّد</div>
-                  <div className="font-extrabold text-emerald-700 mt-0.5">{stPaid} {RIYAL}</div>
+                  <div className="font-extrabold text-emerald-700 mt-0.5">{grandPaid} {RIYAL}</div>
                 </div>
-                <div className={`${stDebt > 0 ? 'bg-red-50' : 'bg-slate-50'} rounded-xl p-2.5 text-center`}>
-                  <div className={`text-xs ${stDebt > 0 ? 'text-red-600' : 'text-slate-500'}`}>المديونية</div>
-                  <div className={`font-extrabold mt-0.5 ${stDebt > 0 ? 'text-red-700' : 'text-slate-400'}`}>
-                    {stDebt > 0 ? `${stDebt} ${RIYAL}` : '—'}
+                <div className={`${grandRemaining > 0 ? 'bg-red-50' : 'bg-slate-50'} rounded-xl p-2.5 text-center`}>
+                  <div className={`text-xs ${grandRemaining > 0 ? 'text-red-600' : 'text-slate-500'}`}>المتبقي</div>
+                  <div className={`font-extrabold mt-0.5 ${grandRemaining > 0 ? 'text-red-700' : 'text-slate-400'}`}>
+                    {grandRemaining > 0 ? `${grandRemaining} ${RIYAL}` : '—'}
                   </div>
                 </div>
               </div>
 
-              {stSubs.length === 0 ? (
-                <div className="text-center py-6 text-slate-400 text-sm">لا توجد اشتراكات مسجلة لهذا اللاعب</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-slate-400 border-b border-slate-100">
-                        <th className="text-right pb-2 font-bold">#</th>
-                        <th className="text-right pb-2 font-bold">الفترة</th>
-                        <th className="text-right pb-2 font-bold">المبلغ</th>
-                        <th className="text-right pb-2 font-bold">المدفوع</th>
-                        <th className="text-right pb-2 font-bold">المتبقي</th>
-                        <th className="text-right pb-2 font-bold">الحالة</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {stSubs.map((s: any, i: number) => {
-                        const debt = Math.max(0, Number(s.final_amount) - Number(s.paid_amount || 0))
-                        const ss = getSubStatus(s)
-                        return (
-                          <tr key={s.sub_id} className="border-b border-slate-50">
-                            <td className="py-2 text-slate-400">{stSubs.length - i}</td>
-                            <td className="py-2 text-slate-600">
-                              <div className="font-bold">{s.start_date}</div>
-                              <div className="text-slate-400">← {s.end_date} ({s.months} شهر)</div>
-                            </td>
-                            <td className="py-2 font-bold text-slate-700">{s.final_amount} {RIYAL}</td>
-                            <td className="py-2 text-emerald-700">{Number(s.paid_amount || 0)} {RIYAL}</td>
-                            <td className={`py-2 font-bold ${debt > 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                              {debt > 0 ? `${debt} ${RIYAL}` : '—'}
-                            </td>
-                            <td className="py-2">
-                              <span className={`badge text-xs ${BADGE_CLS[ss]}`}>{STATUS_LBL[ss]}</span>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                    <tfoot>
-                      <tr className="border-t-2 border-slate-200 font-bold text-xs">
-                        <td colSpan={2} className="pt-2 text-slate-600">الإجمالي ({stSubs.length} اشتراك)</td>
-                        <td className="pt-2 text-slate-700">{stTotal} {RIYAL}</td>
-                        <td className="pt-2 text-emerald-700">{stPaid} {RIYAL}</td>
-                        <td className={`pt-2 ${stDebt > 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                          {stDebt > 0 ? `${stDebt} ${RIYAL}` : '—'}
-                        </td>
-                        <td/>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
+              {/* Obligations section */}
+              {stObs.length > 0 && (
+                <>
+                  <div className="text-xs font-bold text-slate-500 mb-2">الالتزامات المالية ({stObs.length})</div>
+                  <div className="overflow-x-auto mb-4">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-slate-400 border-b border-slate-100">
+                          <th className="text-right pb-2 font-bold">الالتزام</th>
+                          <th className="text-right pb-2 font-bold">المبلغ</th>
+                          <th className="text-right pb-2 font-bold">المدفوع</th>
+                          <th className="text-right pb-2 font-bold">تاريخ السداد</th>
+                          <th className="text-right pb-2 font-bold">المتبقي</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stObs.map(({ ob, paid, paidAt }) => {
+                          const rem = Math.max(0, ob.amount - paid)
+                          return (
+                            <tr key={ob.id} className="border-b border-slate-50">
+                              <td className="py-2 font-bold text-slate-700">{ob.title}</td>
+                              <td className="py-2 text-slate-600">{ob.amount} {RIYAL}</td>
+                              <td className="py-2 text-emerald-700">{paid > 0 ? `${paid} ${RIYAL}` : '—'}</td>
+                              <td className="py-2 text-slate-400">{paidAt}</td>
+                              <td className={`py-2 font-bold ${rem > 0 ? 'text-red-600' : 'text-slate-300'}`}>
+                                {rem > 0 ? `${rem} ${RIYAL}` : '—'}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+
+              {/* Subscriptions section */}
+              {stSubs.length === 0 && stObs.length === 0 ? (
+                <div className="text-center py-6 text-slate-400 text-sm">لا توجد معاملات مالية لهذا العضو</div>
+              ) : stSubs.length > 0 && (
+                <>
+                  <div className="text-xs font-bold text-slate-500 mb-2">سجل الاشتراكات ({stSubs.length})</div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-slate-400 border-b border-slate-100">
+                          <th className="text-right pb-2 font-bold">الفترة</th>
+                          <th className="text-right pb-2 font-bold">المبلغ</th>
+                          <th className="text-right pb-2 font-bold">المدفوع</th>
+                          <th className="text-right pb-2 font-bold">المتبقي</th>
+                          <th className="text-right pb-2 font-bold">الحالة</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stSubs.map((s: any, i: number) => {
+                          const debt = Math.max(0, Number(s.final_amount) - Number(s.paid_amount || 0))
+                          const ss = getSubStatus(s)
+                          return (
+                            <tr key={s.sub_id} className="border-b border-slate-50">
+                              <td className="py-2 text-slate-600">
+                                <div className="font-bold">{s.start_date}</div>
+                                <div className="text-slate-400">← {s.end_date} ({s.months} شهر)</div>
+                              </td>
+                              <td className="py-2 font-bold text-slate-700">{s.final_amount} {RIYAL}</td>
+                              <td className="py-2 text-emerald-700">{Number(s.paid_amount || 0)} {RIYAL}</td>
+                              <td className={`py-2 font-bold ${debt > 0 ? 'text-red-600' : 'text-slate-300'}`}>{debt > 0 ? `${debt} ${RIYAL}` : '—'}</td>
+                              <td className="py-2"><span className={`badge text-xs ${BADGE_CLS[ss]}`}>{STATUS_LBL[ss]}</span></td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t-2 border-slate-200 font-bold text-xs">
+                          <td className="pt-2 text-slate-600">الإجمالي ({stSubs.length})</td>
+                          <td className="pt-2 text-slate-700">{stSubTotal} {RIYAL}</td>
+                          <td className="pt-2 text-emerald-700">{stSubPaid} {RIYAL}</td>
+                          <td className={`pt-2 ${(stSubTotal - stSubPaid) > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                            {(stSubTotal - stSubPaid) > 0 ? `${stSubTotal - stSubPaid} ${RIYAL}` : '—'}
+                          </td>
+                          <td/>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </>
               )}
             </>
           )
         })()}
       </Modal>
 
-      {/* ── Image Preview Modal ── */}
+      {/* Image Preview */}
       {previewImg && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => setPreviewImg(null)}>
-          <button className="absolute top-4 left-4 text-white bg-white/20 rounded-full p-2 border-none cursor-pointer">
-            <X size={20}/>
-          </button>
-          <img src={previewImg} className="max-w-full max-h-full rounded-2xl shadow-2xl object-contain"
-            style={{ maxHeight: '90vh' }} onClick={e => e.stopPropagation()}/>
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setPreviewImg(null)}>
+          <button className="absolute top-4 left-4 text-white bg-white/20 rounded-full p-2 border-none cursor-pointer"><X size={20}/></button>
+          <img src={previewImg} className="max-w-full max-h-full rounded-2xl shadow-2xl object-contain" style={{ maxHeight: '90vh' }} onClick={e => e.stopPropagation()}/>
         </div>
       )}
     </div>
