@@ -1,14 +1,31 @@
 import React, { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { FileText, Printer } from 'lucide-react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { FileText, Printer, Stethoscope } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, eventService, pointsService, injuryService, financeService } from '../../services'
+import { teamService, eventService, pointsService, medicalService, financeService } from '../../services'
 import { Spinner, PageHeader, FormField, ProgressBar, EmptyState } from '../../components/ui'
-import { formatDate, RIYAL, canManageTeam } from '../../utils/helpers'
+import { formatDate, RIYAL, canManageTeam, ROLE_LABELS } from '../../utils/helpers'
+
+const REPORT_TYPE_LABEL: Record<string, string> = {
+  injury: '🦴 إصابة',
+  checkup: '🩺 كشف دوري',
+  followup: '📋 متابعة',
+  other: '📝 أخرى',
+}
+
+const STATUS_COLOR: Record<string, string> = {
+  active:     'bg-red-100 text-red-700',
+  monitoring: 'bg-amber-100 text-amber-700',
+  recovered:  'bg-emerald-100 text-emerald-700',
+}
+const STATUS_LABEL: Record<string, string> = {
+  active: 'نشط', monitoring: 'تحت المراقبة', recovered: 'متعافٍ',
+}
 
 export default function SeasonalPage() {
   const { teamId } = useParams()
   const { user } = useAuth()
+  const nav = useNavigate()
   const [members, setMembers] = useState<any[]>([])
   const [myRole, setMyRole] = useState('')
   const [selPlayer, setSelPlayer] = useState('me')
@@ -29,23 +46,23 @@ export default function SeasonalPage() {
     setLoading(true); setGenerated(false)
 
     const isAdmin = canManageTeam(myRole)
-    // Privacy: player can only see themselves
     const targetMembers = (isAdmin && selPlayer === 'all')
       ? members
       : members.filter(m => selPlayer === 'me' ? m.user_id === user.id : m.user_id === selPlayer)
 
-    const [events, history] = await Promise.all([
+    // Load events, points, and ALL medical reports once (not per player)
+    const [events, history, allMedReports] = await Promise.all([
       eventService.getTeamEvents(teamId),
       pointsService.getHistory(teamId),
+      medicalService.getReports(teamId),
     ])
 
     const eventsInRange = events.filter(e => e.start_datetime >= fromDate && e.start_datetime <= toDate + 'T23:59')
 
     const reports = await Promise.all(targetMembers.map(async m => {
-      const [injuries, finance] = await Promise.all([
-        injuryService.getPlayerInjuries(teamId, m.user_id),
-        financeService.getPlayerFinance(teamId, m.user_id),
-      ])
+      const finance = await financeService.getPlayerFinance(teamId, m.user_id)
+
+      // Attendance
       const att = await Promise.all(eventsInRange.map(e => eventService.getAttendance(e.id)))
       const myAtt = att.flat().filter((a: any) => a.user_id === m.user_id)
       const present = myAtt.filter((a: any) => a.status === 'present').length
@@ -53,13 +70,28 @@ export default function SeasonalPage() {
       const absent = myAtt.filter((a: any) => a.status === 'absent').length
       const total = eventsInRange.length
       const attPct = total ? Math.round((present + late) / total * 100) : 0
+
+      // Points
       const myPts = history.filter((p: any) => p.user_id === m.user_id).reduce((s: number, p: any) => s + p.points, 0)
-      const allPts: Record<string,number> = {}
+      const allPts: Record<string, number> = {}
       history.forEach((h: any) => { allPts[h.user_id] = (allPts[h.user_id] || 0) + h.points })
       const rank = Object.values(allPts).filter(v => v > myPts).length + 1
+
+      // Finance
       const finTotal = finance.obligations.reduce((s: number, o: any) => s + o.amount, 0)
       const finPaid = finance.payments.reduce((s: number, p: any) => s + (p.paid_amount || 0), 0)
-      return { member: m, attPct, present, late, absent, total, myPts, rank, injuries, finTotal, finPaid }
+
+      // Medical reports: filter by this player + date range
+      const playerMedReports = allMedReports
+        .filter((r: any) => r.player_id === m.user_id)
+        .filter((r: any) => {
+          const d = r.injury_date || r.created_at?.slice(0, 10) || ''
+          return (!fromDate || d >= fromDate) && (!toDate || d <= toDate)
+        })
+      const injuryCount = playerMedReports.filter((r: any) => r.report_type === 'injury').length
+
+      return { member: m, attPct, present, late, absent, total, myPts, rank,
+               playerMedReports, injuryCount, finTotal, finPaid }
     }))
 
     setReport(reports); setLoading(false); setGenerated(true)
@@ -110,7 +142,9 @@ export default function SeasonalPage() {
                         </div>
                         <div>
                           <div className="font-bold text-base">{r.member.profile?.full_name}</div>
-                          <div className="text-xs text-slate-400">{r.member.role} · انضم {formatDate(r.member.joined_at)}</div>
+                          <div className="text-xs text-slate-400">
+                            {ROLE_LABELS[r.member.role] || r.member.role} · انضم {formatDate(r.member.joined_at)}
+                          </div>
                         </div>
                       </div>
                       <div className="text-left">
@@ -158,18 +192,52 @@ export default function SeasonalPage() {
                       </div>
                     </div>
 
-                    {/* Injuries */}
+                    {/* Medical reports section */}
                     <div className="mb-4">
-                      <div className="text-xs font-bold text-slate-500 mb-2">🤕 الإصابات ({r.injuries.length})</div>
-                      {r.injuries.length === 0
-                        ? <div className="text-xs text-emerald-600 bg-emerald-50 px-3 py-2 rounded-xl">✅ لا توجد إصابات مسجلة</div>
-                        : r.injuries.map((inj: any, j: number) => (
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-500">
+                            🤕 الإصابات في الفترة ({r.injuryCount})
+                          </span>
+                          {r.playerMedReports.length > r.injuryCount && (
+                            <span className="text-xs text-slate-400">
+                              · {r.playerMedReports.length} تقرير طبي إجمالاً
+                            </span>
+                          )}
+                        </div>
+                        {/* زيارة السجل الطبي — admin only (no-print) */}
+                        {isAdmin && (
+                          <button
+                            onClick={() => nav(`/team/${teamId}/medical?player=${r.member.user_id}&from=${fromDate}&to=${toDate}`)}
+                            className="no-print flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors">
+                            <Stethoscope size={12}/>
+                            زيارة السجل الطبي
+                          </button>
+                        )}
+                      </div>
+
+                      {r.playerMedReports.length === 0 ? (
+                        <div className="text-xs text-emerald-600 bg-emerald-50 px-3 py-2 rounded-xl">
+                          ✅ لا توجد تقارير طبية في هذه الفترة
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {r.playerMedReports.map((rep: any, j: number) => (
                             <div key={j} className="flex items-center gap-2 text-xs py-1.5 border-b border-slate-50 last:border-0">
-                              <span className="flex-1 text-slate-600">{inj.description}</span>
-                              <span className="text-slate-400">{inj.injury_date}</span>
-                              <span className={`badge ${inj.recovery_status==='تعافى' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{inj.recovery_status}</span>
+                              <span className="text-slate-500 flex-shrink-0">
+                                {REPORT_TYPE_LABEL[rep.report_type] || rep.report_type}
+                              </span>
+                              <span className="flex-1 text-slate-700 font-bold truncate">{rep.title}</span>
+                              <span className="text-slate-400 flex-shrink-0">
+                                {rep.injury_date || rep.created_at?.slice(0, 10)}
+                              </span>
+                              <span className={`badge text-xs flex-shrink-0 ${STATUS_COLOR[rep.status] || 'bg-slate-100 text-slate-600'}`}>
+                                {STATUS_LABEL[rep.status] || rep.status}
+                              </span>
                             </div>
                           ))}
+                        </div>
+                      )}
                     </div>
 
                     {/* Footer */}

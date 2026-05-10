@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import {
   Plus, Stethoscope, ChevronDown, ChevronUp, Paperclip,
-  Send, AlertCircle, X, FileText, Image
+  Send, AlertCircle, X, FileText, Image, Filter
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { medicalService, teamService, permissionService } from '../../services'
@@ -42,6 +42,13 @@ function FileIcon({ name }: { name: string }) {
 export default function MedicalPage() {
   const { teamId } = useParams()
   const { user } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // URL filter params (set when navigating from season report)
+  const urlPlayer = searchParams.get('player') || ''
+  const urlFrom   = searchParams.get('from')   || ''
+  const urlTo     = searchParams.get('to')     || ''
+
   const [reports, setReports] = useState<any[]>([])
   const [members, setMembers] = useState<any[]>([])
   const [myRole, setMyRole] = useState('')
@@ -204,12 +211,36 @@ export default function MedicalPage() {
     setUpdatingStatus(null)
   }
 
-  const filtered = tab === 'all' ? reports : reports.filter(r => r.status === tab)
+  // Apply URL filters (player + date range) — used when navigating from season report
+  const baseReports = (() => {
+    let r = reports
+    if (urlPlayer) r = r.filter(rep => rep.player_id === urlPlayer)
+    if (urlFrom)   r = r.filter(rep => {
+      const d = rep.injury_date || rep.created_at?.slice(0, 10) || ''
+      return d >= urlFrom
+    })
+    if (urlTo)     r = r.filter(rep => {
+      const d = rep.injury_date || rep.created_at?.slice(0, 10) || ''
+      return d <= urlTo
+    })
+    return r
+  })()
+
+  const filtered = tab === 'all' ? baseReports : baseReports.filter(r => r.status === tab)
   const tabCounts = {
-    all: reports.length,
-    active: reports.filter(r => r.status === 'active').length,
-    monitoring: reports.filter(r => r.status === 'monitoring').length,
-    recovered: reports.filter(r => r.status === 'recovered').length,
+    all: baseReports.length,
+    active: baseReports.filter(r => r.status === 'active').length,
+    monitoring: baseReports.filter(r => r.status === 'monitoring').length,
+    recovered: baseReports.filter(r => r.status === 'recovered').length,
+  }
+
+  // Name of filtered player (for banner)
+  const filteredPlayerName = urlPlayer
+    ? (members.find((m: any) => m.user_id === urlPlayer)?.profile?.full_name || '...')
+    : ''
+
+  function clearUrlFilter() {
+    setSearchParams({})
   }
 
   return (
@@ -220,6 +251,23 @@ export default function MedicalPage() {
             <Plus size={13}/> {canWrite ? 'تقرير جديد' : 'رفع تقرير'}
           </button>
         }/>
+
+      {/* URL filter banner — shown when navigating from season report */}
+      {(urlPlayer || urlFrom || urlTo) && (
+        <div className="flex items-center gap-2 mb-3 bg-brand-50 border border-brand-200 rounded-xl px-3 py-2.5 text-xs text-brand-700">
+          <Filter size={13} className="flex-shrink-0"/>
+          <span className="flex-1">
+            <strong>فلتر التقرير الموسمي: </strong>
+            {filteredPlayerName && <span>اللاعب: <strong>{filteredPlayerName}</strong> </span>}
+            {urlFrom && <span>· من: <strong>{urlFrom}</strong> </span>}
+            {urlTo && <span>· إلى: <strong>{urlTo}</strong></span>}
+          </span>
+          <button onClick={clearUrlFilter}
+            className="flex-shrink-0 text-brand-500 hover:text-brand-700 font-bold border-none bg-transparent cursor-pointer">
+            ✕ إزالة الفلتر
+          </button>
+        </div>
+      )}
 
       {!isDoctor && !isAdminUser && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex gap-2 text-xs text-blue-700">
