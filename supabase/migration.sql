@@ -883,14 +883,14 @@ CREATE POLICY "mednote_insert" ON medical_report_notes FOR INSERT WITH CHECK (
 -- STORAGE BUCKETS
 -- =============================================
 
--- medical-files bucket (private — for medical reports & notes attachments)
+-- medical-files bucket (public — getPublicUrl() requires public=true)
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES (
-  'medical-files', 'medical-files', false,
+  'medical-files', 'medical-files', true,
   20971520,
   ARRAY['image/jpeg','image/png','image/gif','image/webp','application/pdf']
 )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET public = true;
 
 DROP POLICY IF EXISTS "med_files_select" ON storage.objects;
 DROP POLICY IF EXISTS "med_files_insert" ON storage.objects;
