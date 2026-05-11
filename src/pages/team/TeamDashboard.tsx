@@ -142,71 +142,7 @@ export default function TeamDashboard() {
 
         <div className="relative flex items-stretch gap-0">
 
-          {/* LEFT: Monthly Star section */}
-          <div className="flex-shrink-0 flex flex-col items-center justify-center pl-1 pr-4 border-l border-white/20 ml-4"
-            style={{ minWidth: 76 }}>
-            {isRevealed && monthlyStar ? (
-              <>
-                <div className="text-[10px] text-amber-200 font-extrabold mb-1.5 flex items-center gap-0.5">
-                  <Star size={9} fill="currentColor"/> نجم الشهر
-                </div>
-                <div className="w-14 h-14 rounded-2xl overflow-hidden border-2 border-amber-300/60 bg-white/20 flex items-center justify-center flex-shrink-0">
-                  {monthlyStar.player?.avatar_url
-                    ? <img src={monthlyStar.player.avatar_url} className="w-full h-full object-cover" alt=""/>
-                    : <span className="text-2xl font-extrabold text-white">{monthlyStar.player?.full_name?.[0]}</span>}
-                </div>
-                <div className="text-white text-[11px] font-extrabold text-center mt-1.5 leading-tight max-w-[72px] line-clamp-2">
-                  {monthlyStar.player?.full_name}
-                </div>
-                <span className="mt-1 bg-amber-400/30 text-amber-200 rounded-lg px-1.5 py-0.5 text-[10px] font-bold">
-                  نجم {monthName}
-                </span>
-                {isAdmin && (
-                  <button onClick={() => { setStarForm({ userId: monthlyStar.user_id, note: monthlyStar.note || '' }); setShowStarModal(true) }}
-                    className="mt-1.5 text-[10px] text-white/60 hover:text-white border-none bg-transparent cursor-pointer underline">
-                    تعديل
-                  </button>
-                )}
-              </>
-            ) : monthlyStar && !isRevealed ? (
-              <>
-                <div className="text-[10px] text-white/60 font-bold mb-1.5">⭐ نجم {monthName}</div>
-                <div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center text-2xl font-extrabold text-white/40 animate-pulse">?</div>
-                <div className="text-[10px] text-white/50 mt-1.5 text-center">سيُعلن قريباً</div>
-                {isAdmin && (
-                  <div className="flex flex-col gap-1 mt-2 w-full">
-                    <button onClick={announceMonthlyStar}
-                      className="text-[10px] bg-amber-400 text-white rounded-lg px-2 py-1 border-none cursor-pointer font-bold w-full">
-                      ⭐ أعلن
-                    </button>
-                    <button onClick={() => { setStarForm({ userId: monthlyStar?.user_id || '', note: monthlyStar?.note || '' }); setShowStarModal(true) }}
-                      className="text-[10px] bg-white/20 text-white rounded-lg px-2 py-1 border-none cursor-pointer w-full">
-                      تعديل
-                    </button>
-                  </div>
-                )}
-              </>
-            ) : isAdmin ? (
-              <>
-                <div className="w-14 h-14 rounded-full bg-white/15 flex items-center justify-center mb-1.5">
-                  <Star size={22} className="text-amber-300/70"/>
-                </div>
-                <button onClick={() => { setStarForm({ userId: '', note: '' }); setShowStarModal(true) }}
-                  className="text-[10px] bg-amber-400/80 hover:bg-amber-400 text-white rounded-lg px-2 py-1.5 border-none cursor-pointer font-bold text-center leading-tight w-full">
-                  اختر نجم<br/>{monthName}
-                </button>
-              </>
-            ) : (
-              /* Non-admin, no star: show team logo */
-              <div className="w-14 h-14 rounded-2xl bg-white/25 flex items-center justify-center text-2xl font-extrabold overflow-hidden border-2 border-white/30">
-                {team.logo_url
-                  ? <img src={team.logo_url} className="w-full h-full object-cover" alt={team.name}/>
-                  : team.name[0]}
-              </div>
-            )}
-          </div>
-
-          {/* RIGHT: Team info */}
+          {/* RIGHT (first in RTL): Team info */}
           <div className="flex-1 min-w-0">
             <h1 className="text-xl font-extrabold truncate leading-tight">{team.name}</h1>
             <p className="text-sm text-white/80 mt-0.5">
@@ -224,6 +160,70 @@ export default function TeamDashboard() {
                 <span className="font-mono tracking-wider text-sm">{team.invite_code}</span>
                 <span className="text-xs opacity-70">{copied ? '✓ تم النسخ' : 'نسخ'}</span>
               </button>
+            )}
+          </div>
+
+          {/* LEFT (second in RTL): Monthly Star section */}
+          <div className="flex-shrink-0 flex flex-col items-center justify-center pr-1 pl-4 border-r border-white/20 mr-4"
+            style={{ minWidth: 96 }}>
+            {isRevealed && monthlyStar ? (
+              <>
+                <div className="text-[10px] text-amber-200 font-extrabold mb-1.5 flex items-center gap-0.5">
+                  <Star size={9} fill="currentColor"/> نجم الشهر
+                </div>
+                <div className="w-16 h-16 rounded-2xl overflow-hidden border-2 border-amber-300/60 bg-white/20 flex items-center justify-center flex-shrink-0">
+                  {monthlyStar.player?.avatar_url
+                    ? <img src={monthlyStar.player.avatar_url} className="w-full h-full object-cover" alt=""/>
+                    : <span className="text-2xl font-extrabold text-white">{monthlyStar.player?.full_name?.[0]}</span>}
+                </div>
+                <div className="text-white text-[11px] font-extrabold text-center mt-1.5 leading-tight max-w-[88px] line-clamp-2">
+                  {monthlyStar.player?.full_name}
+                </div>
+                <span className="mt-1 bg-amber-400/30 text-amber-200 rounded-lg px-1.5 py-0.5 text-[10px] font-bold">
+                  نجم {monthName}
+                </span>
+                {isAdmin && (
+                  <button onClick={() => { setStarForm({ userId: monthlyStar.user_id, note: monthlyStar.note || '' }); setShowStarModal(true) }}
+                    className="mt-1.5 text-[10px] text-white/60 hover:text-white border-none bg-transparent cursor-pointer underline">
+                    تعديل
+                  </button>
+                )}
+              </>
+            ) : monthlyStar && !isRevealed ? (
+              <>
+                <div className="text-[10px] text-white/60 font-bold mb-1.5">⭐ نجم {monthName}</div>
+                <div className="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center text-2xl font-extrabold text-white/40 animate-pulse">?</div>
+                <div className="text-[10px] text-white/50 mt-1.5 text-center">سيُعلن قريباً</div>
+                {isAdmin && (
+                  <div className="flex flex-col gap-1 mt-2 w-full">
+                    <button onClick={announceMonthlyStar}
+                      className="text-[10px] bg-amber-400 text-white rounded-lg px-2 py-1 border-none cursor-pointer font-bold w-full">
+                      ⭐ أعلن
+                    </button>
+                    <button onClick={() => { setStarForm({ userId: monthlyStar?.user_id || '', note: monthlyStar?.note || '' }); setShowStarModal(true) }}
+                      className="text-[10px] bg-white/20 text-white rounded-lg px-2 py-1 border-none cursor-pointer w-full">
+                      تعديل
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : isAdmin ? (
+              <>
+                <div className="w-16 h-16 rounded-full bg-white/15 flex items-center justify-center mb-1.5">
+                  <Star size={24} className="text-amber-300/70"/>
+                </div>
+                <button onClick={() => { setStarForm({ userId: '', note: '' }); setShowStarModal(true) }}
+                  className="text-[10px] bg-amber-400/80 hover:bg-amber-400 text-white rounded-lg px-2 py-1.5 border-none cursor-pointer font-bold text-center leading-tight w-full">
+                  اختر نجم<br/>{monthName}
+                </button>
+              </>
+            ) : (
+              /* Non-admin, no star: show team logo */
+              <div className="w-16 h-16 rounded-2xl bg-white/25 flex items-center justify-center text-2xl font-extrabold overflow-hidden border-2 border-white/30">
+                {team.logo_url
+                  ? <img src={team.logo_url} className="w-full h-full object-cover" alt={team.name}/>
+                  : team.name[0]}
+              </div>
             )}
           </div>
         </div>
