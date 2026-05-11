@@ -55,6 +55,7 @@ export default function MedicalPage() {
   const [myPerms, setMyPerms] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('all')
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [notes, setNotes] = useState<Record<string, any[]>>({})
   const [loadingNotes, setLoadingNotes] = useState<string | null>(null)
@@ -321,11 +322,11 @@ export default function MedicalPage() {
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
                       {report.attachment_url && (
-                        <a href={report.attachment_url} target="_blank" rel="noreferrer"
-                          onClick={e => e.stopPropagation()}
-                          className="text-brand-500 hover:text-brand-700" title="عرض المرفق">
+                        <button
+                          onClick={e => { e.stopPropagation(); setPreviewUrl(report.attachment_url) }}
+                          className="text-brand-500 hover:text-brand-700 border-none bg-transparent cursor-pointer p-0.5" title="عرض المرفق">
                           <Paperclip size={15}/>
-                        </a>
+                        </button>
                       )}
                       {isExpanded ? <ChevronUp size={16} className="text-slate-400"/> : <ChevronDown size={16} className="text-slate-400"/>}
                     </div>
@@ -372,10 +373,11 @@ export default function MedicalPage() {
                                 </div>
                                 <p className="text-xs text-slate-700 whitespace-pre-wrap">{n.note}</p>
                                 {n.attachment_url && (
-                                  <a href={n.attachment_url} target="_blank" rel="noreferrer"
-                                    className="inline-flex items-center gap-1 text-xs text-brand-600 mt-1.5 hover:underline bg-brand-50 rounded-lg px-2 py-1">
+                                  <button
+                                    onClick={() => setPreviewUrl(n.attachment_url)}
+                                    className="inline-flex items-center gap-1 text-xs text-brand-600 mt-1.5 hover:bg-brand-100 bg-brand-50 rounded-lg px-2 py-1 border-none cursor-pointer transition-colors">
                                     <Paperclip size={11}/> عرض المرفق
-                                  </a>
+                                  </button>
                                 )}
                               </div>
                             </div>
@@ -566,6 +568,56 @@ export default function MedicalPage() {
           </button>
         </div>
       </Modal>
+
+      {/* ── Attachment preview modal ── */}
+      {previewUrl && (() => {
+        const isPdf = previewUrl.toLowerCase().includes('.pdf') || previewUrl.toLowerCase().includes('application/pdf')
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+            onClick={() => setPreviewUrl(null)}>
+            <div
+              className="relative bg-white rounded-2xl shadow-2xl overflow-hidden"
+              style={{ maxWidth: '92vw', maxHeight: '92vh', width: isPdf ? '800px' : 'auto' }}
+              onClick={e => e.stopPropagation()}>
+              {/* Header */}
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-100 bg-slate-50">
+                <span className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                  {isPdf ? <FileText size={15} className="text-red-500"/> : <Image size={15} className="text-blue-500"/>}
+                  {isPdf ? 'مستند PDF' : 'صورة المرفق'}
+                </span>
+                <div className="flex items-center gap-2">
+                  <a href={previewUrl} download target="_blank" rel="noreferrer"
+                    className="text-xs text-brand-600 hover:text-brand-800 font-bold border border-brand-200 bg-brand-50 rounded-lg px-2.5 py-1 no-underline">
+                    تنزيل
+                  </a>
+                  <button
+                    onClick={() => setPreviewUrl(null)}
+                    className="w-7 h-7 flex items-center justify-center rounded-full bg-slate-200 hover:bg-red-100 hover:text-red-600 text-slate-500 border-none cursor-pointer transition-colors text-base font-bold">
+                    ✕
+                  </button>
+                </div>
+              </div>
+              {/* Content */}
+              {isPdf ? (
+                <iframe
+                  src={previewUrl}
+                  title="مستند PDF"
+                  style={{ width: '800px', maxWidth: '92vw', height: '80vh' }}
+                  className="block border-0"/>
+              ) : (
+                <div className="flex items-center justify-center p-3 bg-slate-900">
+                  <img
+                    src={previewUrl}
+                    alt="مرفق"
+                    style={{ maxWidth: '88vw', maxHeight: '82vh', objectFit: 'contain' }}
+                    className="rounded-xl block"/>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
