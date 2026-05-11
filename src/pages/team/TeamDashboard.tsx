@@ -4,7 +4,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { teamService, eventService, leaveService, monthlyStarService } from '../../services'
 import { Spinner, AttendanceButton, Modal, FormField } from '../../components/ui'
 import { formatDate, EVENT_CONFIG, canManageTeam, isEventLocked, ROLE_LABELS } from '../../utils/helpers'
-import { Copy, CheckCircle, Users, Calendar, Umbrella, ChevronLeft, TrendingUp, Swords, Star } from 'lucide-react'
+import { Copy, CheckCircle, Users, Calendar, Umbrella, ChevronLeft, ChevronRight, TrendingUp, Swords, Star } from 'lucide-react'
 
 const MONTHS = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر']
 
@@ -24,6 +24,7 @@ export default function TeamDashboard() {
   const [nextEvent, setNextEvent] = useState<any>(null)
   const [attStats, setAttStats] = useState({ present: 0, absent: 0, uncertain: 0, late: 0, total: 0 })
   const [weekAtts, setWeekAtts] = useState<Record<string, string>>({})
+  const [evIdx, setEvIdx]       = useState(0)
 
   // Monthly star
   const [monthlyStar, setMonthlyStar] = useState<any>(undefined)
@@ -36,7 +37,7 @@ export default function TeamDashboard() {
     Promise.all([
       teamService.getTeam(teamId),
       teamService.getMembers(teamId),
-      eventService.getUpcomingEvents(teamId, 5),
+      eventService.getUpcomingEvents(teamId, 14),
       teamService.getMyRole(teamId, user.id),
       leaveService.getAll(teamId),
       eventService.getMatchResults(teamId),
@@ -51,7 +52,6 @@ export default function TeamDashboard() {
       const attMap: Record<string, string> = {}
       ;(myAttRecords as any[]).forEach((a: any) => { attMap[a.event_id] = a.status })
 
-      // Auto-present: week events with no attendance default to 'present'
       const allAutoEvs = [...(we as any[]), ...(e.length && !(we as any[]).find((w: any) => w.id === e[0].id) ? [e[0]] : [])]
       const noAtt = allAutoEvs.filter((ev: any) => !attMap[ev.id])
       if (noAtt.length > 0) {
@@ -118,33 +118,99 @@ export default function TeamDashboard() {
   if (loading) return <div className="flex justify-center py-16"><Spinner size="lg" /></div>
   if (!team)   return <div className="card text-center py-10 text-slate-400">الفريق غير موجود</div>
 
-  const pending  = leaves.filter(l => l.status === 'pending')
-  const isAdmin  = canManageTeam(myRole)
-  const cfg      = nextEvent ? EVENT_CONFIG[nextEvent.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other : null
-  const locked   = nextEvent ? isEventLocked(nextEvent.start_datetime) : false
-  const attPct   = attStats.total ? Math.round(attStats.present / attStats.total * 100) : 0
-  const weekList = weekEvents.filter(e => e.id !== nextEvent?.id)
-  const now      = new Date()
+  const pending    = leaves.filter(l => l.status === 'pending')
+  const isAdmin    = canManageTeam(myRole)
+  const now        = new Date()
   const isRevealed = monthlyStar?.announced_at && new Date(monthlyStar.announced_at) <= now
   const monthName  = MONTHS[now.getMonth()]
+  const weekCount  = weekEvents.length
+
+  // Carousel: all upcoming events
+  const carouselEvs = events
+  const curEv       = carouselEvs[evIdx] || null
+  const curCfg      = curEv ? (EVENT_CONFIG[curEv.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other) : null
+  const curLocked   = curEv ? isEventLocked(curEv.start_datetime) : false
+  const isFirstEv   = curEv?.id === nextEvent?.id
 
   return (
     <div className="animate-fade space-y-4">
 
-      {/* ── Team Hero ── */}
+      {/* ── Team Hero + Monthly Star ── */}
       <div className="hero-card">
         <div className="absolute -top-10 -left-10 w-40 h-40 bg-white/10 rounded-full pointer-events-none" />
         <div className="absolute -bottom-8 left-4 w-24 h-24 bg-white/10 rounded-full pointer-events-none" />
-        <div className="relative flex items-start gap-4">
-          <div className="w-16 h-16 rounded-2xl bg-white/25 flex items-center justify-center text-3xl font-extrabold overflow-hidden flex-shrink-0 border-2 border-white/30">
-            {team.logo_url
-              ? <img src={team.logo_url} className="w-full h-full object-cover" alt={team.name} />
-              : team.name[0]}
+
+        <div className="relative flex items-stretch gap-0">
+
+          {/* LEFT: Monthly Star section */}
+          <div className="flex-shrink-0 flex flex-col items-center justify-center pl-1 pr-4 border-l border-white/20 ml-4"
+            style={{ minWidth: 76 }}>
+            {isRevealed && monthlyStar ? (
+              <>
+                <div className="text-[10px] text-amber-200 font-extrabold mb-1.5 flex items-center gap-0.5">
+                  <Star size={9} fill="currentColor"/> نجم الشهر
+                </div>
+                <div className="w-14 h-14 rounded-2xl overflow-hidden border-2 border-amber-300/60 bg-white/20 flex items-center justify-center flex-shrink-0">
+                  {monthlyStar.player?.avatar_url
+                    ? <img src={monthlyStar.player.avatar_url} className="w-full h-full object-cover" alt=""/>
+                    : <span className="text-2xl font-extrabold text-white">{monthlyStar.player?.full_name?.[0]}</span>}
+                </div>
+                <div className="text-white text-[11px] font-extrabold text-center mt-1.5 leading-tight max-w-[72px] line-clamp-2">
+                  {monthlyStar.player?.full_name}
+                </div>
+                <span className="mt-1 bg-amber-400/30 text-amber-200 rounded-lg px-1.5 py-0.5 text-[10px] font-bold">
+                  نجم {monthName}
+                </span>
+                {isAdmin && (
+                  <button onClick={() => { setStarForm({ userId: monthlyStar.user_id, note: monthlyStar.note || '' }); setShowStarModal(true) }}
+                    className="mt-1.5 text-[10px] text-white/60 hover:text-white border-none bg-transparent cursor-pointer underline">
+                    تعديل
+                  </button>
+                )}
+              </>
+            ) : monthlyStar && !isRevealed ? (
+              <>
+                <div className="text-[10px] text-white/60 font-bold mb-1.5">⭐ نجم {monthName}</div>
+                <div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center text-2xl font-extrabold text-white/40 animate-pulse">?</div>
+                <div className="text-[10px] text-white/50 mt-1.5 text-center">سيُعلن قريباً</div>
+                {isAdmin && (
+                  <div className="flex flex-col gap-1 mt-2 w-full">
+                    <button onClick={announceMonthlyStar}
+                      className="text-[10px] bg-amber-400 text-white rounded-lg px-2 py-1 border-none cursor-pointer font-bold w-full">
+                      ⭐ أعلن
+                    </button>
+                    <button onClick={() => { setStarForm({ userId: monthlyStar?.user_id || '', note: monthlyStar?.note || '' }); setShowStarModal(true) }}
+                      className="text-[10px] bg-white/20 text-white rounded-lg px-2 py-1 border-none cursor-pointer w-full">
+                      تعديل
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : isAdmin ? (
+              <>
+                <div className="w-14 h-14 rounded-full bg-white/15 flex items-center justify-center mb-1.5">
+                  <Star size={22} className="text-amber-300/70"/>
+                </div>
+                <button onClick={() => { setStarForm({ userId: '', note: '' }); setShowStarModal(true) }}
+                  className="text-[10px] bg-amber-400/80 hover:bg-amber-400 text-white rounded-lg px-2 py-1.5 border-none cursor-pointer font-bold text-center leading-tight w-full">
+                  اختر نجم<br/>{monthName}
+                </button>
+              </>
+            ) : (
+              /* Non-admin, no star: show team logo */
+              <div className="w-14 h-14 rounded-2xl bg-white/25 flex items-center justify-center text-2xl font-extrabold overflow-hidden border-2 border-white/30">
+                {team.logo_url
+                  ? <img src={team.logo_url} className="w-full h-full object-cover" alt={team.name}/>
+                  : team.name[0]}
+              </div>
+            )}
           </div>
+
+          {/* RIGHT: Team info */}
           <div className="flex-1 min-w-0">
             <h1 className="text-xl font-extrabold truncate leading-tight">{team.name}</h1>
             <p className="text-sm text-white/80 mt-0.5">
-              {team.sport_type} · {team.age_category} {team.city ? `· ${team.city}` : ''}
+              {team.sport_type} · {team.age_category}{team.city ? ` · ${team.city}` : ''}
             </p>
             {myRole && (
               <span className="inline-block mt-2 bg-white/25 rounded-xl px-2.5 py-1 text-xs font-bold">
@@ -153,8 +219,8 @@ export default function TeamDashboard() {
             )}
             {isAdmin && team.invite_code && (
               <button onClick={copyCode}
-                className="flex items-center gap-2 mt-3 bg-white/20 hover:bg-white/30 rounded-xl px-3 py-1.5 text-sm transition-colors border-none cursor-pointer">
-                {copied ? <CheckCircle size={14} /> : <Copy size={14} />}
+                className="flex items-center gap-2 mt-2.5 bg-white/20 hover:bg-white/30 rounded-xl px-3 py-1.5 text-sm transition-colors border-none cursor-pointer">
+                {copied ? <CheckCircle size={14}/> : <Copy size={14}/>}
                 <span className="font-mono tracking-wider text-sm">{team.invite_code}</span>
                 <span className="text-xs opacity-70">{copied ? '✓ تم النسخ' : 'نسخ'}</span>
               </button>
@@ -164,103 +230,42 @@ export default function TeamDashboard() {
       </div>
 
       {/* ── Stats grid ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="stat-box cursor-pointer hover:border-blue-200 transition-all"
+      <div className="grid grid-cols-4 gap-2">
+        <div className="bg-white rounded-2xl border border-slate-100 p-3 text-center cursor-pointer hover:border-blue-200 transition-all"
           onClick={() => navigate(`/team/${teamId}/members`)}>
-          <div className="w-10 h-10 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-2">
-            <Users size={20} className="text-blue-600" />
+          <div className="text-xl font-extrabold text-blue-600">{members.length}</div>
+          <div className="text-[11px] text-slate-400 mt-0.5 font-bold flex items-center justify-center gap-1">
+            <Users size={10}/> الأعضاء
           </div>
-          <div className="stat-value text-blue-600">{members.length}</div>
-          <div className="stat-label">الأعضاء</div>
         </div>
-        <div className="stat-box cursor-pointer hover:border-purple-200 transition-all"
-          onClick={() => navigate(`/team/${teamId}/events`)}>
-          <div className="w-10 h-10 bg-purple-100 rounded-2xl flex items-center justify-center mx-auto mb-2">
-            <Calendar size={20} className="text-purple-600" />
-          </div>
-          <div className="stat-value text-purple-600">{events.length}</div>
-          <div className="stat-label">مواعيد قادمة</div>
-        </div>
-        <div className="stat-box cursor-pointer hover:border-brand-200 transition-all"
+        <div className="bg-white rounded-2xl border border-slate-100 p-3 text-center cursor-pointer hover:border-brand-200 transition-all"
           onClick={() => navigate(`/team/${teamId}/attendance`)}>
-          <div className="w-10 h-10 bg-brand-100 rounded-2xl flex items-center justify-center mx-auto mb-2">
-            <TrendingUp size={20} className="text-brand-600" />
+          <div className="text-xl font-extrabold text-brand-600">
+            {attStats.total ? `${Math.round(attStats.present / attStats.total * 100)}%` : '—'}
           </div>
-          <div className="stat-value text-brand-600">
-            {attStats.total ? `${attPct}%` : '—'}
+          <div className="text-[11px] text-slate-400 mt-0.5 font-bold flex items-center justify-center gap-1">
+            <TrendingUp size={10}/> حضور آخر موعد
           </div>
-          <div className="stat-label">حضور آخر موعد</div>
         </div>
-        <div className={`stat-box cursor-pointer transition-all ${
-            pending.length > 0 ? 'bg-amber-50 border-amber-200 hover:bg-amber-100' : 'hover:border-slate-200'
+        <div className="bg-white rounded-2xl border border-slate-100 p-3 text-center cursor-pointer hover:border-purple-200 transition-all"
+          onClick={() => navigate(`/team/${teamId}/events`)}>
+          <div className="text-xl font-extrabold text-purple-600">{weekCount}</div>
+          <div className="text-[11px] text-slate-400 mt-0.5 font-bold flex items-center justify-center gap-1">
+            <Calendar size={10}/> مواعيد 7 أيام
+          </div>
+        </div>
+        <div className={`rounded-2xl border p-3 text-center cursor-pointer transition-all ${
+            pending.length > 0 ? 'bg-amber-50 border-amber-200 hover:bg-amber-100' : 'bg-white border-slate-100 hover:border-slate-200'
           }`}
           onClick={() => navigate(`/team/${teamId}/leaves`)}>
-          <div className={`w-10 h-10 rounded-2xl flex items-center justify-center mx-auto mb-2 ${
-            pending.length > 0 ? 'bg-amber-200' : 'bg-slate-100'}`}>
-            <Umbrella size={20} className={pending.length > 0 ? 'text-amber-700' : 'text-slate-500'} />
+          <div className={`text-xl font-extrabold ${pending.length > 0 ? 'text-amber-600' : 'text-slate-500'}`}>
+            {pending.length}
           </div>
-          <div className={`stat-value ${pending.length > 0 ? 'text-amber-600' : ''}`}>{pending.length}</div>
-          <div className="stat-label">طلبات إجازة</div>
+          <div className="text-[11px] text-slate-400 mt-0.5 font-bold flex items-center justify-center gap-1">
+            <Umbrella size={10}/> طلبات إجازة
+          </div>
         </div>
       </div>
-
-      {/* ── Monthly Star Widget ── */}
-      {(isAdmin || monthlyStar) && monthlyStar !== undefined && (
-        <div className={`card ${isRevealed ? 'bg-gradient-to-br from-amber-50 to-yellow-50 border-amber-200' : ''}`}>
-          <div className="flex items-center gap-2 mb-3">
-            <Star size={18} className={isRevealed ? 'text-amber-500' : 'text-slate-400'} fill={isRevealed ? 'currentColor' : 'none'} />
-            <h3 className={`font-extrabold ${isRevealed ? 'text-amber-800' : 'text-slate-700'}`}>
-              نجم شهر {monthName}
-            </h3>
-          </div>
-
-          {isRevealed ? (
-            <div className="flex items-center gap-3">
-              <div className="w-16 h-16 rounded-2xl bg-amber-200 flex items-center justify-center text-2xl font-extrabold overflow-hidden border-2 border-amber-300 flex-shrink-0">
-                {monthlyStar.player?.avatar_url
-                  ? <img src={monthlyStar.player.avatar_url} className="w-full h-full object-cover" alt="" />
-                  : <span>{monthlyStar.player?.full_name?.[0]}</span>}
-              </div>
-              <div className="flex-1">
-                <div className="font-extrabold text-xl text-amber-900">{monthlyStar.player?.full_name}</div>
-                {monthlyStar.note && <div className="text-xs text-amber-700 mt-0.5">{monthlyStar.note}</div>}
-              </div>
-              {isAdmin && (
-                <button onClick={() => { setStarForm({ userId: monthlyStar.user_id, note: monthlyStar.note || '' }); setShowStarModal(true) }}
-                  className="btn btn-ghost btn-sm text-xs flex-shrink-0">تعديل</button>
-              )}
-            </div>
-          ) : (
-            <div className="text-center py-2">
-              <div className="w-16 h-16 rounded-full bg-slate-200 mx-auto flex items-center justify-center text-3xl font-extrabold text-slate-400 animate-pulse">?</div>
-              <p className="text-xs text-slate-400 mt-2">سيتم الإعلان قريباً...</p>
-              {isAdmin && (
-                <div className="flex gap-2 justify-center mt-3">
-                  {monthlyStar && !monthlyStar.announced_at && (
-                    <button onClick={announceMonthlyStar}
-                      className="btn btn-sm text-xs" style={{ background: '#f59e0b', color: '#fff', border: 'none' }}>
-                      ⭐ أعلن الآن
-                    </button>
-                  )}
-                  <button onClick={() => { setStarForm({ userId: monthlyStar?.user_id || '', note: monthlyStar?.note || '' }); setShowStarModal(true) }}
-                    className="btn btn-ghost btn-sm text-xs">
-                    {monthlyStar ? 'تعديل' : 'اختر النجم'}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Admin: show "choose star" button when no star set yet */}
-      {isAdmin && !monthlyStar && monthlyStar !== undefined && (
-        <button onClick={() => { setStarForm({ userId: '', note: '' }); setShowStarModal(true) }}
-          className="card w-full text-center py-4 border-dashed border-2 border-amber-200 bg-amber-50 hover:bg-amber-100 transition-colors cursor-pointer">
-          <Star size={20} className="text-amber-400 mx-auto mb-1" />
-          <p className="text-sm font-bold text-amber-600">اختر نجم شهر {monthName}</p>
-        </button>
-      )}
 
       {/* ── Match Results Widget ── */}
       {matchStats.total > 0 && (
@@ -299,117 +304,112 @@ export default function TeamDashboard() {
         </div>
       )}
 
-      {/* ── Next Event ── */}
-      {nextEvent && (
-        <div className={`card border-r-4 ${cfg?.borderClass || 'border-brand-500'}`}>
-          <div className="flex items-start justify-between gap-3 mb-4">
-            <div className="flex items-start gap-3 flex-1 min-w-0">
-              <div className="text-3xl flex-shrink-0">{cfg?.icon}</div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-extrabold text-base text-slate-900 truncate">{nextEvent.title}</span>
-                  {locked && <span className="badge badge-red">مغلق</span>}
-                </div>
-                {nextEvent.event_type === 'match' && nextEvent.opponent && (
-                  <div className="text-xs text-slate-500 mt-0.5 font-medium">⚔️ ضد: {nextEvent.opponent}</div>
-                )}
-                <div className="flex items-center gap-1.5 text-sm text-slate-500 mt-1">
-                  <Calendar size={13} className="flex-shrink-0" />
-                  <span>{formatDate(nextEvent.start_datetime)}</span>
-                  <span className="text-slate-300">·</span>
-                  <span className="font-bold text-slate-700">{nextEvent.start_datetime.slice(11, 16)}</span>
+      {/* ── Events Carousel ── */}
+      {carouselEvs.length > 0 ? (
+        <div className="card p-0 overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <Calendar size={15} className="text-brand-600"/>
+              <span className="font-extrabold text-slate-800 text-sm">المواعيد القادمة</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-slate-400 font-mono">{evIdx + 1}/{carouselEvs.length}</span>
+              <button
+                onClick={() => setEvIdx(i => Math.max(0, i - 1))}
+                disabled={evIdx === 0}
+                className="w-7 h-7 flex items-center justify-center rounded-full bg-slate-100 hover:bg-slate-200 disabled:opacity-30 border-none cursor-pointer transition-colors">
+                <ChevronRight size={14} className="text-slate-600"/>
+              </button>
+              <button
+                onClick={() => setEvIdx(i => Math.min(carouselEvs.length - 1, i + 1))}
+                disabled={evIdx === carouselEvs.length - 1}
+                className="w-7 h-7 flex items-center justify-center rounded-full bg-slate-100 hover:bg-slate-200 disabled:opacity-30 border-none cursor-pointer transition-colors">
+                <ChevronLeft size={14} className="text-slate-600"/>
+              </button>
+            </div>
+          </div>
+
+          {curEv && curCfg && (
+            <div className="p-4">
+              {/* Event info */}
+              <div className="flex items-start gap-3 mb-3">
+                <span className="text-3xl flex-shrink-0">{curCfg.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-extrabold text-base text-slate-900 truncate">{curEv.title}</span>
+                    {curLocked && <span className="badge badge-red text-xs">مغلق</span>}
+                    <span className="badge mr-auto text-xs" style={{ background: curCfg.bg, color: curCfg.color }}>{curCfg.label}</span>
+                  </div>
+                  {curEv.event_type === 'match' && curEv.opponent && (
+                    <div className="text-xs text-slate-500 mt-0.5 font-medium">⚔️ ضد: {curEv.opponent}</div>
+                  )}
+                  <div className="flex items-center gap-1.5 text-sm text-slate-500 mt-1">
+                    <Calendar size={12} className="flex-shrink-0"/>
+                    <span>{formatDate(curEv.start_datetime)}</span>
+                    <span className="text-slate-300">·</span>
+                    <span className="font-bold text-slate-700">{curEv.start_datetime.slice(11, 16)}</span>
+                    {curEv.location && (
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <span className="truncate max-w-[100px] text-slate-400">{curEv.location}</span>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-            <span className="badge flex-shrink-0 py-1.5 px-3" style={{ background: cfg?.bg, color: cfg?.color }}>
-              {cfg?.label}
-            </span>
-          </div>
 
-          {attStats.total > 0 && (
-            <div className="grid grid-cols-4 gap-2 mb-4">
-              {[
-                { label: 'حاضر',      val: attStats.present,   bg: 'bg-emerald-50', color: 'text-emerald-600', border: 'border-emerald-100' },
-                { label: 'متأخر',     val: attStats.late,      bg: 'bg-orange-50',  color: 'text-orange-500',  border: 'border-orange-100'  },
-                { label: 'غير متأكد', val: attStats.uncertain, bg: 'bg-amber-50',   color: 'text-amber-600',   border: 'border-amber-100'   },
-                { label: 'غائب',      val: attStats.absent,    bg: 'bg-red-50',     color: 'text-red-500',     border: 'border-red-100'     },
-              ].map(s => (
-                <div key={s.label} className={`${s.bg} border ${s.border} rounded-2xl p-2.5 text-center`}>
-                  <div className={`text-xl font-extrabold leading-none ${s.color}`}>{s.val}</div>
-                  <div className={`text-[11px] mt-1 font-bold ${s.color} opacity-80`}>{s.label}</div>
+              {/* Attendance stats — only for the first/next event (admin view) */}
+              {isFirstEv && attStats.total > 0 && (
+                <div className="grid grid-cols-4 gap-2 mb-3">
+                  {[
+                    { label: 'غائب',      val: attStats.absent,    bg: 'bg-red-50',     color: 'text-red-500',     border: 'border-red-100'     },
+                    { label: 'غير متأكد', val: attStats.uncertain, bg: 'bg-amber-50',   color: 'text-amber-600',   border: 'border-amber-100'   },
+                    { label: 'متأخر',     val: attStats.late,      bg: 'bg-orange-50',  color: 'text-orange-500',  border: 'border-orange-100'  },
+                    { label: 'حاضر',      val: attStats.present,   bg: 'bg-emerald-50', color: 'text-emerald-600', border: 'border-emerald-100' },
+                  ].map(s => (
+                    <div key={s.label} className={`${s.bg} border ${s.border} rounded-2xl p-2.5 text-center`}>
+                      <div className={`text-xl font-extrabold leading-none ${s.color}`}>{s.val}</div>
+                      <div className={`text-[11px] mt-1 font-bold ${s.color} opacity-80`}>{s.label}</div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+
+              {/* Attendance button */}
+              <div className="bg-slate-50 rounded-2xl p-3">
+                <p className="text-xs font-bold text-slate-500 mb-2.5">هل ستحضر هذا الموعد؟</p>
+                <AttendanceButton
+                  status={weekAtts[curEv.id] ?? ''}
+                  locked={curLocked}
+                  onSelect={s => setAttendance(curEv.id, s)}
+                />
+              </div>
+
+              {/* Dots navigation */}
+              {carouselEvs.length > 1 && (
+                <div className="flex items-center justify-center gap-1.5 mt-3">
+                  {carouselEvs.map((_, i) => (
+                    <button key={i} onClick={() => setEvIdx(i)}
+                      className={`rounded-full border-none cursor-pointer transition-all ${
+                        i === evIdx
+                          ? 'w-5 h-2 bg-brand-500'
+                          : 'w-2 h-2 bg-slate-300 hover:bg-slate-400'
+                      }`}/>
+                  ))}
+                </div>
+              )}
             </div>
           )}
-
-          <div className="bg-slate-50 rounded-2xl p-3">
-            <p className="text-sm font-bold text-slate-600 mb-2.5">هل ستحضر هذا الموعد؟</p>
-            <AttendanceButton
-              status={weekAtts[nextEvent.id] ?? ''}
-              locked={locked}
-              onSelect={s => setAttendance(nextEvent.id, s)}
-            />
-          </div>
         </div>
-      )}
-
-      {/* ── 7-day events with attendance buttons ── */}
-      {weekList.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-extrabold text-slate-800">📅 مواعيد الأسبوع القادم</h3>
+      ) : (
+        <div className="card text-center py-6">
+          <Calendar size={28} className="text-slate-300 mx-auto mb-2"/>
+          <p className="text-sm text-slate-400">لا توجد مواعيد قادمة</p>
+          {isAdmin && (
             <button onClick={() => navigate(`/team/${teamId}/events`)}
-              className="flex items-center gap-1 text-sm text-brand-600 font-bold hover:text-brand-700">
-              عرض الكل <ChevronLeft size={15} />
-            </button>
-          </div>
-          <div className="space-y-3">
-            {weekList.map(e => {
-              const c = EVENT_CONFIG[e.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
-              const evLocked = isEventLocked(e.start_datetime)
-              const myStatus = weekAtts[e.id] ?? ''
-              return (
-                <div key={e.id} className={`card mb-0 border-r-4 ${c.borderClass}`}>
-                  <div className="flex items-start gap-3 mb-3">
-                    <span className="text-2xl flex-shrink-0 mt-0.5">{c.icon}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-extrabold text-sm text-slate-900 truncate">{e.title}</span>
-                        {evLocked && <span className="badge badge-red text-xs">مغلق</span>}
-                      </div>
-                      {e.event_type === 'match' && e.opponent && (
-                        <div className="text-xs text-slate-500 mt-0.5">⚔️ ضد: {e.opponent}</div>
-                      )}
-                      <div className="flex items-center gap-1.5 text-xs text-slate-400 mt-0.5">
-                        <Calendar size={11} className="flex-shrink-0"/>
-                        <span>{formatDate(e.start_datetime)}</span>
-                        <span className="text-slate-300">·</span>
-                        <span className="font-bold text-slate-600">{e.start_datetime.slice(11, 16)}</span>
-                        {e.location && (
-                          <>
-                            <span className="text-slate-300">·</span>
-                            <span className="truncate max-w-[100px]">{e.location}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <span className="badge text-xs flex-shrink-0" style={{ background: c.bg, color: c.color }}>
-                      {c.label}
-                    </span>
-                  </div>
-
-                  <div className="bg-slate-50 rounded-xl p-2.5">
-                    <p className="text-xs font-bold text-slate-500 mb-2">هل ستحضر؟</p>
-                    <AttendanceButton
-                      status={myStatus}
-                      locked={evLocked}
-                      onSelect={s => setAttendance(e.id, s)}
-                    />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+              className="btn btn-ghost btn-sm mt-2">إضافة موعد</button>
+          )}
         </div>
       )}
 
