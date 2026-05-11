@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
   <meta name="description" content="TeamAssist — المنصة المتكاملة لإدارة الفرق الرياضية"/>
   <title>TeamAssist — إدارة الفرق</title>
-  <link rel="icon" type="image/png" href="/favicon.png"/>
+  <link rel="icon" type="image/png" href="/logo.png"/>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800&display=swap" rel="stylesheet"/>
   <style>
     * { box-sizing: border-box; font-family: 'Tajawal', sans-serif; }
@@ -25,11 +25,17 @@
     }
     #splash.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
 
-    #splash-logo {
+    #splash-logo-wrap {
       width: 96px; height: 96px; border-radius: 28px;
-      object-fit: cover; object-position: center;
-      box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+      background: #ffffff;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.25);
       animation: splashPulse 1.8s ease-in-out infinite;
+      overflow: hidden;
+    }
+    #splash-logo {
+      width: 80px; height: 80px;
+      object-fit: contain;
     }
     #splash-title {
       color: white; font-size: 30px; font-weight: 800;
@@ -73,8 +79,10 @@
 <body>
   <!-- Splash screen -->
   <div id="splash">
-    <img id="splash-logo" src="/logo.png" alt="TeamAssist"
-      onerror="this.style.display='none'"/>
+    <div id="splash-logo-wrap">
+      <img id="splash-logo" src="/logo.png" alt="TeamAssist"
+        onerror="this.style.display='none'"/>
+    </div>
     <h1 id="splash-title">TeamAssist</h1>
     <p id="splash-sub">المنصة الرياضية الذكية</p>
     <div class="splash-spinner"></div>

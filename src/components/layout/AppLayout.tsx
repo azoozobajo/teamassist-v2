@@ -140,17 +140,17 @@ export default function AppLayout() {
 
       {/* ── Logo ── */}
       <div className="px-4 py-4 border-b border-slate-100 flex items-center gap-3 flex-shrink-0">
-        <div className="w-10 h-10 rounded-2xl flex items-center justify-center overflow-hidden flex-shrink-0"
-          style={{ background: 'linear-gradient(135deg,#0f766e,#1D9E75)', boxShadow: '0 3px 10px rgba(29,158,117,0.35)' }}>
+        <div className="w-10 h-10 rounded-2xl bg-white flex items-center justify-center overflow-hidden flex-shrink-0"
+          style={{ boxShadow: '0 2px 8px rgba(15,23,42,0.08)' }}>
           <img src="/logo.png" alt="TA"
-            className="w-7 h-7 object-contain"
+            className="w-9 h-9 object-contain"
             onError={e => {
               const t = e.target as HTMLImageElement
               t.style.display = 'none'
               const parent = t.parentElement
               if (parent && !parent.querySelector('span')) {
                 const s = document.createElement('span')
-                s.className = 'text-white font-extrabold text-sm'
+                s.className = 'text-brand-700 font-extrabold text-sm'
                 s.textContent = 'TA'
                 parent.appendChild(s)
               }
