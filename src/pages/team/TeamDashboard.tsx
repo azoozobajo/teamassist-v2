@@ -165,7 +165,7 @@ export default function TeamDashboard() {
 
           {/* LEFT (second in RTL): Monthly Star section */}
           <div className="flex-shrink-0 flex flex-col items-center justify-center pr-1 pl-4 border-r border-white/20 mr-4"
-            style={{ minWidth: 96 }}>
+            style={{ minWidth: 120 }}>
             {isRevealed && monthlyStar ? (
               <>
                 <div className="text-[10px] text-amber-200 font-extrabold mb-1.5 flex items-center gap-0.5">
@@ -176,7 +176,7 @@ export default function TeamDashboard() {
                     ? <img src={monthlyStar.player.avatar_url} className="w-full h-full object-cover" alt=""/>
                     : <span className="text-2xl font-extrabold text-white">{monthlyStar.player?.full_name?.[0]}</span>}
                 </div>
-                <div className="text-white text-[11px] font-extrabold text-center mt-1.5 leading-tight max-w-[88px] line-clamp-2">
+                <div className="text-white text-[12px] font-extrabold text-center mt-1.5 leading-tight max-w-[110px] line-clamp-1">
                   {monthlyStar.player?.full_name}
                 </div>
                 <span className="mt-1 bg-amber-400/30 text-amber-200 rounded-lg px-1.5 py-0.5 text-[10px] font-bold">
