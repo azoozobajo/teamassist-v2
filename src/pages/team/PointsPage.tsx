@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Plus, Settings, Star, Minus } from 'lucide-react'
+import { Plus, Settings, Star, Minus, Filter, X } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { pointsService, teamService } from '../../services'
 import { Spinner, PageHeader, Modal, FormField, Tabs, EmptyState, ProgressBar, CheckboxList } from '../../components/ui'
@@ -38,7 +38,13 @@ export default function PointsPage() {
   const [form, setForm] = useState({ category:'مكافأة' as any, reason:'', points:'', target:'all', selectedMembers:[] as string[] })
   const [compForm, setCompForm] = useState({ name:'', from_date:'', to_date:'', prize:'' })
   const [saving, setSaving] = useState(false)
+
+  // ── Date filter ──
+  const [filterFrom, setFilterFrom] = useState('')
+  const [filterTo, setFilterTo] = useState('')
+
   const set = (k:string,v:any) => setForm(p=>({...p,[k]:v}))
+  const hasFilter = !!(filterFrom || filterTo)
 
   useEffect(() => {
     if (!teamId || !user) return
@@ -57,7 +63,7 @@ export default function PointsPage() {
     ])
     setHistory(h); setComps(c)
     if (a.length) setAutoSettings(a)
-    // Build leaderboard from history
+    // Build leaderboard from full history
     const totals: Record<string,{name:string,init:string,pts:number,userId:string}> = {}
     h.forEach((t: any) => {
       if (!totals[t.user_id]) totals[t.user_id] = { name: t.profile?.full_name || '?', init: t.profile?.full_name?.[0] || '?', pts: 0, userId: t.user_id }
@@ -66,6 +72,26 @@ export default function PointsPage() {
     setLb(Object.values(totals).sort((a,b) => b.pts - a.pts))
     setLoading(false)
   }
+
+  // ── Filtered data ──
+  const filteredHistory = history.filter((h: any) => {
+    const d = h.created_at?.slice(0, 10) || ''
+    if (filterFrom && d < filterFrom) return false
+    if (filterTo   && d > filterTo)   return false
+    return true
+  })
+
+  const filteredLb = (() => {
+    const totals: Record<string,{name:string,init:string,pts:number,userId:string}> = {}
+    filteredHistory.forEach((t: any) => {
+      if (!totals[t.user_id]) totals[t.user_id] = { name: t.profile?.full_name || '?', init: t.profile?.full_name?.[0] || '?', pts: 0, userId: t.user_id }
+      totals[t.user_id].pts += t.points
+    })
+    return Object.values(totals).sort((a,b) => b.pts - a.pts)
+  })()
+
+  const displayLb      = hasFilter ? filteredLb      : lb
+  const displayHistory = hasFilter ? filteredHistory : history
 
   async function addPoints() {
     if (!form.reason.trim() || !form.points || !teamId || !user) return
@@ -102,7 +128,7 @@ export default function PointsPage() {
   }
 
   const isAdmin = canManageTeam(myRole)
-  const maxPts = lb[0]?.pts || 1
+  const maxPts = displayLb[0]?.pts || 1
   const memberItems = members.map(m => ({ value: m.user_id, label: m.profile?.full_name || '?', sub: ROLE_LABELS[m.role] }))
 
   return (
@@ -115,37 +141,68 @@ export default function PointsPage() {
             <button className="btn btn-primary btn-sm" onClick={() => { setIsDeductMode(false); setShowAdd(true) }}><Plus size={13}/> نقاط</button>
           </div>
         )}/>
+
       <Tabs tabs={[{key:'leaderboard',label:'🏆 الترتيب'},{key:'history',label:'📋 السجل'},{key:'competitions',label:'🎯 المسابقات'}]}
         active={tab} onChange={setTab}/>
+
+      {/* ── Date filter (leaderboard + history) ── */}
+      {tab !== 'competitions' && (
+        <div className="card mb-3 py-2.5 px-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Filter size={13} className="text-slate-400 flex-shrink-0"/>
+            <span className="text-xs font-bold text-slate-500 flex-shrink-0">فلترة بالتاريخ:</span>
+            <div className="flex items-center gap-1.5 flex-1 flex-wrap">
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-slate-400">من</span>
+                <input type="date" className="form-input py-1 text-xs" style={{ width: 130 }}
+                  value={filterFrom} onChange={e => setFilterFrom(e.target.value)}/>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-slate-400">إلى</span>
+                <input type="date" className="form-input py-1 text-xs" style={{ width: 130 }}
+                  value={filterTo} onChange={e => setFilterTo(e.target.value)}/>
+              </div>
+              {hasFilter && (
+                <button onClick={() => { setFilterFrom(''); setFilterTo('') }}
+                  className="flex items-center gap-1 text-xs text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2 py-1 rounded-lg border-none cursor-pointer font-bold transition-colors">
+                  <X size={11}/> إزالة
+                </button>
+              )}
+            </div>
+            {hasFilter && (
+              <span className="text-xs bg-brand-100 text-brand-700 font-bold px-2 py-0.5 rounded-lg flex-shrink-0">
+                {displayHistory.length} سجل
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {loading ? <div className="flex justify-center py-10"><Spinner/></div> : (
         <>
           {tab === 'leaderboard' && (
-            lb.length === 0
-              ? <div className="card"><EmptyState icon={<Star size={28}/>} title="لا توجد نقاط بعد" description="أضف نقاطاً للأعضاء للبدء"/></div>
+            displayLb.length === 0
+              ? <div className="card"><EmptyState icon={<Star size={28}/>} title={hasFilter ? 'لا توجد نقاط في هذه الفترة' : 'لا توجد نقاط بعد'} description={hasFilter ? 'جرب تغيير نطاق التاريخ' : 'أضف نقاطاً للأعضاء للبدء'}/></div>
               : <div className="space-y-2.5">
-                  {lb.map((p, i) => {
+                  {displayLb.map((p, i) => {
                     const isTop = i < 3
                     const topBg  = ['bg-yellow-50 border-yellow-200','bg-slate-50 border-slate-200','bg-orange-50 border-orange-200'][i] || ''
                     const ptColor= ['text-yellow-600','text-slate-500','text-orange-500'][i] || 'text-amber-600'
                     return (
                       <div key={p.userId}
                         className={`card flex items-center gap-3 transition-all ${isTop ? topBg : ''}`}>
-                        {/* Rank */}
                         <div className="text-2xl w-9 text-center flex-shrink-0 leading-none">
                           {MEDALS[i] || <span className="text-sm font-bold text-slate-400">#{i+1}</span>}
                         </div>
-                        {/* Avatar */}
                         <div className={`w-10 h-10 rounded-2xl flex items-center justify-center font-extrabold text-sm flex-shrink-0 ${isTop ? 'bg-white shadow-sm' : 'bg-brand-100 text-brand-700'}`}>
                           {p.init}
                         </div>
-                        {/* Name + bar */}
                         <div className="flex-1 min-w-0">
                           <div className="font-extrabold text-sm text-slate-900 truncate">{p.name}</div>
                           <div className="mt-1.5">
                             <ProgressBar value={Math.round(p.pts/maxPts*100)} color={isTop ? 'bg-yellow-400' : 'bg-brand-400'} height="h-2"/>
                           </div>
                         </div>
-                        {/* Points */}
                         <div className={`text-center px-3 py-2 rounded-2xl flex-shrink-0 ${isTop ? 'bg-white shadow-sm' : 'bg-slate-50'}`}>
                           <div className={`text-xl font-extrabold leading-none ${ptColor}`}>{p.pts}</div>
                           <div className="text-[11px] text-slate-400 mt-0.5">نقطة</div>
@@ -155,11 +212,12 @@ export default function PointsPage() {
                   })}
                 </div>
           )}
+
           {tab === 'history' && (
-            history.length === 0
-              ? <div className="card"><EmptyState title="لا يوجد سجل"/></div>
+            displayHistory.length === 0
+              ? <div className="card"><EmptyState title={hasFilter ? 'لا يوجد سجل في هذه الفترة' : 'لا يوجد سجل'}/></div>
               : <div className="card p-0 divide-y divide-slate-50">
-                  {history.map((h: any) => (
+                  {displayHistory.map((h: any) => (
                     <div key={h.id} className="flex items-center gap-3 p-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-0.5">
@@ -179,6 +237,7 @@ export default function PointsPage() {
                   ))}
                 </div>
           )}
+
           {tab === 'competitions' && (
             <div>
               {isAdmin && (
@@ -215,7 +274,6 @@ export default function PointsPage() {
       <Modal open={showAdd} onClose={() => { setShowAdd(false); setIsDeductMode(false) }}
         title={isDeductMode ? '🔴 خصم نقاط' : '⭐ إضافة نقاط'}>
 
-        {/* Mode toggle */}
         <div className="flex gap-2 mb-4 p-1 bg-slate-100 rounded-xl">
           <button onClick={() => setIsDeductMode(false)}
             className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${!isDeductMode ? 'bg-white shadow-sm text-brand-700' : 'text-slate-500'}`}>
@@ -228,7 +286,6 @@ export default function PointsPage() {
         </div>
 
         {isDeductMode ? (
-          /* Deduction reasons */
           <div className="form-group">
             <label className="form-label">سبب الخصم</label>
             <div className="flex flex-wrap gap-1.5">

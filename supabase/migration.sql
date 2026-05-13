@@ -1386,3 +1386,10 @@ RETURNS TABLE (
   WHERE tm.team_id = p_team_id AND tm.status = 'active'
   ORDER BY tm.user_id, ms.start_date DESC;
 $$;
+
+
+-- ══════════════════════════════════════════════════
+-- V16: Announcements target_roles
+-- ══════════════════════════════════════════════════
+ALTER TABLE announcements
+  ADD COLUMN IF NOT EXISTS target_roles text[] DEFAULT NULL;
