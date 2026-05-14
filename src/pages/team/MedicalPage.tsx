@@ -207,8 +207,10 @@ export default function MedicalPage() {
 
   async function updateStatus(reportId: string, status: string) {
     setUpdatingStatus(reportId)
-    await medicalService.updateReport(reportId, { status })
-    setReports(prev => prev.map(r => r.id === reportId ? { ...r, status } : r))
+    const patch: any = { status }
+    if (status === 'recovered') patch.recovery_date = new Date().toISOString().slice(0, 10)
+    await medicalService.updateReport(reportId, patch)
+    setReports(prev => prev.map(r => r.id === reportId ? { ...r, ...patch } : r))
     setUpdatingStatus(null)
   }
 
@@ -314,10 +316,15 @@ export default function MedicalPage() {
                       {report.description && (
                         <div className="text-xs text-slate-500 mt-0.5 line-clamp-2">{report.description}</div>
                       )}
-                      <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-400">
+                      <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-400 flex-wrap">
                         {report.injury_date && <span>📅 {report.injury_date}</span>}
+                        {report.recovery_date && <span>✅ تعافى: {report.recovery_date}</span>}
+                        {report.injury_date && report.recovery_date && (() => {
+                          const days = Math.round((new Date(report.recovery_date).getTime() - new Date(report.injury_date).getTime()) / 86400000)
+                          return days > 0 ? <span className="bg-emerald-50 text-emerald-700 rounded-lg px-1.5 py-0.5 font-bold">{days} يوم</span> : null
+                        })()}
                         <span>🕐 {new Date(report.created_at).toLocaleDateString('ar-SA')}</span>
-                        {repNotes.length > 0 && <span>💬 {repNotes.length} تعليق</span>}
+                        {repNotes.length > 0 && <span>💬 {repNotes.length} تحديث</span>}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">

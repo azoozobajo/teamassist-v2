@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { useParams } from 'react-router-dom'
-import { UserPlus, Edit2, Trash2, CheckCircle, XCircle, Shield, Save, Check, Link, MessageSquare, Search, Plus, Snowflake } from 'lucide-react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { UserPlus, Edit2, Trash2, CheckCircle, XCircle, Shield, Save, Check, Link, MessageSquare, Search, Plus, Snowflake, LogOut, AlertTriangle } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { teamService, inviteService, notificationService, permissionService, memberFreezeService } from '../../services'
 import { Spinner, PageHeader, SearchBox, Avatar, Modal, FormField, ConfirmDialog, EmptyState, Tabs } from '../../components/ui'
@@ -28,6 +28,7 @@ const roleColor: Record<string, string> = {
 export default function MembersPage() {
   const { teamId } = useParams()
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [members, setMembers] = useState<any[]>([])
   const [requests, setRequests] = useState<any[]>([])
   const [allPerms, setAllPerms] = useState<Record<string, string[]>>({})
@@ -63,6 +64,13 @@ export default function MembersPage() {
 
   // Freeze
   const [freezing, setFreezing] = useState<string | null>(null)
+
+  // Leave / transfer ownership
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false)
+  const [showTransferLeave, setShowTransferLeave] = useState(false)
+  const [showSoloLeave, setShowSoloLeave] = useState(false)
+  const [transferTarget, setTransferTarget] = useState('')
+  const [leaveLoading, setLeaveLoading] = useState(false)
 
   // Direct add member
   const [showDirectAdd, setShowDirectAdd] = useState(false)
@@ -246,6 +254,32 @@ export default function MembersPage() {
     setFreezing(null)
   }
 
+  // Leave & transfer ownership
+  async function doLeave() {
+    if (!teamId || !user) return
+    setLeaveLoading(true)
+    await teamService.leaveSelf(teamId, user.id)
+    setLeaveLoading(false)
+    navigate('/')
+  }
+
+  async function doSoloLeaveDelete() {
+    if (!teamId || !user) return
+    setLeaveLoading(true)
+    await teamService.deleteTeam(teamId)
+    setLeaveLoading(false)
+    navigate('/')
+  }
+
+  async function doTransferAndLeave() {
+    if (!teamId || !user || !transferTarget) return
+    setLeaveLoading(true)
+    await teamService.transferOwnership(teamId, transferTarget)
+    await teamService.leaveSelf(teamId, user.id)
+    setLeaveLoading(false)
+    navigate('/dashboard')
+  }
+
   const isAdmin = canManageTeam(myRole)
   const isOwner = myRole === 'owner'
   const visibleMembers = members.filter(m => isAdmin || (m.role !== 'parent' && m.is_visible !== false && !m.is_frozen))
@@ -265,16 +299,32 @@ export default function MembersPage() {
   return (
     <div>
       <PageHeader title={`الأعضاء (${activeMembers.length})`}
-        action={isAdmin && (
+        action={
           <div className="flex gap-2">
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowInvite(true)}>
-              <UserPlus size={14}/> دعوة بالبريد
+            <button className="btn btn-ghost btn-sm text-amber-600 border-amber-200 hover:bg-amber-50"
+              onClick={() => {
+                if (myRole === 'owner') {
+                  const activeOthers = members.filter(m => m.role !== 'owner' && !m.is_frozen)
+                  if (activeOthers.length === 0) setShowSoloLeave(true)
+                  else setShowTransferLeave(true)
+                } else {
+                  setShowLeaveConfirm(true)
+                }
+              }}>
+              <LogOut size={14}/> مغادرة
             </button>
-            <button className="btn btn-primary btn-sm" onClick={() => { setShowDirectAdd(true); setDirectQuery(''); setDirectResults([]); setDirectSelected(null); setDirectRole('player') }}>
-              <Plus size={14}/> إضافة عضو
-            </button>
+            {isAdmin && (
+              <>
+                <button className="btn btn-ghost btn-sm" onClick={() => setShowInvite(true)}>
+                  <UserPlus size={14}/> دعوة بالبريد
+                </button>
+                <button className="btn btn-primary btn-sm" onClick={() => { setShowDirectAdd(true); setDirectQuery(''); setDirectResults([]); setDirectSelected(null); setDirectRole('player') }}>
+                  <Plus size={14}/> إضافة عضو
+                </button>
+              </>
+            )}
           </div>
-        )} />
+        } />
 
       <Tabs tabs={tabs} active={tab} onChange={setTab} />
 
@@ -712,6 +762,89 @@ export default function MembersPage() {
             disabled={!directSelected || directAdding}>
             {directAdding ? <Spinner size="sm"/> : <><UserPlus size={14}/> إضافة</>}
           </button>
+        </div>
+      </Modal>
+
+      {/* ══ LEAVE TEAM CONFIRM (non-owner) ══ */}
+      <Modal open={showLeaveConfirm} onClose={() => setShowLeaveConfirm(false)} title="مغادرة الفريق">
+        <div className="text-center py-4">
+          <div className="w-14 h-14 bg-amber-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <LogOut size={24} className="text-amber-600"/>
+          </div>
+          <p className="font-bold text-slate-800 mb-2">هل تريد مغادرة الفريق؟</p>
+          <p className="text-sm text-slate-500 mb-6">سيتم إزالتك من قائمة أعضاء الفريق ولن تتمكن من الوصول إليه مجدداً إلا بدعوة جديدة.</p>
+          <div className="flex gap-2 justify-center">
+            <button className="btn btn-ghost" onClick={() => setShowLeaveConfirm(false)}>إلغاء</button>
+            <button className="btn btn-danger flex items-center gap-2" onClick={doLeave} disabled={leaveLoading}>
+              {leaveLoading ? <Spinner size="sm"/> : <><LogOut size={14}/> تأكيد المغادرة</>}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ══ TRANSFER OWNERSHIP + LEAVE (owner) ══ */}
+      <Modal open={showTransferLeave} onClose={() => { setShowTransferLeave(false); setTransferTarget('') }}
+        title="نقل ملكية الفريق ومغادرته" width="max-w-lg">
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 flex items-start gap-2.5 text-xs text-amber-700">
+          <AlertTriangle size={14} className="mt-0.5 flex-shrink-0"/>
+          <span>بما أنك مؤسس الفريق، يجب اختيار عضو آخر يستلم إدارة الفريق قبل المغادرة.</span>
+        </div>
+        <p className="text-sm font-bold text-slate-700 mb-3">اختر العضو الذي سيستلم ملكية الفريق:</p>
+        <div className="border border-slate-200 rounded-xl overflow-hidden max-h-64 overflow-y-auto mb-4">
+          {nonOwnerMembers.filter(m => !m.is_frozen).length === 0 ? (
+            <div className="text-center py-8 text-slate-400 text-sm">
+              لا يوجد أعضاء آخرون يمكن نقل الملكية إليهم
+            </div>
+          ) : (
+            nonOwnerMembers.filter(m => !m.is_frozen).map(m => (
+              <div key={m.id}
+                onClick={() => setTransferTarget(prev => prev === m.id ? '' : m.id)}
+                className={`flex items-center gap-3 px-4 py-3 cursor-pointer border-b border-slate-50 last:border-0 transition-colors ${transferTarget === m.id ? 'bg-brand-50' : 'hover:bg-slate-50'}`}>
+                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all ${transferTarget === m.id ? 'bg-brand-500 border-brand-500' : 'border-slate-300'}`}>
+                  {transferTarget === m.id && <Check size={11} className="text-white"/>}
+                </div>
+                <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="sm"/>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-sm text-slate-800 truncate">{m.profile?.full_name}</div>
+                  <div className="text-xs text-slate-400">{ROLE_LABELS[m.role] || m.role}</div>
+                </div>
+                {transferTarget === m.id && (
+                  <span className="badge bg-brand-100 text-brand-700 text-xs">المالك الجديد</span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+        {transferTarget && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-2.5 mb-4 text-xs text-red-700">
+            ⚠️ بعد نقل الملكية ستغادر الفريق نهائياً ولن تتمكن من الوصول إليه إلا بدعوة جديدة.
+          </div>
+        )}
+        <div className="flex gap-2 justify-end">
+          <button className="btn btn-ghost" onClick={() => { setShowTransferLeave(false); setTransferTarget('') }}>إلغاء</button>
+          <button className="btn btn-danger flex items-center gap-2" onClick={doTransferAndLeave}
+            disabled={!transferTarget || leaveLoading}>
+            {leaveLoading ? <Spinner size="sm"/> : <><LogOut size={14}/> نقل الملكية والمغادرة</>}
+          </button>
+        </div>
+      </Modal>
+
+      {/* ══ SOLO LEAVE → DELETE TEAM MODAL ══ */}
+      <Modal open={showSoloLeave} onClose={() => !leaveLoading && setShowSoloLeave(false)} title="🚪 مغادرة وحذف الفريق">
+        <div className="space-y-4">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-3 flex items-start gap-2">
+            <AlertTriangle size={16} className="text-red-600 mt-0.5 flex-shrink-0"/>
+            <p className="text-xs text-red-700">
+              أنت العضو الوحيد في هذا الفريق. بمغادرتك سيُحذف الفريق نهائياً مع جميع بياناته ولن يظهر لأي أحد.
+            </p>
+          </div>
+          <p className="text-sm text-slate-600">هل تريد حذف الفريق نهائياً والمغادرة؟</p>
+          <div className="flex gap-2 justify-end">
+            <button className="btn btn-ghost" onClick={() => setShowSoloLeave(false)} disabled={leaveLoading}>إلغاء</button>
+            <button className="btn btn-danger flex items-center gap-2" onClick={doSoloLeaveDelete} disabled={leaveLoading}>
+              {leaveLoading ? <Spinner size="sm"/> : <><LogOut size={14}/> حذف الفريق والمغادرة</>}
+            </button>
+          </div>
         </div>
       </Modal>
 

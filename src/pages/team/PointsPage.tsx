@@ -38,6 +38,7 @@ export default function PointsPage() {
   const [form, setForm] = useState({ category:'مكافأة' as any, reason:'', points:'', target:'all', selectedMembers:[] as string[] })
   const [compForm, setCompForm] = useState({ name:'', from_date:'', to_date:'', prize:'' })
   const [saving, setSaving] = useState(false)
+  const [addError, setAddError] = useState('')
 
   // ── Date filter ──
   const [filterFrom, setFilterFrom] = useState('')
@@ -56,20 +57,31 @@ export default function PointsPage() {
   async function load() {
     if (!teamId) return
     setLoading(true)
-    const [h, c, a] = await Promise.all([
-      pointsService.getHistory(teamId),
+    const [lbData, h, c, a] = await Promise.all([
+      pointsService.getLeaderboard(teamId),
+      pointsService.getHistory(teamId, 500),
       pointsService.getCompetitions(teamId),
       pointsService.getAutoSettings(teamId),
     ])
     setHistory(h); setComps(c)
     if (a.length) setAutoSettings(a)
-    // Build leaderboard from full history
-    const totals: Record<string,{name:string,init:string,pts:number,userId:string}> = {}
-    h.forEach((t: any) => {
-      if (!totals[t.user_id]) totals[t.user_id] = { name: t.profile?.full_name || '?', init: t.profile?.full_name?.[0] || '?', pts: 0, userId: t.user_id }
-      totals[t.user_id].pts += t.points
-    })
-    setLb(Object.values(totals).sort((a,b) => b.pts - a.pts))
+    // Use RPC leaderboard if available, otherwise build from full history
+    if (lbData && lbData.length > 0) {
+      setLb(lbData.map((r: any) => ({
+        userId: r.user_id,
+        name: r.full_name || r.profile?.full_name || '?',
+        init: (r.full_name || r.profile?.full_name || '?')[0],
+        pts: r.total_points ?? r.pts ?? 0
+      })).sort((a: any, b: any) => b.pts - a.pts))
+    } else {
+      // Fallback: build from history
+      const totals: Record<string,{name:string,init:string,pts:number,userId:string}> = {}
+      h.forEach((t: any) => {
+        if (!totals[t.user_id]) totals[t.user_id] = { name: t.profile?.full_name || '?', init: t.profile?.full_name?.[0] || '?', pts: 0, userId: t.user_id }
+        totals[t.user_id].pts += t.points
+      })
+      setLb(Object.values(totals).sort((a,b) => b.pts - a.pts))
+    }
     setLoading(false)
   }
 
@@ -94,23 +106,32 @@ export default function PointsPage() {
   const displayHistory = hasFilter ? filteredHistory : history
 
   async function addPoints() {
-    if (!form.reason.trim() || !form.points || !teamId || !user) return
+    setAddError('')
+    if (!form.points || parseInt(form.points) < 1) { setAddError('أدخل عدد النقاط'); return }
+    if (!form.reason.trim()) { setAddError('أدخل سبب الإضافة أو الخصم'); return }
+    if (!teamId || !user) return
     setSaving(true)
     const rawPts = parseInt(form.points)
     const pts = isDeductMode ? -Math.abs(rawPts) : Math.abs(rawPts)
     let targets: string[] = []
-    if (form.target === 'all') targets = members.map(m => m.user_id)
+    if (form.target === 'all') targets = members.filter(m => m.status !== 'removed').map(m => m.user_id)
     else if (form.target === 'players') targets = members.filter(m => m.role === 'player').map(m => m.user_id)
     else targets = form.selectedMembers
+    if (targets.length === 0) { setAddError('لا يوجد أعضاء مستهدفون'); setSaving(false); return }
     const inserts = targets.map(uid => ({
       team_id: teamId, user_id: uid, points: pts,
       category: isDeductMode ? 'خصم' : form.category,
-      reason: form.reason, is_auto: false, created_by: user.id
+      reason: form.reason, is_auto: false
     }))
-    await pointsService.addPoints(inserts)
-    await load(); setShowAdd(false)
+    const { error } = await pointsService.addPoints(inserts)
+    if (error) {
+      setAddError('فشل الحفظ: ' + error.message)
+      setSaving(false); return
+    }
+    await load()
+    setShowAdd(false)
     setForm({ category:'مكافأة', reason:'', points:'', target:'all', selectedMembers:[] })
-    setIsDeductMode(false); setSaving(false)
+    setIsDeductMode(false); setSaving(false); setAddError('')
   }
 
   async function addComp() {
@@ -137,8 +158,8 @@ export default function PointsPage() {
         action={isAdmin && (
           <div className="flex gap-2">
             <button className="btn btn-ghost btn-sm" onClick={() => setShowSettings(true)}><Settings size={13}/></button>
-            <button className="btn btn-danger btn-sm" onClick={() => { setIsDeductMode(true); setShowAdd(true) }}><Minus size={13}/> خصم</button>
-            <button className="btn btn-primary btn-sm" onClick={() => { setIsDeductMode(false); setShowAdd(true) }}><Plus size={13}/> نقاط</button>
+            <button className="btn btn-danger btn-sm" onClick={() => { setIsDeductMode(true); setAddError(''); setShowAdd(true) }}><Minus size={13}/> خصم</button>
+            <button className="btn btn-primary btn-sm" onClick={() => { setIsDeductMode(false); setAddError(''); setShowAdd(true) }}><Plus size={13}/> نقاط</button>
           </div>
         )}/>
 
@@ -339,8 +360,13 @@ export default function PointsPage() {
             ⚠️ ستُخصم {form.points || '؟'} نقطة من رصيد {form.target === 'all' ? 'جميع الأعضاء' : form.target === 'players' ? 'جميع اللاعبين' : `${form.selectedMembers.length} أشخاص`}
           </div>
         )}
+        {addError && (
+          <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-3 py-2.5 text-xs text-red-700 font-bold">
+            ⚠️ {addError}
+          </div>
+        )}
         <div className="flex gap-2 justify-end mt-4">
-          <button className="btn btn-ghost" onClick={() => { setShowAdd(false); setIsDeductMode(false) }}>إلغاء</button>
+          <button className="btn btn-ghost" onClick={() => { setShowAdd(false); setIsDeductMode(false); setAddError('') }}>إلغاء</button>
           <button className={`btn ${isDeductMode ? 'btn-danger' : 'btn-primary'}`} onClick={addPoints} disabled={saving}>
             {saving ? <Spinner size="sm"/> : isDeductMode ? 'تأكيد الخصم' : 'إضافة'}
           </button>

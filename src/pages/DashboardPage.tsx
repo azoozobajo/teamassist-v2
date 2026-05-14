@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, LogIn, Shield, Calendar, DollarSign, Users, Zap, ChevronLeft, ChevronRight, MoreVertical, LogOut, Trash2 } from 'lucide-react'
+import { Plus, LogIn, Shield, Calendar, DollarSign, Users, ChevronLeft, ChevronRight, MoreVertical, LogOut, Trash2, AlertTriangle, Check } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { teamService, eventService, financeService } from '../services'
-import { Spinner, EmptyState, AttendanceButton, Avatar, Modal } from '../components/ui'
+import { Spinner, EmptyState, Avatar, Modal } from '../components/ui'
 import { formatDate, EVENT_CONFIG, isEventLocked, ROLE_LABELS, cn } from '../utils/helpers'
 import { format } from 'date-fns'
 import { arSA } from 'date-fns/locale'
@@ -14,8 +14,6 @@ export default function DashboardPage() {
   const [teams, setTeams] = useState<any[]>([])
   const [teamIdx, setTeamIdx] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [nextEvents, setNextEvents] = useState<{ team: any; event: any; myAtt: string }[]>([])
-  const [attFeedback, setAttFeedback] = useState<{ idx: number; ok: boolean } | null>(null)
   const [myStats, setMyStats] = useState({ teamCount: 0, upcomingCount: 0, unpaidCount: 0 })
   const [statsPerTeam, setStatsPerTeam] = useState<any[]>([])
   const [selStatTeam, setSelStatTeam] = useState<string | null>(null)
@@ -23,6 +21,13 @@ export default function DashboardPage() {
   const [confirmAction, setConfirmAction] = useState<{ type: 'leave' | 'delete'; teamId: string; teamName: string } | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+
+  // Transfer ownership state (for owner wanting to leave)
+  const [showTransfer, setShowTransfer] = useState(false)
+  const [transferMembers, setTransferMembers] = useState<any[]>([])
+  const [transferTarget, setTransferTarget] = useState('')
+  const [transferLoading, setTransferLoading] = useState(false)
+  const [showSoloLeave, setShowSoloLeave] = useState(false)
 
   const monthLabel = format(new Date(), 'MMMM', { locale: arSA })
 
@@ -38,18 +43,9 @@ export default function DashboardPage() {
     teamService.getMyTeams(user.id).then(async ts => {
       setTeams(ts)
       let upcomingThisMonth = 0, unpaidCount = 0
-      const allEvData: any[] = []
       const perTeam: any[] = []
 
       for (const t of ts) {
-        // Next 3 upcoming events for quick attendance
-        const upcomingEvs = await eventService.getUpcomingEvents(t.id, 3)
-        for (const ev of upcomingEvs) {
-          const attList = await eventService.getAttendance(ev.id)
-          const myAttRec = attList.find((a: any) => a.user_id === user.id)
-          allEvData.push({ team: t, event: ev, myAtt: myAttRec?.status || '' })
-        }
-
         // Upcoming count this month
         const allEvs = await eventService.getTeamEvents(t.id)
         const now = new Date()
@@ -102,27 +98,10 @@ export default function DashboardPage() {
       } catch {}
 
       setStatsPerTeam(perTeam)
-
-      allEvData.sort((a, b) => new Date(a.event.start_datetime).getTime() - new Date(b.event.start_datetime).getTime())
-      setNextEvents(allEvData.slice(0, 3))
       setMyStats({ teamCount: ts.length, upcomingCount: upcomingThisMonth, unpaidCount })
       setLoading(false)
     })
   }, [user])
-
-  async function setAttendance(teamId: string, eventId: string, status: string, idx: number) {
-    if (!user) return
-    const prevStatus = nextEvents[idx]?.myAtt ?? ''
-    setNextEvents(prev => prev.map((e, i) => i === idx ? { ...e, myAtt: status } : e))
-    const { error } = await eventService.setAttendance({ event_id: eventId, team_id: teamId, user_id: user.id, status })
-    if (error) {
-      setNextEvents(prev => prev.map((e, i) => i === idx ? { ...e, myAtt: prevStatus } : e))
-      setAttFeedback({ idx, ok: false })
-    } else {
-      setAttFeedback({ idx, ok: true })
-    }
-    setTimeout(() => setAttFeedback(null), 2500)
-  }
 
   async function handleTeamAction() {
     if (!confirmAction || !user) return
@@ -132,10 +111,49 @@ export default function DashboardPage() {
     } else {
       await teamService.deleteTeam(confirmAction.teamId)
     }
+    const removedId = confirmAction.teamId
     setConfirmAction(null)
     setActionLoading(false)
-    // Reload page to refresh teams list
-    window.location.reload()
+    setTeams(prev => prev.filter(t => t.id !== removedId))
+    setTeamIdx(0)
+  }
+
+  async function openTransferModal() {
+    if (!currentTeam) return
+    setShowTeamMenu(false)
+    setTransferTarget('')
+    const mems = await teamService.getMembers(currentTeam.id)
+    const others = mems.filter((m: any) => m.role !== 'owner' && !m.is_frozen)
+    if (others.length === 0 && mems.length <= 1) {
+      // Owner is the only member — offer to delete the team entirely
+      setShowSoloLeave(true)
+    } else {
+      setTransferMembers(others)
+      setShowTransfer(true)
+    }
+  }
+
+  async function doSoloLeaveDelete() {
+    if (!user || !currentTeam) return
+    setTransferLoading(true)
+    await teamService.deleteTeam(currentTeam.id)
+    const removedId = currentTeam.id
+    setTransferLoading(false)
+    setShowSoloLeave(false)
+    setTeams(prev => prev.filter(t => t.id !== removedId))
+    setTeamIdx(0)
+  }
+
+  async function doTransferAndLeave() {
+    if (!user || !currentTeam || !transferTarget) return
+    setTransferLoading(true)
+    await teamService.transferOwnership(currentTeam.id, transferTarget)
+    await teamService.leaveSelf(currentTeam.id, user.id)
+    const removedId = currentTeam.id
+    setTransferLoading(false)
+    setShowTransfer(false)
+    setTeams(prev => prev.filter(t => t.id !== removedId))
+    setTeamIdx(0)
   }
 
   const derivedStats = useMemo(() => {
@@ -257,8 +275,10 @@ export default function DashboardPage() {
                     {ROLE_LABELS[currentTeam.myRole] || currentTeam.myRole}
                   </div>
                   <div className="font-extrabold text-white text-xl leading-tight truncate">{currentTeam.name}</div>
-                  <div className="text-white/70 text-sm mt-0.5">
-                    {currentTeam.sport_type}{currentTeam.city ? ` · ${currentTeam.city}` : ''}
+                  <div className="text-white/70 text-sm mt-0.5 flex items-center gap-1.5 flex-wrap">
+                    {currentTeam.sport_type && <span>{currentTeam.sport_type}</span>}
+                    {currentTeam.age_category && <span className="bg-white/20 rounded-lg px-1.5 py-0.5 text-xs font-bold">{currentTeam.age_category}</span>}
+                    {currentTeam.city && <span className="text-white/50">· {currentTeam.city}</span>}
                   </div>
                   {currentTeam.joinedAt && (
                     <div className="text-white/50 text-xs mt-1.5 flex items-center gap-1">
@@ -318,7 +338,7 @@ export default function DashboardPage() {
                 {currentTeam.myRole === 'owner' && (
                   <>
                     <button
-                      onClick={() => { setShowTeamMenu(false); setConfirmAction({ type: 'leave', teamId: currentTeam.id, teamName: currentTeam.name }) }}
+                      onClick={() => openTransferModal()}
                       className="w-full flex items-center gap-2.5 px-4 py-3 text-sm text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer border-none bg-transparent text-right">
                       <LogOut size={15}/> الخروج من الفريق
                     </button>
@@ -352,58 +372,6 @@ export default function DashboardPage() {
                 <div className="text-xs text-slate-400">بكود الدعوة</div>
               </div>
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Quick attendance (next 3 events) ── */}
-      {nextEvents.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <div className="icon-box-brand"><Zap size={18} /></div>
-            <h2 className="text-base font-extrabold text-slate-800">سجّل حضورك</h2>
-            <span className="badge badge-gray text-xs">الأحداث القادمة</span>
-          </div>
-          <div className="space-y-3">
-            {nextEvents.map((item, i) => {
-              const cfg    = EVENT_CONFIG[item.event.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
-              const locked = isEventLocked(item.event.start_datetime)
-              return (
-                <div key={i} className={`card border-r-4 ${cfg.borderClass} animate-scale-in`}>
-                  <div className="flex items-start justify-between gap-3 mb-4">
-                    <div className="flex items-start gap-3 flex-1 min-w-0">
-                      <div className="text-3xl flex-shrink-0 mt-0.5">{cfg.icon}</div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-extrabold text-base text-slate-900 truncate">{item.event.title}</span>
-                          {locked && <span className="badge badge-red">مغلق</span>}
-                        </div>
-                        <div className="flex items-center gap-1.5 text-sm text-slate-500 mt-1">
-                          <Calendar size={13} className="flex-shrink-0" />
-                          <span>{formatDate(item.event.start_datetime)}</span>
-                          <span className="text-slate-300">·</span>
-                          <span className="font-bold text-slate-700">{item.event.start_datetime.slice(11, 16)}</span>
-                        </div>
-                        <div className="text-sm text-slate-400 mt-0.5">📍 {item.team.name}</div>
-                      </div>
-                    </div>
-                    <span className="badge flex-shrink-0 py-1.5 px-3" style={{ background: cfg.bg, color: cfg.color }}>
-                      {cfg.label}
-                    </span>
-                  </div>
-                  <div className="bg-slate-50 rounded-2xl p-3">
-                    <p className="text-sm font-bold text-slate-600 mb-2.5">هل ستحضر هذا الموعد؟</p>
-                    <AttendanceButton status={item.myAtt} locked={locked}
-                      onSelect={s => setAttendance(item.team.id, item.event.id, s, i)} />
-                    {attFeedback?.idx === i && (
-                      <p className={`text-xs font-bold mt-2 text-center ${attFeedback.ok ? 'text-emerald-600' : 'text-red-500'}`}>
-                        {attFeedback.ok ? '✓ تم حفظ حضورك بنجاح' : '✗ خطأ في الحفظ، تحقق من الاتصال وحاول مجدداً'}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
           </div>
         </div>
       )}
@@ -560,6 +528,84 @@ export default function DashboardPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* ── Transfer Ownership & Leave Modal (owner only) ── */}
+      <Modal open={showTransfer} onClose={() => !transferLoading && setShowTransfer(false)}
+        title="🔄 نقل الإدارة ومغادرة الفريق">
+        <div className="space-y-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={16} className="text-amber-600 mt-0.5 flex-shrink-0"/>
+              <p className="text-xs text-amber-700">
+                بما أنك مؤسس الفريق، يجب عليك تحديد عضو آخر لتسليمه إدارة الفريق قبل المغادرة.
+              </p>
+            </div>
+          </div>
+
+          {transferMembers.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-4">لا يوجد أعضاء آخرون يمكن تسليمهم الإدارة.</p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-slate-700">اختر العضو الذي سيتولى إدارة الفريق:</p>
+              <div className="max-h-52 overflow-y-auto space-y-1.5 rounded-xl border border-slate-200 p-2">
+                {transferMembers.map((m: any) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setTransferTarget(m.id)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all cursor-pointer text-right ${
+                      transferTarget === m.id
+                        ? 'bg-brand-50 border-brand-400 text-brand-700'
+                        : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700'
+                    }`}>
+                    <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center text-brand-700 font-bold text-sm flex-shrink-0">
+                      {(m.display_name || m.name || '?').charAt(0)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-sm truncate">{m.display_name || m.name}</div>
+                      <div className="text-xs text-slate-400">{m.role}</div>
+                    </div>
+                    {transferTarget === m.id && <Check size={16} className="text-brand-600 flex-shrink-0"/>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-2 justify-end mt-2">
+            <button className="btn btn-ghost" onClick={() => setShowTransfer(false)} disabled={transferLoading}>إلغاء</button>
+            <button
+              className="btn bg-amber-500 text-white hover:bg-amber-600 border-none"
+              onClick={doTransferAndLeave}
+              disabled={!transferTarget || transferLoading || transferMembers.length === 0}>
+              {transferLoading ? <Spinner size="sm"/> : 'تسليم الإدارة والمغادرة'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Solo Leave → Delete Team Modal ── */}
+      <Modal open={showSoloLeave} onClose={() => !transferLoading && setShowSoloLeave(false)}
+        title="🚪 مغادرة وحذف الفريق">
+        <div className="space-y-4">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={16} className="text-red-600 mt-0.5 flex-shrink-0"/>
+              <p className="text-xs text-red-700">
+                أنت العضو الوحيد في هذا الفريق. بمغادرتك سيُحذف الفريق نهائياً مع جميع بياناته ولن يظهر لأي أحد.
+              </p>
+            </div>
+          </div>
+          <p className="text-sm text-slate-600">
+            هل تريد حذف فريق <strong>"{currentTeam?.name}"</strong> نهائياً؟
+          </p>
+          <div className="flex gap-2 justify-end">
+            <button className="btn btn-ghost" onClick={() => setShowSoloLeave(false)} disabled={transferLoading}>إلغاء</button>
+            <button className="btn btn-danger" onClick={doSoloLeaveDelete} disabled={transferLoading}>
+              {transferLoading ? <Spinner size="sm"/> : 'حذف الفريق نهائياً'}
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   )

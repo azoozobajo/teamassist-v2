@@ -80,7 +80,7 @@ export default function AppLayout() {
     { to: `/team/${teamId}/events`,       icon: Calendar,      label: 'المواعيد' },
     { to: `/team/${teamId}/attendance`,   icon: CheckSquare,   label: 'الحضور',             coachOnly: true },
     { to: `/team/${teamId}/leaves`,       icon: Umbrella,      label: 'الإجازات',           parentHide: true },
-    { to: `/team/${teamId}/players`,      icon: Trophy,        label: 'بطاقات اللاعبين',   coachOnly: true },
+    { to: `/team/${teamId}/players`,      icon: Trophy,        label: 'اللاعبون',           coachOnly: true },
     { to: `/team/${teamId}/points`,       icon: Star,          label: 'النقاط' },
     { to: `/team/${teamId}/chat`,         icon: MessageCircle, label: 'التواصل الداخلي',   badge: unreadDM },
     { to: `/team/${teamId}/announcements`,icon: Bell,          label: 'الإعلانات' },
@@ -333,7 +333,12 @@ export default function AppLayout() {
                             <div className={cn('font-bold truncate text-sm', teamId === t.id ? 'text-brand-700' : 'text-slate-800')}>
                               {t.name}
                             </div>
-                            <div className="text-xs text-slate-400">{ROLE_LABELS[t.myRole] || t.myRole}</div>
+                            <div className="flex items-center gap-1 flex-wrap mt-0.5">
+                              <span className="text-xs text-slate-400">{ROLE_LABELS[t.myRole] || t.myRole}</span>
+                              {t.sport_type && <span className="text-slate-300">·</span>}
+                              {t.sport_type && <span className="text-xs text-slate-500">{t.sport_type}</span>}
+                              {t.age_category && <span className="text-[10px] bg-slate-100 text-slate-500 rounded px-1 font-bold">{t.age_category}</span>}
+                            </div>
                           </div>
                           {teamId === t.id && (
                             <div className="w-2 h-2 rounded-full bg-brand-500 flex-shrink-0" />

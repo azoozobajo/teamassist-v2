@@ -75,6 +75,9 @@ export const teamService = {
   async leaveSelf(teamId: string, _userId: string) {
     return supabase.rpc('leave_team', { p_team_id: teamId })
   },
+  async transferOwnership(teamId: string, newOwnerMemberId: string) {
+    return supabase.from('team_members').update({ role: 'owner' }).eq('id', newOwnerMemberId).eq('team_id', teamId)
+  },
   async getMyRole(teamId: string, userId: string) {
     const { data } = await supabase.from('team_members').select('role')
       .eq('team_id', teamId).eq('user_id', userId).eq('status', 'active').single()
@@ -449,15 +452,30 @@ export const leaveService = {
 
 // ── COACH NOTES ───────────────────────────────────────────────────────
 export const noteService = {
-  async getPlayerNotes(teamId: string, playerId: string) {
+  // Coach sees only their own notes for a player
+  async getPlayerNotesForCoach(teamId: string, playerId: string, coachId: string) {
     const { data } = await supabase.from('coach_notes')
-      .select('*, coach:profiles(*)')
+      .select('*, coach:profiles(id, full_name, avatar_url)')
+      .eq('team_id', teamId).eq('player_id', playerId).eq('coach_id', coachId)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+  // Player sees all notes written for them (by any coach/admin)
+  async getMyNotes(teamId: string, playerId: string) {
+    const { data } = await supabase.from('coach_notes')
+      .select('*, coach:profiles(id, full_name, avatar_url)')
       .eq('team_id', teamId).eq('player_id', playerId)
       .order('created_at', { ascending: false })
     return data ?? []
   },
   async create(data: any) {
     return supabase.from('coach_notes').insert(data).select().single()
+  },
+  async addPlayerReply(noteId: string, reply: string) {
+    return supabase.from('coach_notes').update({
+      player_reply: reply,
+      player_replied_at: new Date().toISOString()
+    }).eq('id', noteId)
   },
   async markRead(playerId: string, teamId: string) {
     return supabase.from('coach_notes')
@@ -518,6 +536,11 @@ export const pointsService = {
   },
   async createCompetition(data: any) {
     return supabase.from('competitions').insert(data).select().single()
+  },
+  async getUserPointsTotal(teamId: string, userId: string) {
+    const { data } = await supabase.from('points_transactions')
+      .select('points').eq('team_id', teamId).eq('user_id', userId)
+    return (data ?? []).reduce((s: number, r: any) => s + (r.points || 0), 0)
   }
 }
 
@@ -864,6 +887,13 @@ export const medicalService = {
   async getMyReports(teamId: string, userId: string) {
     const { data } = await supabase.from('medical_reports')
       .select('*').eq('team_id', teamId).eq('player_id', userId)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+  async getPlayerReports(teamId: string, playerId: string) {
+    const { data } = await supabase.from('medical_reports')
+      .select('*, player:profiles!player_id(id, full_name, avatar_url), submitter:profiles!submitted_by(full_name)')
+      .eq('team_id', teamId).eq('player_id', playerId)
       .order('created_at', { ascending: false })
     return data ?? []
   },

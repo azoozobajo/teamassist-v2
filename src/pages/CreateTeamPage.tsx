@@ -9,7 +9,7 @@ export default function CreateTeamPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [form, setForm] = useState({
-    name: '', sport_type: 'كرة القدم', age_category: 'تحت 16',
+    name: '', sport_type: 'كرة القدم', age_category: 'فريق أول',
     city: 'جدة', description: '', logo_url: ''
   })
   const [loading, setLoading] = useState(false)
