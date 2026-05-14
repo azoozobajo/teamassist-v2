@@ -1,12 +1,19 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, eventService, leaveService, monthlyStarService } from '../../services'
+import { teamService, eventService, leaveService, monthlyStarService, permissionService } from '../../services'
 import { Spinner, AttendanceButton, Modal, FormField } from '../../components/ui'
-import { formatDate, EVENT_CONFIG, canManageTeam, isEventLocked, ROLE_LABELS } from '../../utils/helpers'
-import { Copy, CheckCircle, Users, Calendar, Umbrella, ChevronLeft, ChevronRight, TrendingUp, Swords, Star } from 'lucide-react'
+import { formatDate, EVENT_CONFIG, canManageTeam, canManageEvents, isEventLocked, ROLE_LABELS } from '../../utils/helpers'
+import { Copy, CheckCircle, Users, Calendar, Umbrella, ChevronLeft, ChevronRight, TrendingUp, Swords, Star, ClipboardList } from 'lucide-react'
 
 const MONTHS = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر']
+
+const ROLE_GROUPS_EVENT: Record<string, string[]> = {
+  'اللاعبون فقط': ['player'],
+  'المدربون فقط': ['head_coach', 'assistant_coach'],
+  'اللاعبون والمدربون': ['player', 'head_coach', 'assistant_coach'],
+  'الإداريون فقط': ['administrator', 'owner'],
+}
 
 export default function TeamDashboard() {
   const { teamId } = useParams()
@@ -19,12 +26,14 @@ export default function TeamDashboard() {
   const [matchResults, setMatchResults] = useState<any[]>([])
   const [leaves, setLeaves]     = useState<any[]>([])
   const [myRole, setMyRole]     = useState('')
+  const [myPerms, setMyPerms]   = useState<string[]>([])
   const [loading, setLoading]   = useState(true)
   const [copied, setCopied]     = useState(false)
   const [nextEvent, setNextEvent] = useState<any>(null)
   const [attStats, setAttStats] = useState({ present: 0, absent: 0, uncertain: 0, late: 0, total: 0 })
   const [weekAtts, setWeekAtts] = useState<Record<string, string>>({})
   const [evIdx, setEvIdx]       = useState(0)
+  const [trackerSummary, setTrackerSummary] = useState<Record<string, Record<string, number>>>({})
 
   // Monthly star
   const [monthlyStar, setMonthlyStar] = useState<any>(undefined)
@@ -34,37 +43,55 @@ export default function TeamDashboard() {
 
   useEffect(() => {
     if (!teamId || !user) return
-    Promise.all([
-      teamService.getTeam(teamId),
-      teamService.getMembers(teamId),
-      eventService.getUpcomingEvents(teamId, 14),
-      teamService.getMyRole(teamId, user.id),
-      leaveService.getAll(teamId),
-      eventService.getMatchResults(teamId),
-      eventService.getWeekEvents(teamId),
-      eventService.getMyAttendance(teamId, user.id),
-      monthlyStarService.getCurrent(teamId),
-    ]).then(([t, m, e, r, l, mr, we, myAttRecords, star]) => {
-      setTeam(t); setMembers(m); setEvents(e); setMyRole(r || ''); setLeaves(l)
+
+    async function load() {
+      const [t, m, e, r, l, mr, we, myAttRecords, star, perms] = await Promise.all([
+        teamService.getTeam(teamId!),
+        teamService.getMembers(teamId!),
+        eventService.getUpcomingEvents(teamId!, 14),
+        teamService.getMyRole(teamId!, user!.id),
+        leaveService.getAll(teamId!),
+        eventService.getMatchResults(teamId!),
+        eventService.getWeekEvents(teamId!),
+        eventService.getMyAttendance(teamId!, user!.id),
+        monthlyStarService.getCurrent(teamId!),
+        permissionService.getUserPermissions(teamId!, user!.id),
+      ])
+
+      setTeam(t); setMembers(m); setMyRole(r || ''); setLeaves(l)
       setMatchResults(mr); setWeekEvents(we)
       setMonthlyStar(star ?? null)
+      setMyPerms(perms as string[])
+      setEvents(e as any[])
 
+      const role = r || ''
+
+      // Determine which events the current user should attend
+      // No canManageEvents shortcut — filter purely by att_group / att_member_ids
+      const isVisible = (ev: any): boolean => {
+        if (ev.att_member_ids?.length > 0) return ev.att_member_ids.includes(user!.id)
+        const allowedRoles = ROLE_GROUPS_EVENT[ev.att_group]
+        if (allowedRoles) return allowedRoles.includes(role)
+        return true // 'الكل' or unknown group → everyone
+      }
+      const myWeekEvs = (we as any[]).filter(isVisible)
+
+      // Auto-set attendance only for user's 7-day events
       const attMap: Record<string, string> = {}
       ;(myAttRecords as any[]).forEach((a: any) => { attMap[a.event_id] = a.status })
 
-      const allAutoEvs = [...(we as any[]), ...(e.length && !(we as any[]).find((w: any) => w.id === e[0].id) ? [e[0]] : [])]
-      const noAtt = allAutoEvs.filter((ev: any) => !attMap[ev.id])
+      const noAtt = myWeekEvs.filter((ev: any) => !attMap[ev.id])
       if (noAtt.length > 0) {
         noAtt.forEach((ev: any) => { attMap[ev.id] = 'present' })
         noAtt.forEach((ev: any) => {
-          eventService.setAttendance({ event_id: ev.id, team_id: teamId, user_id: user.id, status: 'present' })
+          eventService.setAttendance({ event_id: ev.id, team_id: teamId, user_id: user!.id, status: 'present' })
         })
       }
       setWeekAtts(attMap)
 
-      if (e.length) {
-        setNextEvent(e[0])
-        eventService.getAttendance(e[0].id).then(att => {
+      if (myWeekEvs.length) {
+        setNextEvent(myWeekEvs[0])
+        eventService.getAttendance(myWeekEvs[0].id).then(att => {
           setAttStats({
             present:   att.filter((a: any) => a.status === 'present').length,
             absent:    att.filter((a: any) => a.status === 'absent').length,
@@ -74,8 +101,23 @@ export default function TeamDashboard() {
           })
         })
       }
+
+      // Load tracker summary only for managers / those with attendance permissions
+      const canTrack = canManageEvents(role)
+        || (perms as string[]).includes('view_attendance')
+        || (perms as string[]).includes('manage_attendance')
+      if (canTrack) {
+        const evIds = (e as any[]).map((ev: any) => ev.id)
+        if (evIds.length > 0) {
+          const summary = await eventService.getAttendanceSummary(teamId!, evIds)
+          setTrackerSummary(summary)
+        }
+      }
+
       setLoading(false)
-    })
+    }
+
+    load()
   }, [teamId, user])
 
   const matchStats = useMemo(() => {
@@ -118,15 +160,29 @@ export default function TeamDashboard() {
   if (loading) return <div className="flex justify-center py-16"><Spinner size="lg" /></div>
   if (!team)   return <div className="card text-center py-10 text-slate-400">الفريق غير موجود</div>
 
+  // ── Computed ──
+  // Filter purely by att_group / att_member_ids — no role-based bypass
+  function isEventForMe(ev: any): boolean {
+    if (ev.att_member_ids?.length > 0) return ev.att_member_ids.includes(user?.id)
+    const allowedRoles = ROLE_GROUPS_EVENT[ev.att_group]
+    if (allowedRoles) return allowedRoles.includes(myRole)
+    return true
+  }
+  // Carousel shows only the user's events for the next 7 days
+  const myWeekEvents = weekEvents.filter(isEventForMe)
+  const myWeekCount  = myWeekEvents.length
+
   const pending    = leaves.filter(l => l.status === 'pending')
   const isAdmin    = canManageTeam(myRole)
+  const canTrackAttendance = canManageEvents(myRole)
+    || myPerms.includes('view_attendance')
+    || myPerms.includes('manage_attendance')
   const now        = new Date()
   const isRevealed = monthlyStar?.announced_at && new Date(monthlyStar.announced_at) <= now
   const monthName  = MONTHS[now.getMonth()]
-  const weekCount  = weekEvents.length
 
-  // Carousel: all upcoming events
-  const carouselEvs = events
+  // Carousel: user's events for the next 7 days only
+  const carouselEvs = myWeekEvents
   const curEv       = carouselEvs[evIdx] || null
   const curCfg      = curEv ? (EVENT_CONFIG[curEv.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other) : null
   const curLocked   = curEv ? isEventLocked(curEv.start_datetime) : false
@@ -218,7 +274,6 @@ export default function TeamDashboard() {
                 </button>
               </>
             ) : (
-              /* Non-admin, no star: show team logo */
               <div className="w-16 h-16 rounded-2xl bg-white/25 flex items-center justify-center text-2xl font-extrabold overflow-hidden border-2 border-white/30">
                 {team.logo_url
                   ? <img src={team.logo_url} className="w-full h-full object-cover" alt={team.name}/>
@@ -249,9 +304,9 @@ export default function TeamDashboard() {
         </div>
         <div className="bg-white rounded-2xl border border-slate-100 p-3 text-center cursor-pointer hover:border-purple-200 transition-all"
           onClick={() => navigate(`/team/${teamId}/events`)}>
-          <div className="text-xl font-extrabold text-purple-600">{weekCount}</div>
+          <div className="text-xl font-extrabold text-purple-600">{myWeekCount}</div>
           <div className="text-[11px] text-slate-400 mt-0.5 font-bold flex items-center justify-center gap-1">
-            <Calendar size={10}/> مواعيد 7 أيام
+            <Calendar size={10}/> مواعيدي 7 أيام
           </div>
         </div>
         <div className={`rounded-2xl border p-3 text-center cursor-pointer transition-all ${
@@ -304,14 +359,14 @@ export default function TeamDashboard() {
         </div>
       )}
 
-      {/* ── Events Carousel ── */}
+      {/* ── Section 1: التحضير السريع (user's events only) ── */}
       {carouselEvs.length > 0 ? (
         <div className="card p-0 overflow-hidden">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
             <div className="flex items-center gap-2">
               <Calendar size={15} className="text-brand-600"/>
-              <span className="font-extrabold text-slate-800 text-sm">المواعيد القادمة</span>
+              <span className="font-extrabold text-slate-800 text-sm">التحضير السريع</span>
             </div>
             <div className="flex items-center gap-1.5">
               <span className="text-xs text-slate-400 font-mono">{evIdx + 1}/{carouselEvs.length}</span>
@@ -359,7 +414,7 @@ export default function TeamDashboard() {
                 </div>
               </div>
 
-              {/* Attendance stats — only for the first/next event (admin view) */}
+              {/* Attendance stats — first event only */}
               {isFirstEv && attStats.total > 0 && (
                 <div className="grid grid-cols-4 gap-2 mb-3">
                   {[
@@ -405,10 +460,84 @@ export default function TeamDashboard() {
       ) : (
         <div className="card text-center py-6">
           <Calendar size={28} className="text-slate-300 mx-auto mb-2"/>
-          <p className="text-sm text-slate-400">لا توجد مواعيد قادمة</p>
+          <p className="text-sm font-bold text-slate-500">لا يوجد لديك أي موعد خلال الأسبوع القادم</p>
+          <p className="text-xs text-slate-400 mt-1">ستظهر هنا المواعيد التي تخصّك فور إضافتها</p>
           {isAdmin && (
             <button onClick={() => navigate(`/team/${teamId}/events`)}
-              className="btn btn-ghost btn-sm mt-2">إضافة موعد</button>
+              className="btn btn-ghost btn-sm mt-3">إضافة موعد</button>
+          )}
+        </div>
+      )}
+
+      {/* ── Section 2: متابعة حضور الفريق (managers / view_attendance permission) ── */}
+      {canTrackAttendance && (
+        <div className="card p-0 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <ClipboardList size={15} className="text-brand-600"/>
+              <span className="font-extrabold text-slate-800 text-sm">متابعة حضور الفريق</span>
+            </div>
+            <button
+              onClick={() => navigate(`/team/${teamId}/attendance`)}
+              className="text-xs text-brand-600 font-bold bg-transparent border-none cursor-pointer hover:underline">
+              عرض الكل
+            </button>
+          </div>
+
+          {/* Legend row */}
+          <div className="flex items-center gap-3 px-4 py-2 bg-slate-50 border-b border-slate-100 text-[10px] font-bold">
+            <span className="flex-1 text-slate-400">الموعد</span>
+            <span className="w-7 text-center text-emerald-600">✓</span>
+            <span className="w-7 text-center text-orange-500">⏱</span>
+            <span className="w-7 text-center text-amber-600">?</span>
+            <span className="w-7 text-center text-red-500">✗</span>
+          </div>
+
+          {events.length === 0 ? (
+            <div className="text-center py-6 text-slate-400 text-sm px-4">
+              لا توجد مواعيد قادمة للفريق
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-50">
+              {events.slice(0, 6).map(ev => {
+                const cfg    = EVENT_CONFIG[ev.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
+                const counts = trackerSummary[ev.id] || {}
+                const total  = Object.values(counts).reduce((s: number, n: any) => s + n, 0)
+                return (
+                  <button key={ev.id}
+                    onClick={() => navigate(`/team/${teamId}/attendance`)}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-right">
+                    <span className="text-lg flex-shrink-0">{cfg.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-bold text-slate-800 truncate">{ev.title}</div>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        {formatDate(ev.start_datetime)} · {ev.start_datetime.slice(11, 16)}
+                      </div>
+                    </div>
+                    {total > 0 ? (
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <span className="w-7 text-center py-0.5 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-black">{counts.present || 0}</span>
+                        <span className="w-7 text-center py-0.5 bg-orange-50 text-orange-700 rounded-lg text-xs font-black">{counts.late || 0}</span>
+                        <span className="w-7 text-center py-0.5 bg-amber-50 text-amber-700 rounded-lg text-xs font-black">{counts.uncertain || 0}</span>
+                        <span className="w-7 text-center py-0.5 bg-red-50 text-red-600 rounded-lg text-xs font-black">{counts.absent || 0}</span>
+                      </div>
+                    ) : (
+                      <span className="text-[11px] text-slate-300 flex-shrink-0 font-bold">لم يُسجّل</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {events.length > 6 && (
+            <div className="px-4 py-2.5 border-t border-slate-100">
+              <button
+                onClick={() => navigate(`/team/${teamId}/attendance`)}
+                className="w-full text-xs text-brand-600 font-bold bg-transparent border-none cursor-pointer text-center hover:underline">
+                عرض جميع المواعيد ({events.length})
+              </button>
+            </div>
           )}
         </div>
       )}

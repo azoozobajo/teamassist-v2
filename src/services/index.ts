@@ -284,6 +284,52 @@ export const eventService = {
     const map: Record<string, string> = {}
     ;(data ?? []).forEach((a: any) => { map[a.event_id] = a.status })
     return map
+  },
+  async getAttendanceSummary(teamId: string, eventIds: string[]): Promise<Record<string, Record<string, number>>> {
+    if (!eventIds.length) return {}
+    const { data } = await supabase.from('attendance')
+      .select('event_id, status').eq('team_id', teamId).in('event_id', eventIds)
+    const s: Record<string, Record<string, number>> = {}
+    ;(data ?? []).forEach((r: any) => {
+      if (!s[r.event_id]) s[r.event_id] = {}
+      s[r.event_id][r.status] = (s[r.event_id][r.status] || 0) + 1
+    })
+    return s
+  },
+  async bulkDeleteEvents(eventIds: string[]) {
+    if (!eventIds.length) return
+    return supabase.from('events').delete().in('id', eventIds)
+  },
+  async bulkUpdateEventTimes(eventIds: string[], newStartTime: string, newEndTime: string) {
+    if (!eventIds.length) return
+    const { data: evs } = await supabase.from('events')
+      .select('id, start_datetime').in('id', eventIds)
+    if (!evs?.length) return
+    const updates = evs.map((e: any) => ({
+      id: e.id,
+      start_datetime: `${e.start_datetime.slice(0, 10)}T${newStartTime}:00`,
+      end_datetime: newEndTime ? `${e.start_datetime.slice(0, 10)}T${newEndTime}:00` : null,
+      updated_at: new Date().toISOString()
+    }))
+    return supabase.from('events').upsert(updates)
+  }
+}
+
+// ── CALENDAR MARKERS ──────────────────────────────────────────────────
+export const calendarMarkerService = {
+  async getAll(teamId: string) {
+    const { data } = await supabase.from('calendar_markers').select('*')
+      .eq('team_id', teamId).order('start_date')
+    return data ?? []
+  },
+  async create(data: any) {
+    return supabase.from('calendar_markers').insert(data).select().single()
+  },
+  async update(id: string, data: any) {
+    return supabase.from('calendar_markers').update(data).eq('id', id)
+  },
+  async delete(id: string) {
+    return supabase.from('calendar_markers').delete().eq('id', id)
   }
 }
 

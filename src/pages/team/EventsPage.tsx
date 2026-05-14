@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2 } from 'lucide-react'
+import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2, Tag, CalendarDays } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { eventService, teamService, notificationService } from '../../services'
+import { eventService, teamService, notificationService, calendarMarkerService } from '../../services'
 import { Spinner, PageHeader, EmptyState, Modal, FormField, Tabs, AttendanceButton } from '../../components/ui'
 import { EVENT_CONFIG, WEEK_DAYS, canManageEvents, formatDate, isEventLocked } from '../../utils/helpers'
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay } from 'date-fns'
@@ -11,6 +11,17 @@ import { arSA } from 'date-fns/locale'
 const EVENT_TYPES = ['training','match','meeting','camp','other']
 const ATT_GROUPS = ['الكل','اللاعبون فقط','المدربون فقط','اللاعبون والمدربون','الإداريون فقط','مجموعة مخصصة']
 const HOME_AWAY_LABEL: Record<string, string> = { home: '🏟️ ملعبنا', away: '🚌 ملعب المنافس', neutral: '⚖️ أرض محايدة' }
+
+const MARKER_COLORS = [
+  { label: 'أزرق',   value: '#3B82F6' },
+  { label: 'أخضر',   value: '#10B981' },
+  { label: 'أحمر',   value: '#EF4444' },
+  { label: 'برتقالي',value: '#F97316' },
+  { label: 'بنفسجي', value: '#8B5CF6' },
+  { label: 'وردي',   value: '#EC4899' },
+  { label: 'أصفر',   value: '#F59E0B' },
+  { label: 'رمادي',  value: '#6B7280' },
+]
 
 export default function EventsPage() {
   const { teamId } = useParams()
@@ -33,9 +44,30 @@ export default function EventsPage() {
   const [editForm, setEditForm] = useState<any>({})
   const [saving, setSaving] = useState(false)
 
+  // Calendar markers
+  const [markers, setMarkers] = useState<any[]>([])
+  const [showMarkerModal, setShowMarkerModal] = useState(false)
+  const [editMarker, setEditMarker] = useState<any>(null)
+  const defaultMarkerForm = { title: '', description: '', color: '#3B82F6', start_date: '', end_date: '' }
+  const [markerForm, setMarkerForm] = useState(defaultMarkerForm)
+  const setMF = (k: string, v: any) => setMarkerForm(p => ({ ...p, [k]: v }))
+  const [markerSaving, setMarkerSaving] = useState(false)
+
+  // Bulk edit
+  const [showBulkEdit, setShowBulkEdit] = useState(false)
+  const [bulkSelGroup, setBulkSelGroup] = useState('')
+  const [bulkMode, setBulkMode] = useState<'all' | 'range' | 'pick'>('all')
+  const [bulkDateFrom, setBulkDateFrom] = useState('')
+  const [bulkDateTo, setBulkDateTo] = useState('')
+  const [bulkPickedIds, setBulkPickedIds] = useState<Set<string>>(new Set())
+  const [bulkAction, setBulkAction] = useState<'delete' | 'reschedule'>('delete')
+  const [bulkNewStartTime, setBulkNewStartTime] = useState('18:00')
+  const [bulkNewEndTime, setBulkNewEndTime] = useState('20:00')
+  const [bulkSaving, setBulkSaving] = useState(false)
+
   const defaultForm = {
     title: '', event_type: 'training', start_datetime: '', end_datetime: '',
-    location: '', map_url: '', att_group: 'الكل', description: '',
+    location: '', map_url: '', att_group: 'اللاعبون فقط', description: '',
     selectedMembers: [] as string[],
     opponent: '', home_away: 'home', match_category: 'friendly', tournament_name: ''
   }
@@ -45,7 +77,7 @@ export default function EventsPage() {
   const defaultRecur = {
     title: '', event_type: 'training', days_of_week: [] as number[],
     start_date: '', end_date: '', start_time: '18:00', end_time: '20:00',
-    location: '', map_url: '', att_group: 'الكل',
+    location: '', map_url: '', att_group: 'اللاعبون فقط',
     selectedMembers: [] as string[]
   }
   const [recurForm, setRecurForm] = useState(defaultRecur)
@@ -56,6 +88,7 @@ export default function EventsPage() {
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
     teamService.getMembers(teamId).then(m => setMembers(m.filter((x: any) => x.role !== 'parent')))
     load()
+    loadMarkers()
   }, [teamId, user])
 
   useEffect(() => {
@@ -71,16 +104,24 @@ export default function EventsPage() {
     setEvents(e); setLoading(false)
   }
 
+  async function loadMarkers() {
+    if (!teamId) return
+    const m = await calendarMarkerService.getAll(teamId)
+    setMarkers(m)
+  }
+
   async function addEvent() {
     if (!form.title.trim() || !form.start_datetime || !teamId) return
     setSaving(true)
-    const memberIds = form.att_group === 'مجموعة مخصصة' && form.selectedMembers.length > 0
+    const isPlayerOnly = form.event_type === 'training' || form.event_type === 'match'
+    const attGroup = isPlayerOnly ? 'اللاعبون فقط' : form.att_group
+    const memberIds = attGroup === 'مجموعة مخصصة' && form.selectedMembers.length > 0
       ? form.selectedMembers : null
     await eventService.createEvent({
       title: form.title, event_type: form.event_type,
       start_datetime: form.start_datetime, end_datetime: form.end_datetime || null,
       location: form.location, map_url: form.map_url,
-      att_group: form.att_group, description: form.description,
+      att_group: attGroup, description: form.description,
       att_member_ids: memberIds, team_id: teamId, created_by: user!.id,
       ...(form.event_type === 'match' ? {
         opponent: form.opponent || null,
@@ -97,9 +138,11 @@ export default function EventsPage() {
   async function addRecurring() {
     if (!recurForm.title.trim() || !recurForm.start_date || !recurForm.end_date || recurForm.days_of_week.length === 0 || !teamId) return
     setSaving(true)
-    const memberIds = recurForm.att_group === 'مجموعة مخصصة' && recurForm.selectedMembers.length > 0
+    const isPlayerOnly = recurForm.event_type === 'training' || recurForm.event_type === 'match'
+    const attGroup = isPlayerOnly ? 'اللاعبون فقط' : recurForm.att_group
+    const memberIds = attGroup === 'مجموعة مخصصة' && recurForm.selectedMembers.length > 0
       ? recurForm.selectedMembers : null
-    const payload = { ...recurForm, att_member_ids: memberIds }
+    const payload = { ...recurForm, att_group: attGroup, att_member_ids: memberIds }
     const result = await eventService.createRecurringEvents(payload, user!.id, teamId)
     if (!result.error) {
       await notificationService.createForTeam(teamId, `جدول متكرر: ${recurForm.title}`, '', 'event', user!.id)
@@ -138,7 +181,7 @@ export default function EventsPage() {
       location: ev.location || '',
       map_url: ev.map_url || '',
       description: ev.description || '',
-      att_group: ev.att_group || 'الكل',
+      att_group: ev.att_group || 'اللاعبون فقط',
       opponent: ev.opponent || '',
       home_away: ev.home_away || 'home',
       match_category: ev.match_category || 'friendly',
@@ -150,6 +193,8 @@ export default function EventsPage() {
   async function saveEdit() {
     if (!editEvent || !teamId || !user) return
     setSaving(true)
+    const isPlayerOnly = editForm.event_type === 'training' || editForm.event_type === 'match'
+    const attGroup = isPlayerOnly ? 'اللاعبون فقط' : editForm.att_group
     await eventService.updateEvent(editEvent.id, {
       title: editForm.title,
       event_type: editForm.event_type,
@@ -158,7 +203,7 @@ export default function EventsPage() {
       location: editForm.location || null,
       map_url: editForm.map_url || null,
       description: editForm.description || null,
-      att_group: editForm.att_group,
+      att_group: attGroup,
       ...(editForm.event_type === 'match' ? {
         opponent: editForm.opponent || null,
         home_away: editForm.home_away,
@@ -182,6 +227,70 @@ export default function EventsPage() {
     setShowResult(null); setResultForm({ goals_for: '', goals_against: '' }); setSaving(false)
   }
 
+  // ── Marker CRUD ───────────────────────────────────────────────────────
+  async function saveMarker() {
+    if (!markerForm.title.trim() || !markerForm.start_date || !markerForm.end_date || !teamId) return
+    setMarkerSaving(true)
+    if (editMarker) {
+      await calendarMarkerService.update(editMarker.id, markerForm)
+    } else {
+      await calendarMarkerService.create({ ...markerForm, team_id: teamId, created_by: user!.id })
+    }
+    await loadMarkers()
+    setEditMarker(null); setMarkerForm(defaultMarkerForm); setMarkerSaving(false)
+  }
+
+  async function deleteMarker(id: string) {
+    await calendarMarkerService.delete(id)
+    await loadMarkers()
+  }
+
+  function openEditMarker(m: any) {
+    setEditMarker(m)
+    setMarkerForm({ title: m.title, description: m.description || '', color: m.color, start_date: m.start_date, end_date: m.end_date })
+  }
+
+  // ── Bulk edit ─────────────────────────────────────────────────────────
+  const recurGroups = (() => {
+    const map: Record<string, { id: string; title: string; events: any[] }> = {}
+    events.forEach(e => {
+      if (!e.recurrence_group_id) return
+      if (!map[e.recurrence_group_id]) map[e.recurrence_group_id] = { id: e.recurrence_group_id, title: e.title, events: [] }
+      map[e.recurrence_group_id].events.push(e)
+    })
+    return Object.values(map)
+  })()
+
+  const bulkGroupEvents = recurGroups.find(g => g.id === bulkSelGroup)?.events || []
+
+  const bulkTargetEvents = (() => {
+    if (!bulkSelGroup) return []
+    const grpEvs = bulkGroupEvents
+    if (bulkMode === 'all') return grpEvs
+    if (bulkMode === 'range') return grpEvs.filter(e =>
+      (!bulkDateFrom || e.start_datetime.slice(0, 10) >= bulkDateFrom) &&
+      (!bulkDateTo   || e.start_datetime.slice(0, 10) <= bulkDateTo)
+    )
+    if (bulkMode === 'pick') return grpEvs.filter(e => bulkPickedIds.has(e.id))
+    return []
+  })()
+
+  async function applyBulkEdit() {
+    if (!bulkTargetEvents.length) return
+    setBulkSaving(true)
+    const ids = bulkTargetEvents.map((e: any) => e.id)
+    if (bulkAction === 'delete') {
+      await eventService.bulkDeleteEvents(ids)
+    } else {
+      await eventService.bulkUpdateEventTimes(ids, bulkNewStartTime, bulkNewEndTime)
+    }
+    await load()
+    setShowBulkEdit(false)
+    setBulkSelGroup(''); setBulkMode('all'); setBulkDateFrom(''); setBulkDateTo('')
+    setBulkPickedIds(new Set()); setBulkAction('delete')
+    setBulkSaving(false)
+  }
+
   const toggleDay = (d: number) =>
     setR('days_of_week', recurForm.days_of_week.includes(d)
       ? recurForm.days_of_week.filter(x => x !== d)
@@ -203,7 +312,7 @@ export default function EventsPage() {
   const isParent = myRole === 'parent'
   const now = new Date()
 
-  // Visibility: coaches/admins see all; others only see events relevant to them
+  // Visibility: training/match are player-only unless explicitly targeted via att_member_ids
   const ROLE_GROUPS: Record<string, string[]> = {
     'اللاعبون فقط': ['player'],
     'المدربون فقط': ['head_coach','assistant_coach'],
@@ -212,10 +321,14 @@ export default function EventsPage() {
   }
   function isEventVisible(e: any): boolean {
     if (canManage) return true
+    // Training and matches are players-only by default
+    if ((e.event_type === 'training' || e.event_type === 'match') && !e.att_member_ids?.length) {
+      return myRole === 'player'
+    }
     if (e.att_member_ids?.length > 0) return e.att_member_ids.includes(user?.id)
     const allowedRoles = ROLE_GROUPS[e.att_group]
     if (allowedRoles) return allowedRoles.includes(myRole)
-    return true // 'الكل' or 'مجموعة مخصصة' with no ids = everyone
+    return true
   }
   const visibleEvents = isParent
     ? events.filter(e => e.event_type === 'match')
@@ -227,6 +340,10 @@ export default function EventsPage() {
   const monthDays = eachDayOfInterval({ start: startOfMonth(calMonth), end: endOfMonth(calMonth) })
   const firstDayOfWeek = getDay(startOfMonth(calMonth))
   const eventsOnDay = (day: Date) => visibleEvents.filter(e => isSameDay(parseISO(e.start_datetime), day))
+  const markersOnDay = (day: Date) => markers.filter(m => {
+    const d = format(day, 'yyyy-MM-dd')
+    return d >= m.start_date && d <= m.end_date
+  })
   const arDays = ['أح','إث','ثل','أر','خم','جم','سب']
 
   const MemberPicker = ({ which }: { which: 'form' | 'recur' }) => {
@@ -277,6 +394,38 @@ export default function EventsPage() {
     </div>
   )
 
+  // Att group selector — hidden for training/match (forced to players only)
+  const AttGroupField = ({ type, val, onChange, selectedMembers, onMemberToggle }: {
+    type: string; val: string; onChange: (v: string) => void; selectedMembers: string[]
+    onMemberToggle: (uid: string) => void
+  }) => {
+    if (type === 'training' || type === 'match') {
+      return (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-2.5 text-xs text-blue-700 flex items-center gap-1.5">
+          <Users size={12}/>
+          التمارين والمباريات تظهر للاعبين فقط بشكل تلقائي
+        </div>
+      )
+    }
+    return (
+      <>
+        <FormField label="من يسجل الحضور؟">
+          <select className="form-input" value={val} onChange={e => onChange(e.target.value)}>
+            {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
+          </select>
+        </FormField>
+        {val === 'مجموعة مخصصة' && (
+          <FormField label="الأعضاء المدعوون">
+            <MemberPicker which={type === 'form' as any ? 'form' : 'recur'}/>
+            {selectedMembers.length === 0 && (
+              <p className="text-xs text-amber-600 mt-1">⚠️ اختر عضواً واحداً على الأقل</p>
+            )}
+          </FormField>
+        )}
+      </>
+    )
+  }
+
   // Match result badge
   const ResultBadge = ({ e }: { e: any }) => {
     if (e.goals_for === null || e.goals_for === undefined) return null
@@ -295,7 +444,13 @@ export default function EventsPage() {
     <div>
       <PageHeader title="المواعيد"
         action={canManage && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowMarkerModal(true)}>
+              <Tag size={13}/> علامات
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowBulkEdit(true)}>
+              <Edit2 size={13}/> تعديل مكررة
+            </button>
             <button className="btn btn-ghost btn-sm" onClick={() => setShowRecurring(true)}>
               <Repeat size={13}/> متكرر
             </button>
@@ -312,6 +467,25 @@ export default function EventsPage() {
             className={`btn btn-sm ${view === v ? 'btn-primary' : 'btn-ghost'}`}>{l}</button>
         ))}
       </div>
+
+      {/* Marker legend (if any visible in current month) */}
+      {markers.length > 0 && view === 'calendar' && (() => {
+        const monthStart = format(startOfMonth(calMonth), 'yyyy-MM-dd')
+        const monthEnd   = format(endOfMonth(calMonth), 'yyyy-MM-dd')
+        const visible = markers.filter(m => m.start_date <= monthEnd && m.end_date >= monthStart)
+        if (!visible.length) return null
+        return (
+          <div className="flex flex-wrap gap-2 mb-3">
+            {visible.map(m => (
+              <span key={m.id} className="flex items-center gap-1.5 text-xs font-bold px-2 py-1 rounded-full"
+                style={{ background: m.color + '22', color: m.color, border: `1px solid ${m.color}55` }}>
+                <span className="w-2 h-2 rounded-full inline-block" style={{ background: m.color }}/>
+                {m.title}
+              </span>
+            ))}
+          </div>
+        )
+      })()}
 
       {loading ? <div className="flex justify-center py-10"><Spinner/></div> : (
         <>
@@ -330,11 +504,20 @@ export default function EventsPage() {
                 {Array(firstDayOfWeek).fill(null).map((_,i) => <div key={`e${i}`}/>)}
                 {monthDays.map(day => {
                   const dayEvs = eventsOnDay(day)
+                  const dayMarkers = markersOnDay(day)
                   const isToday = isSameDay(day, now)
                   return (
                     <div key={day.toISOString()}
-                      className={`min-h-[52px] rounded-xl p-1 cursor-pointer transition-colors ${isToday ? 'bg-brand-50 ring-1 ring-brand-400' : dayEvs.length ? 'hover:bg-slate-50' : ''}`}
-                      onClick={() => dayEvs.length && setShowDetail({ date: day, events: dayEvs })}>
+                      className={`min-h-[56px] rounded-xl p-1 cursor-pointer transition-colors ${isToday ? 'bg-brand-50 ring-1 ring-brand-400' : dayEvs.length ? 'hover:bg-slate-50' : ''}`}
+                      onClick={() => (dayEvs.length || dayMarkers.length) && setShowDetail({ date: day, events: dayEvs, markers: dayMarkers })}>
+                      {/* Marker bars */}
+                      {dayMarkers.length > 0 && (
+                        <div className="flex flex-col gap-px mb-0.5 -mx-1 px-0.5">
+                          {dayMarkers.slice(0, 2).map(m => (
+                            <div key={m.id} className="h-1 rounded-sm" style={{ background: m.color }} title={m.title}/>
+                          ))}
+                        </div>
+                      )}
                       <div className={`text-xs font-bold mb-0.5 text-center ${isToday ? 'text-brand-600' : 'text-slate-600'}`}>
                         {day.getDate()}
                       </div>
@@ -363,7 +546,7 @@ export default function EventsPage() {
                       const hasResult = e.goals_for !== null && e.goals_for !== undefined
                       return (
                         <div key={e.id} className={`card mb-0 border-r-4 ${c.borderClass} cursor-pointer hover:shadow-md transition-all`}
-                          onClick={() => setShowDetail({ date: parseISO(e.start_datetime), events: [e] })}>
+                          onClick={() => setShowDetail({ date: parseISO(e.start_datetime), events: [e], markers: [] })}>
                           <div className="flex items-center gap-3">
                             <span className="text-2xl flex-shrink-0">{c.icon}</span>
                             <div className="flex-1 min-w-0">
@@ -381,7 +564,6 @@ export default function EventsPage() {
                                   {e.map_url && <a href={e.map_url} target="_blank" rel="noreferrer" className="text-blue-500 underline mr-1" onClick={ev => ev.stopPropagation()}>خريطة</a>}
                                 </div>
                               )}
-                              {/* Match-specific info */}
                               {e.event_type === 'match' && e.opponent && (
                                 <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                                   <span className="text-xs text-slate-600 font-bold">ضد: {e.opponent}</span>
@@ -395,9 +577,7 @@ export default function EventsPage() {
                                   )}
                                 </div>
                               )}
-                              {/* Result badge */}
                               {e.event_type === 'match' && <div className="mt-1"><ResultBadge e={e}/></div>}
-                              {/* Edit + Result buttons */}
                               <div className="flex items-center gap-2 mt-1.5">
                                 {canManage && (
                                   <button onClick={ev => { ev.stopPropagation(); openEdit(e) }}
@@ -433,6 +613,20 @@ export default function EventsPage() {
       {/* ── Day detail modal ── */}
       <Modal open={!!showDetail} onClose={() => setShowDetail(null)}
         title={showDetail ? format(showDetail.date,'EEEE d MMMM yyyy',{locale:arSA}) : ''}>
+        {/* Marker info in day detail */}
+        {showDetail?.markers?.length > 0 && (
+          <div className="space-y-1.5 mb-3">
+            {showDetail.markers.map((m: any) => (
+              <div key={m.id} className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold"
+                style={{ background: m.color + '18', color: m.color, border: `1px solid ${m.color}44` }}>
+                <Tag size={11}/>
+                <span>{m.title}</span>
+                {m.description && <span className="font-normal opacity-70">— {m.description}</span>}
+                <span className="font-normal opacity-60 mr-auto">{m.start_date} ← {m.end_date}</span>
+              </div>
+            ))}
+          </div>
+        )}
         {showDetail?.events.map((e: any) => {
           const c = EVENT_CONFIG[e.event_type as keyof typeof EVENT_CONFIG] || EVENT_CONFIG.other
           const isPast = new Date(e.start_datetime) < now
@@ -453,16 +647,11 @@ export default function EventsPage() {
                       {e.map_url && <a href={e.map_url} target="_blank" rel="noreferrer" className="text-blue-500 underline mr-1">خريطة</a>}
                     </div>
                   )}
-                  {/* Match details */}
                   {e.event_type === 'match' && (
                     <div className="mt-2 bg-slate-50 rounded-xl p-2.5 space-y-1">
-                      {e.opponent && (
-                        <div className="text-xs font-bold text-slate-700">⚔️ ضد: {e.opponent}</div>
-                      )}
+                      {e.opponent && <div className="text-xs font-bold text-slate-700">⚔️ ضد: {e.opponent}</div>}
                       <div className="text-xs text-slate-500">{HOME_AWAY_LABEL[e.home_away] || ''}</div>
-                      {e.tournament_name && (
-                        <div className="text-xs text-blue-600 font-bold">🏆 {e.tournament_name}</div>
-                      )}
+                      {e.tournament_name && <div className="text-xs text-blue-600 font-bold">🏆 {e.tournament_name}</div>}
                       {hasResult
                         ? <div className="pt-1"><ResultBadge e={e}/></div>
                         : isPast && canManage && (
@@ -492,7 +681,6 @@ export default function EventsPage() {
                   </div>
                 )}
               </div>
-              {/* Attendance buttons */}
               <div className="bg-slate-50 rounded-xl p-2.5 mt-3">
                 <p className="text-xs font-bold text-slate-500 mb-2">هل ستحضر؟</p>
                 <AttendanceButton
@@ -504,6 +692,9 @@ export default function EventsPage() {
             </div>
           )
         })}
+        {showDetail?.events.length === 0 && showDetail?.markers?.length > 0 && (
+          <div className="text-center py-6 text-slate-400 text-sm">لا توجد مواعيد في هذا اليوم</div>
+        )}
       </Modal>
 
       {/* ── Delete confirm ── */}
@@ -532,10 +723,12 @@ export default function EventsPage() {
           <input className="form-input" value={form.title} onChange={e => setF('title',e.target.value)} placeholder="تدريب أسبوعي"/>
         </FormField>
         <FormField label="النوع">
-          <EventTypeSelector val={form.event_type} onChange={v => setF('event_type',v)}/>
+          <EventTypeSelector val={form.event_type} onChange={v => {
+            setF('event_type', v)
+            if (v === 'training' || v === 'match') setF('att_group', 'اللاعبون فقط')
+          }}/>
         </FormField>
 
-        {/* Match-specific fields */}
         {form.event_type === 'match' && (
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
             <p className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
@@ -581,22 +774,14 @@ export default function EventsPage() {
         <FormField label="رابط Google Maps">
           <input className="form-input" value={form.map_url} onChange={e => setF('map_url',e.target.value)} placeholder="https://maps.google.com/..."/>
         </FormField>
-        <FormField label="من يسجل الحضور؟">
-          <select className="form-input" value={form.att_group} onChange={e => setF('att_group',e.target.value)}>
-            {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
-          </select>
-        </FormField>
-        {form.att_group === 'مجموعة مخصصة' && (
-          <FormField label="اختر الأعضاء المدعوون لهذا الموعد">
-            <MemberPicker which="form"/>
-            {form.selectedMembers.length === 0 && (
-              <p className="text-xs text-amber-600 mt-1">⚠️ اختر عضواً واحداً على الأقل</p>
-            )}
-          </FormField>
-        )}
+        <AttGroupField
+          type={form.event_type} val={form.att_group} onChange={v => setF('att_group', v)}
+          selectedMembers={form.selectedMembers} onMemberToggle={uid => toggleMember(uid, 'form')}
+        />
         <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowAdd(false)}>إلغاء</button>
-          <button className="btn btn-primary" onClick={addEvent} disabled={saving || (form.att_group==='مجموعة مخصصة' && form.selectedMembers.length===0)}>
+          <button className="btn btn-primary" onClick={addEvent}
+            disabled={saving || (form.att_group==='مجموعة مخصصة' && form.selectedMembers.length===0 && form.event_type !== 'training' && form.event_type !== 'match')}>
             {saving ? <Spinner size="sm"/> : 'إضافة'}
           </button>
         </div>
@@ -612,7 +797,10 @@ export default function EventsPage() {
           <input className="form-input" value={recurForm.title} onChange={e => setR('title',e.target.value)} placeholder="تدريب أسبوعي"/>
         </FormField>
         <FormField label="النوع">
-          <EventTypeSelector val={recurForm.event_type} onChange={v => setR('event_type',v)}/>
+          <EventTypeSelector val={recurForm.event_type} onChange={v => {
+            setR('event_type', v)
+            if (v === 'training' || v === 'match') setR('att_group', 'اللاعبون فقط')
+          }}/>
         </FormField>
         <FormField label="أيام التكرار" required>
           <div className="flex flex-wrap gap-2">
@@ -646,20 +834,14 @@ export default function EventsPage() {
         <FormField label="رابط Google Maps">
           <input className="form-input" value={recurForm.map_url} onChange={e => setR('map_url',e.target.value)} placeholder="https://maps.google.com/..."/>
         </FormField>
-        <FormField label="من يسجل الحضور؟">
-          <select className="form-input" value={recurForm.att_group} onChange={e => setR('att_group',e.target.value)}>
-            {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
-          </select>
-        </FormField>
-        {recurForm.att_group === 'مجموعة مخصصة' && (
-          <FormField label="الأعضاء المدعوون لكل هذه المواعيد">
-            <MemberPicker which="recur"/>
-          </FormField>
-        )}
+        <AttGroupField
+          type={recurForm.event_type} val={recurForm.att_group} onChange={v => setR('att_group', v)}
+          selectedMembers={recurForm.selectedMembers} onMemberToggle={uid => toggleMember(uid, 'recur')}
+        />
         <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowRecurring(false)}>إلغاء</button>
           <button className="btn btn-primary" onClick={addRecurring}
-            disabled={saving || recurForm.days_of_week.length===0 || (recurForm.att_group==='مجموعة مخصصة' && recurForm.selectedMembers.length===0)}>
+            disabled={saving || recurForm.days_of_week.length===0 || (recurForm.att_group==='مجموعة مخصصة' && recurForm.selectedMembers.length===0 && recurForm.event_type !== 'training' && recurForm.event_type !== 'match')}>
             {saving ? <Spinner size="sm"/> : <><Repeat size={13}/> إنشاء الجدول</>}
           </button>
         </div>
@@ -728,7 +910,10 @@ export default function EventsPage() {
               <input className="form-input" value={editForm.title} onChange={e => setEditForm((p: any) => ({ ...p, title: e.target.value }))}/>
             </FormField>
             <FormField label="النوع">
-              <EventTypeSelector val={editForm.event_type} onChange={v => setEditForm((p: any) => ({ ...p, event_type: v }))}/>
+              <EventTypeSelector val={editForm.event_type} onChange={v => setEditForm((p: any) => ({
+                ...p, event_type: v,
+                att_group: (v === 'training' || v === 'match') ? 'اللاعبون فقط' : p.att_group
+              }))}/>
             </FormField>
             {editForm.event_type === 'match' && (
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
@@ -772,11 +957,18 @@ export default function EventsPage() {
             <FormField label="رابط خريطة">
               <input className="form-input" value={editForm.map_url} onChange={e => setEditForm((p: any) => ({ ...p, map_url: e.target.value }))} placeholder="https://maps.google.com/..."/>
             </FormField>
-            <FormField label="من يسجل الحضور؟">
-              <select className="form-input" value={editForm.att_group} onChange={e => setEditForm((p: any) => ({ ...p, att_group: e.target.value }))}>
-                {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
-              </select>
-            </FormField>
+            {(editForm.event_type !== 'training' && editForm.event_type !== 'match') ? (
+              <FormField label="من يسجل الحضور؟">
+                <select className="form-input" value={editForm.att_group} onChange={e => setEditForm((p: any) => ({ ...p, att_group: e.target.value }))}>
+                  {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
+                </select>
+              </FormField>
+            ) : (
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-2.5 text-xs text-blue-700 flex items-center gap-1.5">
+                <Users size={12}/>
+                التمارين والمباريات تظهر للاعبين فقط بشكل تلقائي
+              </div>
+            )}
             <div className="flex gap-2 justify-end mt-4">
               <button className="btn btn-ghost" onClick={() => setEditEvent(null)}>إلغاء</button>
               <button className="btn btn-primary" onClick={saveEdit} disabled={saving || !editForm.title.trim()}>
@@ -784,6 +976,210 @@ export default function EventsPage() {
               </button>
             </div>
           </>
+        )}
+      </Modal>
+
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* CALENDAR MARKERS MODAL                                            */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      <Modal open={showMarkerModal} onClose={() => { setShowMarkerModal(false); setEditMarker(null); setMarkerForm(defaultMarkerForm) }}
+        title="علامات التقويم" width="max-w-lg">
+        {/* Existing markers list */}
+        {markers.length > 0 && (
+          <div className="space-y-2 mb-4">
+            <p className="text-xs font-bold text-slate-500">العلامات الحالية</p>
+            {markers.map(m => (
+              <div key={m.id} className="flex items-center gap-2 p-2.5 rounded-xl border border-slate-100">
+                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: m.color }}/>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-sm text-slate-800">{m.title}</div>
+                  <div className="text-xs text-slate-400">{m.start_date} ← {m.end_date}{m.description ? ` · ${m.description}` : ''}</div>
+                </div>
+                <button onClick={() => openEditMarker(m)} className="text-slate-400 hover:text-blue-500 p-1">
+                  <Edit2 size={13}/>
+                </button>
+                <button onClick={() => deleteMarker(m.id)} className="text-slate-400 hover:text-red-500 p-1">
+                  <Trash2 size={13}/>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Add / Edit form */}
+        <div className={`${markers.length > 0 ? 'border-t border-slate-100 pt-4' : ''}`}>
+          <p className="text-xs font-bold text-slate-500 mb-3">{editMarker ? 'تعديل العلامة' : 'إضافة علامة جديدة'}</p>
+          <FormField label="الاسم" required>
+            <input className="form-input" value={markerForm.title} onChange={e => setMF('title', e.target.value)}
+              placeholder="رمضان، اختبارات، إجازة صيفية..."/>
+          </FormField>
+          <FormField label="وصف (اختياري)">
+            <input className="form-input" value={markerForm.description} onChange={e => setMF('description', e.target.value)}
+              placeholder="تفاصيل إضافية..."/>
+          </FormField>
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="من تاريخ" required>
+              <input className="form-input" type="date" value={markerForm.start_date} onChange={e => setMF('start_date', e.target.value)}/>
+            </FormField>
+            <FormField label="إلى تاريخ" required>
+              <input className="form-input" type="date" value={markerForm.end_date} onChange={e => setMF('end_date', e.target.value)}/>
+            </FormField>
+          </div>
+          <FormField label="اللون">
+            <div className="flex flex-wrap gap-2">
+              {MARKER_COLORS.map(c => (
+                <button key={c.value} type="button" title={c.label}
+                  onClick={() => setMF('color', c.value)}
+                  className={`w-8 h-8 rounded-full border-2 transition-all ${markerForm.color === c.value ? 'scale-125 border-slate-800' : 'border-transparent hover:scale-110'}`}
+                  style={{ background: c.value }}/>
+              ))}
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 mr-1">
+                <div className="w-5 h-5 rounded-full border border-slate-300" style={{ background: markerForm.color }}/>
+                <input type="color" value={markerForm.color} onChange={e => setMF('color', e.target.value)}
+                  className="w-6 h-6 rounded cursor-pointer border-0 bg-transparent p-0 opacity-0 absolute"/>
+                مخصص
+              </div>
+            </div>
+          </FormField>
+          <div className="flex gap-2 justify-end mt-4">
+            {editMarker && (
+              <button className="btn btn-ghost text-slate-500" onClick={() => { setEditMarker(null); setMarkerForm(defaultMarkerForm) }}>
+                إلغاء التعديل
+              </button>
+            )}
+            <button className="btn btn-primary" onClick={saveMarker}
+              disabled={markerSaving || !markerForm.title.trim() || !markerForm.start_date || !markerForm.end_date}>
+              {markerSaving ? <Spinner size="sm"/> : editMarker ? <><Check size={13}/> حفظ</> : <><Plus size={13}/> إضافة</>}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* BULK EDIT RECURRING MODAL                                         */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      <Modal open={showBulkEdit} onClose={() => setShowBulkEdit(false)} title="تعديل المواعيد المتكررة" width="max-w-lg">
+        {recurGroups.length === 0 ? (
+          <div className="text-center py-8 text-slate-400">
+            <Repeat size={32} className="mx-auto mb-2 opacity-30"/>
+            <p className="text-sm">لا توجد مواعيد متكررة حالياً</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Step 1: Select group */}
+            <FormField label="اختر مجموعة المواعيد المتكررة">
+              <select className="form-input" value={bulkSelGroup} onChange={e => {
+                setBulkSelGroup(e.target.value)
+                setBulkPickedIds(new Set())
+              }}>
+                <option value="">— اختر مجموعة —</option>
+                {recurGroups.map(g => (
+                  <option key={g.id} value={g.id}>{g.title} ({g.events.length} موعد)</option>
+                ))}
+              </select>
+            </FormField>
+
+            {bulkSelGroup && (
+              <>
+                {/* Step 2: Select scope */}
+                <FormField label="النطاق">
+                  <div className="flex gap-2">
+                    {([['all','الكل'],['range','نطاق تاريخ'],['pick','اختيار يدوي']] as const).map(([v,l]) => (
+                      <button key={v} type="button" onClick={() => setBulkMode(v)}
+                        className={`flex-1 py-2 rounded-xl border text-xs font-bold transition-all ${bulkMode === v ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>{l}</button>
+                    ))}
+                  </div>
+                </FormField>
+
+                {bulkMode === 'range' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField label="من تاريخ">
+                      <input className="form-input" type="date" value={bulkDateFrom} onChange={e => setBulkDateFrom(e.target.value)}/>
+                    </FormField>
+                    <FormField label="إلى تاريخ">
+                      <input className="form-input" type="date" value={bulkDateTo} onChange={e => setBulkDateTo(e.target.value)}/>
+                    </FormField>
+                  </div>
+                )}
+
+                {bulkMode === 'pick' && (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden max-h-48 overflow-y-auto">
+                    <div className="p-2 bg-slate-50 text-xs text-slate-500 flex items-center justify-between sticky top-0">
+                      <span>{bulkPickedIds.size} محدد من {bulkGroupEvents.length}</span>
+                      <div className="flex gap-2">
+                        <button className="text-brand-600 font-bold" onClick={() => setBulkPickedIds(new Set(bulkGroupEvents.map((e: any) => e.id)))}>
+                          تحديد الكل
+                        </button>
+                        <button className="text-red-500" onClick={() => setBulkPickedIds(new Set())}>مسح</button>
+                      </div>
+                    </div>
+                    {bulkGroupEvents.sort((a: any, b: any) => a.start_datetime.localeCompare(b.start_datetime)).map((e: any) => {
+                      const picked = bulkPickedIds.has(e.id)
+                      return (
+                        <div key={e.id} onClick={() => setBulkPickedIds(prev => {
+                          const next = new Set(prev)
+                          picked ? next.delete(e.id) : next.add(e.id)
+                          return next
+                        })} className={`flex items-center gap-2 px-3 py-2 cursor-pointer border-b border-slate-50 last:border-0 ${picked ? 'bg-brand-50' : 'hover:bg-slate-50'}`}>
+                          <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-colors ${picked ? 'bg-brand-500 border-brand-500' : 'border-slate-300'}`}>
+                            {picked && <Check size={11} className="text-white"/>}
+                          </div>
+                          <span className="text-sm font-medium">{formatDate(e.start_datetime)}</span>
+                          <span className="text-xs text-slate-400">{e.start_datetime.slice(11,16)}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Target count summary */}
+                <div className="bg-slate-50 rounded-xl p-2.5 text-xs text-slate-600">
+                  <span className="font-bold">{bulkTargetEvents.length}</span> موعد سيتأثر
+                </div>
+
+                {/* Step 3: Action */}
+                <FormField label="الإجراء">
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setBulkAction('delete')}
+                      className={`flex-1 py-2.5 rounded-xl border text-xs font-bold transition-all ${bulkAction === 'delete' ? 'bg-red-500 text-white border-red-500' : 'border-slate-200 hover:bg-slate-50'}`}>
+                      🗑️ حذف المواعيد
+                    </button>
+                    <button type="button" onClick={() => setBulkAction('reschedule')}
+                      className={`flex-1 py-2.5 rounded-xl border text-xs font-bold transition-all ${bulkAction === 'reschedule' ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>
+                      🕐 تغيير الوقت
+                    </button>
+                  </div>
+                </FormField>
+
+                {bulkAction === 'reschedule' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField label="وقت البداية الجديد">
+                      <input className="form-input" type="time" value={bulkNewStartTime} onChange={e => setBulkNewStartTime(e.target.value)}/>
+                    </FormField>
+                    <FormField label="وقت النهاية الجديد">
+                      <input className="form-input" type="time" value={bulkNewEndTime} onChange={e => setBulkNewEndTime(e.target.value)}/>
+                    </FormField>
+                  </div>
+                )}
+
+                {bulkAction === 'delete' && bulkTargetEvents.length > 0 && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-2.5 text-xs text-red-700">
+                    ⚠️ سيتم حذف {bulkTargetEvents.length} موعد بشكل نهائي ولا يمكن التراجع
+                  </div>
+                )}
+
+                <div className="flex gap-2 justify-end">
+                  <button className="btn btn-ghost" onClick={() => setShowBulkEdit(false)}>إلغاء</button>
+                  <button
+                    onClick={applyBulkEdit}
+                    disabled={bulkSaving || bulkTargetEvents.length === 0}
+                    className={`btn ${bulkAction === 'delete' ? 'btn-danger' : 'btn-primary'}`}>
+                    {bulkSaving ? <Spinner size="sm"/> : bulkAction === 'delete' ? `حذف ${bulkTargetEvents.length} موعد` : `تحديث ${bulkTargetEvents.length} موعد`}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         )}
       </Modal>
     </div>

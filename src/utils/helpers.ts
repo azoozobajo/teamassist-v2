@@ -2,7 +2,11 @@ import { EventType, UserRole } from '../types/database'
 
 export const cn = (...cls: (string | undefined | false | null)[]) => cls.filter(Boolean).join(' ')
 
-export const formatDate = (d: string) => new Date(d).toLocaleDateString('ar-SA')
+export const formatDate = (d: string) => {
+  const date = new Date(d)
+  const day = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'][date.getDay()]
+  return `${day}، ${date.toLocaleDateString('ar-SA')}`
+}
 export const formatDateTime = (d: string) => new Date(d).toLocaleString('ar-SA')
 export const formatTime = (d: string) => d.slice(11, 16)
 
@@ -67,7 +71,7 @@ export const ATT_CONFIG: Record<string, { label: string; color: string; bg: stri
 
 export const POINT_CATEGORIES = ['مكافأة', 'تطور', 'تعاون', 'مبادرة', 'أداء', 'نتائج'] as const
 export const DEDUCTION_REASONS = ['سوء سلوك', 'اعتداء', 'غياب بدون عذر', 'تأخر متكرر', 'مخالفة النظام', 'عدم الالتزام'] as const
-export const EXPENSE_CATEGORIES = ['معدات وكور', 'ملابس وزي', 'مياه وتغذية', 'مواصلات', 'سكن وفندق', 'طيران', 'أكل ووجبات', 'رسوم وتسجيل', 'أخرى'] as const
+export const EXPENSE_CATEGORIES = ['معدات وكور', 'ملابس وزي', 'مياه وتغذية', 'مواصلات', 'سكن وفندق', 'طيران', 'أكل ووجبات', 'رسوم وتسجيل', 'رواتب', 'إيجار', 'فاتورة ماء', 'فاتورة كهرباء', 'فاتورة اتصالات', 'فاتورة انترنت', 'أخرى'] as const
 export const REPORT_TAGS = ['إصابة', 'مشكلة', 'مكافأة', 'موقف', 'إنجاز', 'تغيير', 'ملاحظة', 'طارئ'] as const
 export const NOTE_TYPES = ['مدح', 'توجيه', 'تحذير', 'تطوير'] as const
 export const SPORT_TYPES = ['كرة القدم', 'كرة السلة', 'كرة الطائرة', 'السباحة', 'التنس', 'الجري', 'أخرى']
@@ -97,6 +101,7 @@ export const PERMISSIONS = [
   { key: 'manage_points_system', label: 'إدارة نظام النقاط' },
   { key: 'manage_finance_add',      label: 'إضافة الالتزامات المالية' },
   { key: 'manage_finance_pay',      label: 'تسجيل المدفوعات' },
+  { key: 'view_team_expenses',       label: 'عرض مصاريف الفريق وكشف الحساب' },
   { key: 'manage_team_expenses',    label: 'إدارة مصاريف الفريق' },
   { key: 'make_announcements',      label: 'نشر الإعلانات والتذكيرات' },
   { key: 'manage_permissions',      label: 'إدارة صلاحيات الأعضاء' },

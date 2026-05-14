@@ -63,6 +63,10 @@ export default function FinancePage() {
   const [expDateFrom, setExpDateFrom] = useState('')
   const [expDateTo, setExpDateTo] = useState('')
 
+  // statement date filter
+  const [stDateFrom, setStDateFrom] = useState('')
+  const [stDateTo, setStDateTo] = useState('')
+
   const [expandedPlayers, setExpandedPlayers] = useState<Set<string>>(new Set())
   const [showStatement, setShowStatement] = useState<any>(null)
   const [showRenew, setShowRenew] = useState<any>(null)
@@ -128,6 +132,13 @@ export default function FinancePage() {
     else from.setFullYear(from.getFullYear() - 1)
     setExpDateFrom(from.toISOString().slice(0, 10)); setExpDateTo(to.toISOString().slice(0, 10))
   }
+  function setQuickSt(t: 'week' | 'month' | 'year') {
+    const to = new Date(); const from = new Date()
+    if (t === 'week') from.setDate(from.getDate() - 7)
+    else if (t === 'month') from.setMonth(from.getMonth() - 1)
+    else from.setFullYear(from.getFullYear() - 1)
+    setStDateFrom(from.toISOString().slice(0, 10)); setStDateTo(to.toISOString().slice(0, 10))
+  }
 
   // ── filtered subs ─────────────────────────────────────────────────────
   const filteredSubs = allSubs.filter(s =>
@@ -140,6 +151,26 @@ export default function FinancePage() {
     (!expDateFrom || e.expense_date >= expDateFrom) &&
     (!expDateTo || e.expense_date <= expDateTo)
   )
+
+  // ── statement filtered data ───────────────────────────────────────────
+  const stPayments = payments.filter(p =>
+    Number(p.paid_amount) > 0 &&
+    (!stDateFrom || (p.paid_at || '').slice(0, 10) >= stDateFrom) &&
+    (!stDateTo   || (p.paid_at || '').slice(0, 10) <= stDateTo)
+  )
+  const stSubs = allSubs.filter(s =>
+    Number(s.paid_amount) > 0 &&
+    (!stDateFrom || s.start_date >= stDateFrom) &&
+    (!stDateTo   || s.start_date <= stDateTo)
+  )
+  const stExpenses = expenses.filter(e =>
+    (!stDateFrom || e.expense_date >= stDateFrom) &&
+    (!stDateTo   || e.expense_date <= stDateTo)
+  )
+  const stTotalCredit = stPayments.reduce((s, p) => s + Number(p.paid_amount), 0)
+                      + stSubs.reduce((s, sub) => s + Number(sub.paid_amount), 0)
+  const stTotalDebit  = stExpenses.reduce((s, e) => s + Number(e.amount), 0)
+  const stBalance     = stTotalCredit - stTotalDebit
 
   // group filtered subs by player
   const playerSubsMap: Record<string, any[]> = {}
@@ -367,6 +398,7 @@ export default function FinancePage() {
   // ── permissions ───────────────────────────────────────────────────────
   const isAdmin = canManageFinance(myRole)
   const canManageExpenses = isAdmin || hasPermission(myPerms, myRole, 'manage_team_expenses' as any)
+  const canViewExpenses   = canManageExpenses || hasPermission(myPerms, myRole, 'view_team_expenses' as any)
   const isPlayer = !isAdmin && myRole !== ''
   const myMember = members.find((m: any) => m.user_id === user?.id)
   const isParent = myMember?.role === 'parent'
@@ -436,7 +468,8 @@ export default function FinancePage() {
         tabs={[
           { key: 'obligations', label: '﷼ الالتزامات' },
           { key: 'subscriptions', label: isPlayer ? '📅 اشتراكاتي' : '📅 الاشتراكات' },
-          ...(canManageExpenses ? [{ key: 'expenses', label: '🧾 مصاريف الفريق' }] : [])
+          ...(canViewExpenses ? [{ key: 'expenses', label: '🧾 مصاريف الفريق' }] : []),
+          ...(canViewExpenses ? [{ key: 'statement', label: '📊 كشف الحساب' }] : [])
         ]}
         active={tab} onChange={setTab}/>
 
@@ -876,7 +909,7 @@ export default function FinancePage() {
       {/* ══════════════════════════════════════════════════════════════════ */}
       {/* EXPENSES TAB                                                      */}
       {/* ══════════════════════════════════════════════════════════════════ */}
-      {tab === 'expenses' && canManageExpenses && (
+      {tab === 'expenses' && canViewExpenses && (
         loading ? <div className="flex justify-center py-10"><Spinner/></div> : (
           <div>
             {/* Date filter */}
@@ -925,7 +958,7 @@ export default function FinancePage() {
                     return (
                       <div key={exp.id} className="card mb-0 flex items-start gap-3">
                         <div className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center flex-shrink-0 text-lg">
-                          {({ 'معدات وكور': '⚽', 'ملابس وزي': '👕', 'مياه وتغذية': '💧', 'مواصلات': '🚌', 'سكن وفندق': '🏨', 'طيران': '✈️', 'أكل ووجبات': '🍽️', 'رسوم وتسجيل': '📋' } as any)[exp.category] || '📦'}
+                          {({ 'معدات وكور': '⚽', 'ملابس وزي': '👕', 'مياه وتغذية': '💧', 'مواصلات': '🚌', 'سكن وفندق': '🏨', 'طيران': '✈️', 'أكل ووجبات': '🍽️', 'رسوم وتسجيل': '📋', 'رواتب': '💼', 'إيجار': '🏢', 'فاتورة ماء': '🚿', 'فاتورة كهرباء': '⚡', 'فاتورة اتصالات': '📱', 'فاتورة انترنت': '🌐' } as any)[exp.category] || '📦'}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="font-bold text-sm text-slate-800">{exp.title}</div>
@@ -961,6 +994,123 @@ export default function FinancePage() {
             }
           </div>
         )
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* STATEMENT TAB                                                     */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {tab === 'statement' && canViewExpenses && (
+        <div>
+          {/* Date filter */}
+          <div className="card mb-4 p-3">
+            <div className="text-xs font-bold text-slate-500 mb-2">فلترة حسب التاريخ</div>
+            <div className="flex gap-2 items-end flex-wrap">
+              <div className="flex-1 min-w-0">
+                <label className="text-xs text-slate-400 block mb-1">من</label>
+                <input type="date" className="form-input text-sm" value={stDateFrom} onChange={e => setStDateFrom(e.target.value)}/>
+              </div>
+              <div className="flex-1 min-w-0">
+                <label className="text-xs text-slate-400 block mb-1">إلى</label>
+                <input type="date" className="form-input text-sm" value={stDateTo} onChange={e => setStDateTo(e.target.value)}/>
+              </div>
+              {(stDateFrom || stDateTo) && (
+                <button className="btn btn-sm btn-ghost text-red-500" onClick={() => { setStDateFrom(''); setStDateTo('') }}>مسح</button>
+              )}
+            </div>
+            <QuickBtns onSet={setQuickSt}/>
+          </div>
+
+          {/* Summary hero cards */}
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            <div className={`rounded-2xl p-3 text-center ${stBalance >= 0 ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+              <div className={`text-xs font-bold mb-1 ${stBalance >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>الرصيد</div>
+              <div className={`text-lg font-extrabold ${stBalance >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                {stBalance >= 0 ? '+' : ''}{stBalance.toLocaleString()}
+              </div>
+              <div className="text-xs text-slate-400 mt-0.5">{RIYAL}</div>
+            </div>
+            <div className="rounded-2xl p-3 text-center bg-blue-50 border border-blue-200">
+              <div className="text-xs font-bold text-blue-600 mb-1">دائن (وارد)</div>
+              <div className="text-lg font-extrabold text-blue-700">{stTotalCredit.toLocaleString()}</div>
+              <div className="text-xs text-slate-400 mt-0.5">{RIYAL}</div>
+            </div>
+            <div className="rounded-2xl p-3 text-center bg-orange-50 border border-orange-200">
+              <div className="text-xs font-bold text-orange-600 mb-1">مدين (صادر)</div>
+              <div className="text-lg font-extrabold text-orange-700">{stTotalDebit.toLocaleString()}</div>
+              <div className="text-xs text-slate-400 mt-0.5">{RIYAL}</div>
+            </div>
+          </div>
+
+          {/* Transaction list */}
+          {(() => {
+            type TxEntry = { date: string; label: string; sub: string; amount: number; type: 'credit' | 'debit' }
+            const entries: TxEntry[] = []
+
+            stPayments.forEach(p => {
+              const member = members.find(m => m.user_id === p.user_id)
+              const ob = obs.find(o => o.id === p.obligation_id)
+              entries.push({
+                date: (p.paid_at || '').slice(0, 10),
+                label: member?.profile?.full_name || 'عضو',
+                sub: ob?.title || 'التزام',
+                amount: Number(p.paid_amount),
+                type: 'credit'
+              })
+            })
+
+            stSubs.forEach(s => {
+              const member = members.find(m => m.user_id === s.player_id)
+              entries.push({
+                date: s.start_date,
+                label: member?.profile?.full_name || 'لاعب',
+                sub: `اشتراك ${s.months} شهر`,
+                amount: Number(s.paid_amount),
+                type: 'credit'
+              })
+            })
+
+            stExpenses.forEach(e => {
+              entries.push({
+                date: e.expense_date,
+                label: e.title,
+                sub: e.category,
+                amount: Number(e.amount),
+                type: 'debit'
+              })
+            })
+
+            entries.sort((a, b) => b.date.localeCompare(a.date))
+
+            if (entries.length === 0) return (
+              <div className="card"><EmptyState icon={<Receipt size={24}/>} title="لا توجد حركات مالية" description="لا توجد بيانات في الفترة المحددة"/></div>
+            )
+
+            return (
+              <div className="space-y-2">
+                {entries.map((e, i) => (
+                  <div key={i} className="card mb-0 flex items-center gap-3">
+                    <div className={`w-9 h-9 rounded-2xl flex items-center justify-center flex-shrink-0 text-base font-bold ${e.type === 'credit' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                      {e.type === 'credit' ? '↓' : '↑'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-bold text-sm text-slate-800 truncate">{e.label}</div>
+                      <div className="flex items-center gap-1.5 text-xs text-slate-400 mt-0.5">
+                        <span className={`badge text-xs ${e.type === 'credit' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                          {e.type === 'credit' ? 'دائن' : 'مدين'}
+                        </span>
+                        <span>{e.sub}</span>
+                        <span>· {e.date}</span>
+                      </div>
+                    </div>
+                    <div className={`font-extrabold text-base flex-shrink-0 ${e.type === 'credit' ? 'text-blue-700' : 'text-orange-700'}`}>
+                      {e.type === 'credit' ? '+' : '-'}{e.amount.toLocaleString()} {RIYAL}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
+        </div>
       )}
 
       {/* ══════════════════════════════════════════════════════════════════ */}
