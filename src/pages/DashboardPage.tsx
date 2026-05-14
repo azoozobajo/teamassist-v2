@@ -109,6 +109,8 @@ export default function DashboardPage() {
     if (confirmAction.type === 'leave') {
       await teamService.leaveSelf(confirmAction.teamId, user.id)
     } else {
+      // Delete: remove member first, then delete team
+      await teamService.leaveSelf(confirmAction.teamId, user.id)
       await teamService.deleteTeam(confirmAction.teamId)
     }
     const removedId = confirmAction.teamId
@@ -136,12 +138,15 @@ export default function DashboardPage() {
   async function doSoloLeaveDelete() {
     if (!user || !currentTeam) return
     setTransferLoading(true)
+    // Remove member first (always succeeds), then try to delete the team
+    await teamService.leaveSelf(currentTeam.id, user.id)
     await teamService.deleteTeam(currentTeam.id)
     const removedId = currentTeam.id
     setTransferLoading(false)
     setShowSoloLeave(false)
     setTeams(prev => prev.filter(t => t.id !== removedId))
     setTeamIdx(0)
+    navigate('/')
   }
 
   async function doTransferAndLeave() {
@@ -154,6 +159,7 @@ export default function DashboardPage() {
     setShowTransfer(false)
     setTeams(prev => prev.filter(t => t.id !== removedId))
     setTeamIdx(0)
+    navigate('/')
   }
 
   const derivedStats = useMemo(() => {

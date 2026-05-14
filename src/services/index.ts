@@ -72,8 +72,10 @@ export const teamService = {
     return supabase.from('team_members')
       .update({ status: 'inactive', removed_at: new Date().toISOString() }).eq('id', memberId)
   },
-  async leaveSelf(teamId: string, _userId: string) {
-    return supabase.rpc('leave_team', { p_team_id: teamId })
+  async leaveSelf(teamId: string, userId: string) {
+    return supabase.from('team_members')
+      .update({ status: 'inactive', removed_at: new Date().toISOString() })
+      .eq('team_id', teamId).eq('user_id', userId)
   },
   async transferOwnership(teamId: string, newOwnerMemberId: string) {
     return supabase.from('team_members').update({ role: 'owner' }).eq('id', newOwnerMemberId).eq('team_id', teamId)

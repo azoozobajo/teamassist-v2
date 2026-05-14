@@ -266,6 +266,8 @@ export default function MembersPage() {
   async function doSoloLeaveDelete() {
     if (!teamId || !user) return
     setLeaveLoading(true)
+    // Remove member first (always succeeds), then try to delete the team
+    await teamService.leaveSelf(teamId, user.id)
     await teamService.deleteTeam(teamId)
     setLeaveLoading(false)
     navigate('/')
@@ -277,7 +279,7 @@ export default function MembersPage() {
     await teamService.transferOwnership(teamId, transferTarget)
     await teamService.leaveSelf(teamId, user.id)
     setLeaveLoading(false)
-    navigate('/dashboard')
+    navigate('/')
   }
 
   const isAdmin = canManageTeam(myRole)
