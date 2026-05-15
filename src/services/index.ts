@@ -1044,6 +1044,278 @@ export const memberFreezeService = {
   },
 }
 
+// ── MEASUREMENTS ───────────────────────────────────────────────────────
+export const measurementService = {
+  // Returns all players (player/coach roles) with their full measurement history for the team
+  async getPlayersWithMeasurements(teamId: string) {
+    const { data: members } = await supabase
+      .from('team_members')
+      .select('user_id, role, profile:profiles!user_id(id, full_name, avatar_url, date_of_birth)')
+      .eq('team_id', teamId)
+      .eq('status', 'active')
+      .is('removed_at', null)
+      .in('role', ['player', 'head_coach', 'assistant_coach', 'medical'])
+    if (!members?.length) return []
+
+    const playerIds = members.map((m: any) => m.user_id)
+    const { data: measurements } = await supabase
+      .from('player_basic_measurements')
+      .select('*')
+      .eq('team_id', teamId)
+      .in('player_id', playerIds)
+      .is('deleted_at', null)
+      .order('measurement_date', { ascending: false })
+
+    const byPlayer: Record<string, any[]> = {}
+    ;(measurements ?? []).forEach((m: any) => {
+      if (!byPlayer[m.player_id]) byPlayer[m.player_id] = []
+      byPlayer[m.player_id].push(m)
+    })
+
+    return members.map((m: any) => ({
+      ...(m.profile as any),
+      role: m.role,
+      measurements: byPlayer[m.user_id] ?? [],
+    }))
+  },
+
+  async getPlayerMeasurements(teamId: string, playerId: string) {
+    const { data } = await supabase
+      .from('player_basic_measurements')
+      .select('*')
+      .eq('team_id', teamId)
+      .eq('player_id', playerId)
+      .is('deleted_at', null)
+      .order('measurement_date', { ascending: false })
+    return data ?? []
+  },
+
+  async addMeasurement(record: any) {
+    const { data, error } = await supabase
+      .from('player_basic_measurements')
+      .insert(record)
+      .select()
+      .single()
+    if (data && !error) {
+      await supabase.from('player_basic_measurement_audits').insert({
+        measurement_id: data.id,
+        team_id: data.team_id,
+        player_id: data.player_id,
+        action: 'create',
+        changed_by: record.created_by,
+        new_values: record,
+      })
+    }
+    return { data, error }
+  },
+
+  async updateMeasurement(id: string, teamId: string, playerId: string, updates: any, editReason: string, changedBy: string) {
+    const { data: old } = await supabase
+      .from('player_basic_measurements')
+      .select('*')
+      .eq('id', id)
+      .single()
+    if (!old) return { data: null, error: new Error('السجل غير موجود') }
+    if ((old.edit_count ?? 0) >= 3) return { data: null, error: new Error('MAX_EDITS') }
+    const { data, error } = await supabase
+      .from('player_basic_measurements')
+      .update({ ...updates, updated_at: new Date().toISOString(), edit_count: (old.edit_count ?? 0) + 1 })
+      .eq('id', id)
+      .select()
+      .single()
+    if (!error) {
+      await supabase.from('player_basic_measurement_audits').insert({
+        measurement_id: id,
+        team_id: teamId,
+        player_id: playerId,
+        action: 'edit',
+        changed_by: changedBy,
+        reason: editReason,
+        old_values: old,
+        new_values: updates,
+      })
+    }
+    return { data, error }
+  },
+
+  async deleteMeasurement(id: string, teamId: string, playerId: string, deleteReason: string, deletedBy: string) {
+    const { data: old } = await supabase
+      .from('player_basic_measurements')
+      .select('*')
+      .eq('id', id)
+      .single()
+    const { error } = await supabase
+      .from('player_basic_measurements')
+      .update({ deleted_at: new Date().toISOString(), deleted_by: deletedBy, delete_reason: deleteReason })
+      .eq('id', id)
+    if (!error && old) {
+      await supabase.from('player_basic_measurement_audits').insert({
+        measurement_id: id,
+        team_id: teamId,
+        player_id: playerId,
+        action: 'delete',
+        changed_by: deletedBy,
+        reason: deleteReason,
+        old_values: old,
+      })
+    }
+    return { error }
+  },
+}
+
+// ── FITNESS MEASUREMENTS ───────────────────────────────────────────────
+export const fitnessService = {
+  async getLatestFitnessResultsForTeam(teamId: string) {
+    const { data: members } = await supabase
+      .from('team_members')
+      .select('user_id, role, profile:profiles!user_id(id, full_name, avatar_url, date_of_birth, jersey_number, position)')
+      .eq('team_id', teamId)
+      .eq('status', 'active')
+      .is('removed_at', null)
+      .in('role', ['player', 'head_coach', 'assistant_coach', 'medical'])
+    if (!members) return []
+
+    const playerIds = members.map((m: any) => m.user_id)
+    const { data: results } = await supabase
+      .from('player_fitness_test_results')
+      .select('*')
+      .eq('team_id', teamId)
+      .in('player_id', playerIds)
+      .is('deleted_at', null)
+      .order('test_date', { ascending: false })
+
+    const allResults: any[] = results ?? []
+
+    return members.map((m: any) => ({
+      ...m.profile,
+      role: m.role,
+      results: allResults.filter((r: any) => r.player_id === m.user_id),
+    }))
+  },
+
+  async getPlayerFitnessResults(teamId: string, playerId: string) {
+    const { data } = await supabase
+      .from('player_fitness_test_results')
+      .select('*')
+      .eq('team_id', teamId)
+      .eq('player_id', playerId)
+      .is('deleted_at', null)
+      .order('test_date', { ascending: false })
+    return data ?? []
+  },
+
+  async getPlayerFitnessResultsByTest(teamId: string, playerId: string, testKey: string) {
+    const { data } = await supabase
+      .from('player_fitness_test_results')
+      .select('*')
+      .eq('team_id', teamId)
+      .eq('player_id', playerId)
+      .eq('test_key', testKey)
+      .is('deleted_at', null)
+      .order('test_date', { ascending: false })
+    return data ?? []
+  },
+
+  async checkSameDayResult(teamId: string, playerId: string, testKey: string, testDate: string, excludeId?: string) {
+    let q = supabase
+      .from('player_fitness_test_results')
+      .select('id')
+      .eq('team_id', teamId)
+      .eq('player_id', playerId)
+      .eq('test_key', testKey)
+      .eq('test_date', testDate)
+      .is('deleted_at', null)
+    if (excludeId) q = q.neq('id', excludeId)
+    const { data } = await q
+    return (data ?? []).length > 0
+  },
+
+  async addFitnessTestResult(record: any) {
+    const { data, error } = await supabase
+      .from('player_fitness_test_results')
+      .insert(record)
+      .select()
+      .single()
+    if (!error && data) {
+      await supabase.from('player_fitness_test_audit_logs').insert({
+        result_id: data.id,
+        team_id: data.team_id,
+        player_id: data.player_id,
+        action: 'create',
+        changed_by: record.created_by,
+        new_values: record,
+      })
+    }
+    return { data, error }
+  },
+
+  async updateFitnessTestResult(
+    id: string,
+    teamId: string,
+    playerId: string,
+    updates: any,
+    editReason: string,
+    changedBy: string
+  ) {
+    const { data: old } = await supabase
+      .from('player_fitness_test_results')
+      .select('*')
+      .eq('id', id)
+      .single()
+    if (!old) return { data: null, error: new Error('السجل غير موجود') }
+    if ((old.edit_count ?? 0) >= 3) return { data: null, error: new Error('MAX_EDITS') }
+    const { data, error } = await supabase
+      .from('player_fitness_test_results')
+      .update({ ...updates, updated_at: new Date().toISOString(), edit_count: (old.edit_count ?? 0) + 1 })
+      .eq('id', id)
+      .select()
+      .single()
+    if (!error) {
+      await supabase.from('player_fitness_test_audit_logs').insert({
+        result_id: id,
+        team_id: teamId,
+        player_id: playerId,
+        action: 'edit',
+        changed_by: changedBy,
+        reason: editReason,
+        old_values: old,
+        new_values: updates,
+      })
+    }
+    return { data, error }
+  },
+
+  async deleteFitnessTestResult(
+    id: string,
+    teamId: string,
+    playerId: string,
+    deleteReason: string,
+    deletedBy: string
+  ) {
+    const { data: old } = await supabase
+      .from('player_fitness_test_results')
+      .select('*')
+      .eq('id', id)
+      .single()
+    const { error } = await supabase
+      .from('player_fitness_test_results')
+      .update({ deleted_at: new Date().toISOString(), deleted_by: deletedBy, delete_reason: deleteReason })
+      .eq('id', id)
+    if (!error && old) {
+      await supabase.from('player_fitness_test_audit_logs').insert({
+        result_id: id,
+        team_id: teamId,
+        player_id: playerId,
+        action: 'delete',
+        changed_by: deletedBy,
+        reason: deleteReason,
+        old_values: old,
+      })
+    }
+    return { error }
+  },
+}
+
 // ── REGULATIONS ────────────────────────────────────────────────────────
 export const regulationsService = {
   async getAll(teamId: string) {

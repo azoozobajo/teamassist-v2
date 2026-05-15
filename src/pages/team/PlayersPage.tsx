@@ -117,6 +117,7 @@ export default function PlayersPage() {
   const [showNote, setShowNote] = useState(false)
   const [noteForm, setNoteForm] = useState({ note_type: 'مدح' as any, content: '', event_title: '' })
   const [saving, setSaving] = useState(false)
+  const [saveNoteError, setSaveNoteError] = useState('')
   const [replyingTo, setReplyingTo] = useState<string | null>(null)
   const [replyText, setReplyText] = useState('')
   const [sendingReply, setSendingReply] = useState(false)
@@ -201,11 +202,18 @@ export default function PlayersPage() {
 
   async function saveNote() {
     if (!noteForm.content.trim() || !selPlayer || !teamId || !user) return
-    setSaving(true)
-    await noteService.create({ ...noteForm, team_id: teamId, player_id: selPlayer.user_id, coach_id: user.id, is_read: false })
+    setSaving(true); setSaveNoteError('')
+    const { error } = await noteService.create({ ...noteForm, team_id: teamId, player_id: selPlayer.user_id, coach_id: user.id, is_read: false })
+    if (error) {
+      setSaveNoteError('حدث خطأ في الحفظ. تأكد من صلاحياتك وحاول مجدداً.')
+      setSaving(false)
+      return
+    }
     const notes = await noteService.getPlayerNotesForCoach(teamId, selPlayer.user_id, user.id)
-    setPlayerNotes(notes); setShowNote(false)
-    setNoteForm({ note_type: 'مدح', content: '', event_title: '' }); setSaving(false)
+    setPlayerNotes(notes)
+    setShowNote(false)
+    setNoteForm({ note_type: 'مدح', content: '', event_title: '' })
+    setSaving(false)
   }
 
   async function submitReply(noteId: string) {
@@ -408,7 +416,7 @@ export default function PlayersPage() {
         {/* Tabs */}
         <div className="flex gap-1 mb-4 bg-slate-100 p-1 rounded-xl overflow-x-auto">
           {[
-            ['notes', `✏️ ملاحظات (${playerNotes.length})`],
+            ['notes', `📬 بريد (${playerNotes.length})`],
             ['injuries', `🤕 إصابات (${injuryCases.length})`],
             ['finance', `${RIYAL} المالية`]
           ].map(([k, l]) => (
@@ -424,17 +432,17 @@ export default function PlayersPage() {
           <div className="card">
             <div className="flex justify-between items-center mb-3">
               <div>
-                <h3 className="font-bold text-sm">ملاحظات المدرب</h3>
+                <h3 className="font-bold text-sm">البريد</h3>
                 <p className="text-[10px] text-slate-400 mt-0.5">تظهر فقط لمن كتبها واللاعب</p>
               </div>
               {canWriteNote && (
                 <button className="btn btn-primary btn-sm" onClick={() => setShowNote(true)}>
-                  <Plus size={12}/> ملاحظة
+                  <Plus size={12}/> رسالة
                 </button>
               )}
             </div>
             {playerNotes.length === 0
-              ? <EmptyState title="لا توجد ملاحظات"/>
+              ? <EmptyState title="لا توجد رسائل"/>
               : <div className="space-y-3">
                   {playerNotes.map(n => {
                     const clr = NOTE_COLOR[n.note_type] || NOTE_COLOR['توجيه']
@@ -656,12 +664,12 @@ export default function PlayersPage() {
         )}
 
         {/* Note Modal */}
-        <Modal open={showNote} onClose={() => setShowNote(false)} title={`ملاحظة لـ ${selPlayer.profile?.full_name}`}>
+        <Modal open={showNote} onClose={() => { setShowNote(false); setSaveNoteError('') }} title={`رسالة إلى ${selPlayer.profile?.full_name}`}>
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 text-xs text-blue-700">
-            🔒 هذه الملاحظة لن تظهر إلا لك وللاعب فقط.
+            🔒 هذه الرسالة لن تظهر إلا لك وللاعب فقط.
           </div>
           <div className="form-group">
-            <label className="form-label">نوع الملاحظة</label>
+            <label className="form-label">نوع الرسالة</label>
             <div className="flex gap-2 flex-wrap">
               {NOTE_TYPES.map(t => (
                 <button key={t} onClick={() => setNoteForm(p => ({ ...p, note_type: t }))}
@@ -675,13 +683,18 @@ export default function PlayersPage() {
             <input className="form-input" value={noteForm.event_title}
               onChange={e => setNoteForm(p => ({ ...p, event_title: e.target.value }))} placeholder="تدريب الثلاثاء..."/>
           </FormField>
-          <FormField label="نص الملاحظة" required>
+          <FormField label="نص الرسالة" required>
             <textarea className="form-input" rows={3} value={noteForm.content}
-              onChange={e => setNoteForm(p => ({ ...p, content: e.target.value }))} placeholder="اكتب ملاحظتك هنا..."/>
+              onChange={e => setNoteForm(p => ({ ...p, content: e.target.value }))} placeholder="اكتب رسالتك هنا..."/>
           </FormField>
+          {saveNoteError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-3 py-2 text-xs text-red-600 mt-2">
+              {saveNoteError}
+            </div>
+          )}
           <div className="flex gap-2 justify-end mt-4">
-            <button className="btn btn-ghost" onClick={() => setShowNote(false)}>إلغاء</button>
-            <button className="btn btn-primary" onClick={saveNote} disabled={saving}>{saving ? <Spinner size="sm"/> : 'حفظ'}</button>
+            <button className="btn btn-ghost" onClick={() => { setShowNote(false); setSaveNoteError('') }}>إلغاء</button>
+            <button className="btn btn-primary" onClick={saveNote} disabled={saving}>{saving ? <Spinner size="sm"/> : 'إرسال'}</button>
           </div>
         </Modal>
 

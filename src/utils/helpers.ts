@@ -55,11 +55,12 @@ export const ROLE_COLORS: Record<string, string> = {
 }
 
 export const EVENT_CONFIG: Record<EventType, { label: string; color: string; bg: string; icon: string; borderClass: string }> = {
-  training: { label: 'تدريب', color: '#1D9E75', bg: '#E1F5EE', icon: '⚽', borderClass: 'border-emerald-500' },
-  match:    { label: 'مباراة', color: '#1E40AF', bg: '#DBEAFE', icon: '🏆', borderClass: 'border-blue-600' },
-  meeting:  { label: 'اجتماع', color: '#92400E', bg: '#FEF3C7', icon: '📋', borderClass: 'border-amber-600' },
-  camp:     { label: 'معسكر',  color: '#6D28D9', bg: '#EDE9FE', icon: '🏕️', borderClass: 'border-purple-600' },
-  other:    { label: 'أخرى',   color: '#475569', bg: '#F1F5F9', icon: '📌', borderClass: 'border-slate-500' }
+  training:   { label: 'تدريب',   color: '#1D9E75', bg: '#E1F5EE', icon: '⚽',  borderClass: 'border-emerald-500' },
+  match:      { label: 'مباراة',  color: '#1E40AF', bg: '#DBEAFE', icon: '🏆',  borderClass: 'border-blue-600' },
+  meeting:    { label: 'اجتماع',  color: '#92400E', bg: '#FEF3C7', icon: '📋',  borderClass: 'border-amber-600' },
+  camp:       { label: 'معسكر',   color: '#6D28D9', bg: '#EDE9FE', icon: '🏕️', borderClass: 'border-purple-600' },
+  assessment: { label: 'اختبار',  color: '#C2410C', bg: '#FFF7ED', icon: '⏱️', borderClass: 'border-orange-600' },
+  other:      { label: 'أخرى',    color: '#475569', bg: '#F1F5F9', icon: '📌',  borderClass: 'border-slate-500' }
 }
 
 export const ATT_CONFIG: Record<string, { label: string; color: string; bg: string; icon: string }> = {

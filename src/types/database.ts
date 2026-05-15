@@ -1,6 +1,6 @@
 export type UserRole = 'owner' | 'head_coach' | 'assistant_coach' | 'player' | 'administrator' | 'media' | 'medical' | 'parent' | 'guest'
 export type AttendanceStatus = 'present' | 'absent' | 'uncertain' | 'late'
-export type EventType = 'training' | 'match' | 'meeting' | 'camp' | 'other'
+export type EventType = 'training' | 'match' | 'meeting' | 'camp' | 'other' | 'assessment'
 export type LeaveStatus = 'pending' | 'approved' | 'rejected' | 'partial'
 export type NoteType = 'مدح' | 'توجيه' | 'تحذير' | 'تطوير'
 export type PointCategory = 'مكافأة' | 'تطور' | 'تعاون' | 'مبادرة' | 'أداء' | 'نتائج'

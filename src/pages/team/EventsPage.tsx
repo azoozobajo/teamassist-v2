@@ -8,7 +8,7 @@ import { EVENT_CONFIG, WEEK_DAYS, canManageEvents, formatDate, isEventLocked } f
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay } from 'date-fns'
 import { arSA } from 'date-fns/locale'
 
-const EVENT_TYPES = ['training','match','meeting','camp','other']
+const EVENT_TYPES = ['training','match','meeting','camp','assessment','other']
 const ATT_GROUPS = ['الكل','اللاعبون فقط','المدربون فقط','اللاعبون والمدربون','الإداريون فقط','مجموعة مخصصة']
 const HOME_AWAY_LABEL: Record<string, string> = { home: '🏟️ ملعبنا', away: '🚌 ملعب المنافس', neutral: '⚖️ أرض محايدة' }
 
@@ -399,11 +399,11 @@ export default function EventsPage() {
     type: string; val: string; onChange: (v: string) => void; selectedMembers: string[]
     onMemberToggle: (uid: string) => void
   }) => {
-    if (type === 'training' || type === 'match') {
+    if (type === 'training' || type === 'match' || type === 'assessment') {
       return (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-2.5 text-xs text-blue-700 flex items-center gap-1.5">
           <Users size={12}/>
-          التمارين والمباريات تظهر للاعبين فقط بشكل تلقائي
+          التمارين والمباريات والاختبارات تظهر للاعبين فقط بشكل تلقائي
         </div>
       )
     }
