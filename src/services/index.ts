@@ -996,6 +996,35 @@ export const teamExpensesService = {
   },
 }
 
+// ── FIXED EXPENSES ────────────────────────────────────────────────────
+export const fixedExpensesService = {
+  async getItems(teamId: string) {
+    const { data } = await supabase.from('fixed_expense_items')
+      .select('*').eq('team_id', teamId).order('created_at', { ascending: false })
+    return data ?? []
+  },
+  async createItem(data: any) {
+    return supabase.from('fixed_expense_items').insert(data).select().single()
+  },
+  async updateItem(id: string, data: any) {
+    return supabase.from('fixed_expense_items').update(data).eq('id', id)
+  },
+  async deleteItem(id: string) {
+    return supabase.from('fixed_expense_items').delete().eq('id', id)
+  },
+  async getPayments(teamId: string) {
+    const { data } = await supabase.from('fixed_expense_payments')
+      .select('*').eq('team_id', teamId).order('period_month', { ascending: false })
+    return data ?? []
+  },
+  async createPayment(data: any) {
+    return supabase.from('fixed_expense_payments').insert(data).select().single()
+  },
+  async editPayment(id: string, data: any) {
+    return supabase.from('fixed_expense_payments').update(data).eq('id', id)
+  },
+}
+
 // ── MEDICAL REPORTS ───────────────────────────────────────────────────
 export const medicalService = {
   async getReports(teamId: string) {

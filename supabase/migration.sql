@@ -1393,3 +1393,66 @@ $$;
 -- ══════════════════════════════════════════════════
 ALTER TABLE announcements
   ADD COLUMN IF NOT EXISTS target_roles text[] DEFAULT NULL;
+
+-- =============================================
+-- V17: Fixed Expenses (مصاريف ثابتة)
+-- =============================================
+
+CREATE TABLE IF NOT EXISTS fixed_expense_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  item_type TEXT NOT NULL DEFAULT 'التزام'
+    CHECK (item_type IN ('راتب', 'فاتورة', 'التزام', 'إيجار')),
+  name TEXT NOT NULL,
+  due_day INT NOT NULL DEFAULT 1 CHECK (due_day BETWEEN 1 AND 28),
+  recurrence_type TEXT NOT NULL DEFAULT 'continuous'
+    CHECK (recurrence_type IN ('count', 'continuous')),
+  recurrence_count INT DEFAULT NULL,
+  default_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS fixed_expense_payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  item_id UUID NOT NULL REFERENCES fixed_expense_items(id) ON DELETE CASCADE,
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  period_month TEXT NOT NULL,
+  amount NUMERIC(10,2) NOT NULL,
+  paid_at TIMESTAMPTZ DEFAULT NOW(),
+  paid_by UUID REFERENCES profiles(id),
+  original_amount NUMERIC(10,2),
+  edit_reason TEXT,
+  edited_by UUID REFERENCES profiles(id),
+  edited_at TIMESTAMPTZ,
+  edited_by_name TEXT,
+  team_expense_id UUID REFERENCES team_expenses(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(item_id, period_month)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fixed_items_team ON fixed_expense_items(team_id);
+CREATE INDEX IF NOT EXISTS idx_fixed_payments_item ON fixed_expense_payments(item_id);
+CREATE INDEX IF NOT EXISTS idx_fixed_payments_team ON fixed_expense_payments(team_id, period_month DESC);
+
+ALTER TABLE fixed_expense_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fixed_expense_payments ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "fei_select" ON fixed_expense_items;
+DROP POLICY IF EXISTS "fei_insert" ON fixed_expense_items;
+DROP POLICY IF EXISTS "fei_update" ON fixed_expense_items;
+DROP POLICY IF EXISTS "fei_delete" ON fixed_expense_items;
+CREATE POLICY "fei_select" ON fixed_expense_items FOR SELECT USING (is_team_member(team_id, auth.uid()));
+CREATE POLICY "fei_insert" ON fixed_expense_items FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "fei_update" ON fixed_expense_items FOR UPDATE USING (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "fei_delete" ON fixed_expense_items FOR DELETE USING (is_team_admin(team_id, auth.uid()));
+
+DROP POLICY IF EXISTS "fep_select" ON fixed_expense_payments;
+DROP POLICY IF EXISTS "fep_insert" ON fixed_expense_payments;
+DROP POLICY IF EXISTS "fep_update" ON fixed_expense_payments;
+DROP POLICY IF EXISTS "fep_delete" ON fixed_expense_payments;
+CREATE POLICY "fep_select" ON fixed_expense_payments FOR SELECT USING (is_team_member(team_id, auth.uid()));
+CREATE POLICY "fep_insert" ON fixed_expense_payments FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "fep_update" ON fixed_expense_payments FOR UPDATE USING (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "fep_delete" ON fixed_expense_payments FOR DELETE USING (is_team_admin(team_id, auth.uid()));

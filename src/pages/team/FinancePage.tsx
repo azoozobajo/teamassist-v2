@@ -3,11 +3,11 @@ import { useParams } from 'react-router-dom'
 import {
   Plus, DollarSign, Trash2, Receipt, RefreshCw, Calendar,
   Settings, ChevronDown, ChevronUp, FileText, ImageIcon, X,
-  Download, Printer
+  Download, Printer, CheckCircle
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import {
-  financeService, teamService, teamExpensesService,
+  financeService, teamService, teamExpensesService, fixedExpensesService,
   permissionService, subscriptionService, rewardService, notificationService
 } from '../../services'
 import {
@@ -93,6 +93,26 @@ export default function FinancePage() {
   })
   const setRwf = (k: string, v: any) => setRewardForm(p => ({ ...p, [k]: v }))
 
+  // ── fixed expenses state ──────────────────────────────────────────────
+  const [fixedItems, setFixedItems] = useState<any[]>([])
+  const [fixedPayments, setFixedPayments] = useState<any[]>([])
+  const [showAddItem, setShowAddItem] = useState(false)
+  const [showPayFixed, setShowPayFixed] = useState<{ item: any; period: string; periodLabel: string } | null>(null)
+  const [showEditPayment, setShowEditPayment] = useState<any | null>(null)
+  const [payFixedAmt, setPayFixedAmt] = useState('')
+  const [editPayAmt, setEditPayAmt] = useState('')
+  const [editPayReason, setEditPayReason] = useState('')
+  const [expandedFixedItems, setExpandedFixedItems] = useState<Set<string>>(new Set())
+  const [itemForm, setItemForm] = useState({
+    item_type: 'التزام',
+    name: '',
+    due_day: 1,
+    recurrence_type: 'continuous',
+    recurrence_count: 12,
+    default_amount: '',
+  })
+  const setIf = (k: string, v: any) => setItemForm(p => ({ ...p, [k]: v }))
+
   useEffect(() => {
     if (!teamId || !user) return
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
@@ -105,13 +125,16 @@ export default function FinancePage() {
   async function load() {
     if (!teamId) return
     setLoading(true)
-    const [o, p, e, rw] = await Promise.all([
+    const [o, p, e, rw, fi, fp] = await Promise.all([
       financeService.getObligations(teamId),
       financeService.getPayments(teamId),
       teamExpensesService.getAll(teamId),
       rewardService.getAll(teamId),
+      fixedExpensesService.getItems(teamId),
+      fixedExpensesService.getPayments(teamId),
     ])
-    setObs(o); setPayments(p); setExpenses(e); setRewards(rw); setLoading(false)
+    setObs(o); setPayments(p); setExpenses(e); setRewards(rw)
+    setFixedItems(fi); setFixedPayments(fp); setLoading(false)
     loadSubs()
   }
 
@@ -416,6 +439,103 @@ export default function FinancePage() {
     await rewardService.delete(id); await load()
   }
 
+  // ── fixed expenses helpers & actions ─────────────────────────────────
+  const AR_MONTHS = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر']
+
+  function getDuePeriods(items: any[], pmts: any[]) {
+    const today = new Date()
+    const out: { item: any; period: string; periodLabel: string }[] = []
+    for (const item of items) {
+      if (!item.is_active) continue
+      const sd = new Date(item.created_at)
+      const maxP = item.recurrence_type === 'count' ? (item.recurrence_count || 0) : 9999
+      let total = 0; let done = false
+      outer: for (let y = sd.getFullYear(); y <= today.getFullYear() && !done; y++) {
+        const fromM = y === sd.getFullYear() ? sd.getMonth() : 0
+        const toM = y === today.getFullYear() ? today.getMonth() : 11
+        for (let m = fromM; m <= toM && !done; m++) {
+          if (total >= maxP) { done = true; break outer }
+          const period = `${y}-${String(m + 1).padStart(2, '0')}`
+          const paid = pmts.some(p => p.item_id === item.id && p.period_month === period)
+          if (paid) { total++; continue }
+          const isPast = y < today.getFullYear() || (y === today.getFullYear() && m < today.getMonth())
+          const isDueCur = y === today.getFullYear() && m === today.getMonth() && item.due_day <= today.getDate()
+          if (isPast || isDueCur) { total++; out.push({ item, period, periodLabel: `${AR_MONTHS[m]} ${y}` }) }
+        }
+      }
+    }
+    return out
+  }
+
+  async function addFixedItem() {
+    if (!itemForm.name || !itemForm.default_amount || !teamId || !user) return
+    setSaving(true); setOpError('')
+    const { error } = await fixedExpensesService.createItem({
+      team_id: teamId, item_type: itemForm.item_type, name: itemForm.name,
+      due_day: itemForm.due_day,
+      recurrence_type: itemForm.recurrence_type,
+      recurrence_count: itemForm.recurrence_type === 'count' ? itemForm.recurrence_count : null,
+      default_amount: parseFloat(itemForm.default_amount), is_active: true, created_by: user.id,
+    })
+    if (error) { setOpError('فشل إضافة البند: ' + (error.message || 'خطأ')); setSaving(false); return }
+    await load()
+    setShowAddItem(false)
+    setItemForm({ item_type: 'التزام', name: '', due_day: 1, recurrence_type: 'continuous', recurrence_count: 12, default_amount: '' })
+    setSaving(false)
+  }
+
+  async function payFixedItem() {
+    if (!showPayFixed || !teamId || !user) return
+    setSaving(true); setOpError('')
+    const { item, period, periodLabel } = showPayFixed
+    const amount = parseFloat(payFixedAmt) || item.default_amount
+    const [yr, mo] = period.split('-')
+    const expDate = `${yr}-${mo}-${String(item.due_day).padStart(2, '0')}`
+    const catMap: Record<string, string> = { 'راتب': 'رواتب', 'إيجار': 'إيجار', 'فاتورة': 'أخرى', 'التزام': 'أخرى' }
+    const { data: expData, error: expErr } = await teamExpensesService.create({
+      team_id: teamId, title: `${item.item_type}: ${item.name}`,
+      amount, category: catMap[item.item_type] || 'أخرى',
+      expense_date: expDate, notes: `دفعة ${periodLabel}`, created_by: user.id,
+    })
+    if (expErr) { setOpError('فشل تسجيل المصروف: ' + (expErr.message || 'خطأ')); setSaving(false); return }
+    const { error: pmtErr } = await fixedExpensesService.createPayment({
+      item_id: item.id, team_id: teamId, period_month: period, amount,
+      paid_at: new Date().toISOString(), paid_by: user.id,
+      team_expense_id: expData?.id || null,
+    })
+    if (pmtErr) { setOpError('فشل تسجيل الدفعة: ' + (pmtErr.message || 'خطأ')); setSaving(false); return }
+    await load(); setShowPayFixed(null); setPayFixedAmt(''); setSaving(false)
+  }
+
+  async function editFixedPayment() {
+    if (!showEditPayment || !editPayReason || !teamId || !user) return
+    setSaving(true); setOpError('')
+    const newAmt = parseFloat(editPayAmt)
+    if (isNaN(newAmt)) { setOpError('المبلغ غير صحيح'); setSaving(false); return }
+    const { error } = await fixedExpensesService.editPayment(showEditPayment.id, {
+      amount: newAmt,
+      original_amount: showEditPayment.original_amount ?? showEditPayment.amount,
+      edit_reason: editPayReason,
+      edited_by: user.id,
+      edited_at: new Date().toISOString(),
+      edited_by_name: profile?.full_name || '',
+    })
+    if (error) { setOpError('فشل تعديل الدفعة: ' + (error.message || 'خطأ')); setSaving(false); return }
+    if (showEditPayment.team_expense_id) {
+      await teamExpensesService.update(showEditPayment.team_expense_id, { amount: newAmt })
+    }
+    await load(); setShowEditPayment(null); setEditPayAmt(''); setEditPayReason(''); setSaving(false)
+  }
+
+  async function deleteFixedItem(id: string) {
+    if (!confirm('هل تريد حذف هذا البند؟ سيتم حذف جميع سجلات الدفع المرتبطة به.')) return
+    await fixedExpensesService.deleteItem(id); await load()
+  }
+
+  async function toggleFixedItem(item: any) {
+    await fixedExpensesService.updateItem(item.id, { is_active: !item.is_active }); await load()
+  }
+
   async function handleReceiptUpload(files: FileList | null) {
     if (!files || files.length === 0) return
     setUploadingImg(true)
@@ -514,6 +634,9 @@ export default function FinancePage() {
             {isAdmin && tab === 'rewards' && (
               <button className="btn btn-primary btn-sm" onClick={() => setShowReward(true)}><Plus size={14}/>مكافأة</button>
             )}
+            {isAdmin && tab === 'fixed_expenses' && (
+              <button className="btn btn-primary btn-sm" onClick={() => setShowAddItem(true)}><Plus size={14}/>بند ثابت</button>
+            )}
           </div>
         }/>
 
@@ -522,6 +645,7 @@ export default function FinancePage() {
           { key: 'obligations', label: '﷼ الالتزامات' },
           { key: 'subscriptions', label: isPlayer ? '📅 اشتراكاتي' : '📅 الاشتراكات' },
           ...(canViewExpenses ? [{ key: 'expenses', label: '🧾 مصاريف الفريق' }] : []),
+          ...(canViewExpenses ? [{ key: 'fixed_expenses', label: '📌 مصاريف ثابتة' }] : []),
           ...(canViewExpenses ? [{ key: 'statement', label: '📊 كشف الحساب' }] : []),
           ...(isAdmin ? [{ key: 'rewards', label: '🎁 المكافآت' }] : []),
         ]}
@@ -1249,6 +1373,166 @@ export default function FinancePage() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* FIXED EXPENSES TAB                                                */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {tab === 'fixed_expenses' && canViewExpenses && (
+        loading ? <div className="flex justify-center py-10"><Spinner/></div> : (() => {
+          const duePeriods = getDuePeriods(fixedItems, fixedPayments)
+          const TYPE_ICONS: Record<string, string> = { 'راتب': '💼', 'فاتورة': '⚡', 'التزام': '📋', 'إيجار': '🏢' }
+          return (
+            <div>
+              {/* Due payments banner */}
+              {isAdmin && duePeriods.length > 0 && (
+                <div className="card border-amber-300 bg-amber-50 mb-4">
+                  <div className="font-extrabold text-amber-800 text-sm mb-3 flex items-center gap-2">
+                    <span className="text-base">⏰</span>
+                    مواعيد سداد مستحقة ({duePeriods.length})
+                  </div>
+                  <div className="space-y-2">
+                    {duePeriods.map(({ item, period, periodLabel }) => (
+                      <div key={`${item.id}-${period}`} className="flex items-center gap-2 py-1.5 border-b border-amber-100 last:border-0">
+                        <span className="text-lg flex-shrink-0">{TYPE_ICONS[item.item_type] || '📦'}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-sm text-slate-800 truncate">{item.name}</div>
+                          <div className="text-xs text-slate-500">{periodLabel} · {Number(item.default_amount).toLocaleString()} {RIYAL}</div>
+                        </div>
+                        <button
+                          onClick={() => { setShowPayFixed({ item, period, periodLabel }); setPayFixedAmt(String(item.default_amount)) }}
+                          className="flex items-center gap-1 text-xs bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-2.5 py-1.5 rounded-xl transition-colors border-none cursor-pointer flex-shrink-0">
+                          <CheckCircle size={12}/> تم السداد
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Summary hero */}
+              {fixedItems.length > 0 && (
+                <div className="hero-card mb-5">
+                  <div className="absolute top-0 left-0 w-40 h-40 rounded-full opacity-10 bg-white -translate-x-16 -translate-y-12"/>
+                  <div className="relative flex items-center gap-4">
+                    <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center flex-shrink-0 text-2xl">📌</div>
+                    <div>
+                      <div className="text-white/70 text-xs font-bold mb-0.5">إجمالي المدفوع (مصاريف ثابتة)</div>
+                      <div className="text-white text-2xl font-extrabold">
+                        {fixedPayments.reduce((s, p) => s + Number(p.amount), 0).toLocaleString()} {RIYAL}
+                      </div>
+                      <div className="text-white/60 text-xs mt-1">{fixedItems.filter(i => i.is_active).length} بند نشط · {fixedItems.length} بند إجمالي</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Items list */}
+              {fixedItems.length === 0
+                ? <div className="card"><EmptyState icon={<Receipt size={24}/>} title="لا توجد بنود ثابتة" description={isAdmin ? 'أضف بند ثابت كالرواتب أو الفواتير الشهرية' : 'لا توجد مصاريف ثابتة مضافة'}/></div>
+                : <div className="space-y-2.5">
+                    {fixedItems.map(item => {
+                      const itemPmts = fixedPayments.filter(p => p.item_id === item.id).sort((a: any, b: any) => b.period_month.localeCompare(a.period_month))
+                      const isExpanded = expandedFixedItems.has(item.id)
+                      const totalPaid = itemPmts.reduce((s: number, p: any) => s + Number(p.amount), 0)
+                      return (
+                        <div key={item.id} className={`card mb-0 ${!item.is_active ? 'opacity-60' : ''}`}>
+                          <div className="flex items-start gap-3">
+                            <div className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center flex-shrink-0 text-lg">
+                              {TYPE_ICONS[item.item_type] || '📦'}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-sm text-slate-800">{item.name}</span>
+                                <span className="badge bg-slate-100 text-slate-600 text-xs">{item.item_type}</span>
+                                {!item.is_active && <span className="badge bg-red-100 text-red-600 text-xs">متوقف</span>}
+                              </div>
+                              <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400 flex-wrap">
+                                <span>الاستحقاق: يوم {item.due_day}</span>
+                                <span>·</span>
+                                <span>{item.recurrence_type === 'continuous' ? 'مستمر' : `${item.recurrence_count} مرة`}</span>
+                                {itemPmts.length > 0 && <span className="text-brand-500 font-bold">· {itemPmts.length} دفعة مسجلة</span>}
+                              </div>
+                              {itemPmts.length > 0 && (
+                                <div className="text-xs text-emerald-600 font-bold mt-0.5">
+                                  إجمالي المدفوع: {totalPaid.toLocaleString()} {RIYAL}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                              <div className="font-extrabold text-brand-700 text-sm">{Number(item.default_amount).toLocaleString()} {RIYAL}</div>
+                              <div className="flex items-center gap-1">
+                                {canManageExpenses && (
+                                  <>
+                                    <button onClick={() => toggleFixedItem(item)}
+                                      className={`text-xs px-2 py-1 rounded-lg border-none cursor-pointer font-bold transition-colors ${item.is_active ? 'bg-slate-100 text-slate-500 hover:bg-red-50 hover:text-red-500' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'}`}>
+                                      {item.is_active ? 'إيقاف' : 'تفعيل'}
+                                    </button>
+                                    <button onClick={() => deleteFixedItem(item.id)} className="text-red-400 hover:text-red-600 p-1 border-none bg-transparent cursor-pointer">
+                                      <Trash2 size={13}/>
+                                    </button>
+                                  </>
+                                )}
+                                <button
+                                  onClick={() => setExpandedFixedItems(prev => { const n = new Set(prev); n.has(item.id) ? n.delete(item.id) : n.add(item.id); return n })}
+                                  className="p-1 border-none bg-transparent cursor-pointer text-slate-400 hover:text-brand-600">
+                                  {isExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Payment history */}
+                          {isExpanded && (
+                            <div className="mt-3 border-t border-slate-100 pt-3">
+                              <div className="text-xs font-bold text-slate-500 mb-2">سجل المدفوعات الشهرية</div>
+                              {itemPmts.length === 0
+                                ? <div className="text-xs text-slate-400 text-center py-2">لا توجد دفعات مسجلة بعد</div>
+                                : <div className="space-y-1.5">
+                                    {itemPmts.map((pmt: any) => {
+                                      const [py, pm] = pmt.period_month.split('-')
+                                      const label = `${AR_MONTHS[parseInt(pm) - 1]} ${py}`
+                                      return (
+                                        <div key={pmt.id} className="flex items-start gap-2 py-1.5 border-b border-slate-50 last:border-0">
+                                          <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-1.5 flex-wrap">
+                                              <span className="font-bold text-xs text-slate-700">{label}</span>
+                                              {pmt.original_amount && (
+                                                <span className="badge bg-amber-100 text-amber-700 text-xs">معدّل</span>
+                                              )}
+                                            </div>
+                                            {pmt.original_amount && (
+                                              <div className="text-xs text-slate-400 mt-0.5">
+                                                الأصلي: {pmt.original_amount} {RIYAL} · بواسطة: {pmt.edited_by_name || '—'} · السبب: {pmt.edit_reason}
+                                              </div>
+                                            )}
+                                            <div className="text-xs text-slate-400">{pmt.paid_at ? new Date(pmt.paid_at).toLocaleDateString('ar-SA') : ''}</div>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                                            <span className="font-extrabold text-sm text-brand-700">{Number(pmt.amount).toLocaleString()} {RIYAL}</span>
+                                            {canManageExpenses && (
+                                              <button
+                                                onClick={() => { setShowEditPayment({ ...pmt, itemName: item.name, periodLabel: label }); setEditPayAmt(String(pmt.amount)) }}
+                                                className="text-slate-400 hover:text-brand-600 p-0.5 border-none bg-transparent cursor-pointer" title="تعديل المبلغ">
+                                                <Settings size={12}/>
+                                              </button>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                              }
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+              }
+            </div>
+          )
+        })()
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════ */}
       {/* MODALS                                                            */}
       {/* ══════════════════════════════════════════════════════════════════ */}
 
@@ -1644,6 +1928,114 @@ export default function FinancePage() {
             {saving ? <Spinner size="sm"/> : 'إضافة المكافأة'}
           </button>
         </div>
+      </Modal>
+
+      {/* Add Fixed Item */}
+      <Modal open={showAddItem} onClose={() => setShowAddItem(false)} title="📌 إضافة بند ثابت" width="max-w-md">
+        <FormField label="نوع البند" required>
+          <div className="flex gap-2 flex-wrap">
+            {['راتب', 'فاتورة', 'التزام', 'إيجار'].map(t => (
+              <button key={t} onClick={() => setIf('item_type', t)}
+                className={`flex-1 py-2 rounded-xl border text-xs font-bold transition-all ${itemForm.item_type === t ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>{t}</button>
+            ))}
+          </div>
+        </FormField>
+        <FormField label="الاسم أو الجهة" required>
+          <input className="form-input" value={itemForm.name} onChange={e => setIf('name', e.target.value)} placeholder="مثال: مركز إعلامي، راتب المدرب، فاتورة الكهرباء..."/>
+        </FormField>
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label={`المبلغ الافتراضي (${RIYAL})`} required>
+            <input className="form-input" type="number" value={itemForm.default_amount} onChange={e => setIf('default_amount', e.target.value)} placeholder="1000"/>
+          </FormField>
+          <FormField label="يوم الاستحقاق من الشهر">
+            <input className="form-input" type="number" min="1" max="28" value={itemForm.due_day} onChange={e => setIf('due_day', Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))}/>
+          </FormField>
+        </div>
+        <FormField label="التكرار">
+          <div className="flex gap-2 mb-2">
+            {[['continuous', 'مستمر حتى الإلغاء'], ['count', 'عدد محدد']].map(([v, l]) => (
+              <button key={v} onClick={() => setIf('recurrence_type', v)}
+                className={`flex-1 py-2 rounded-xl border text-xs font-bold transition-all ${itemForm.recurrence_type === v ? 'bg-brand-500 text-white border-brand-500' : 'border-slate-200 hover:bg-slate-50'}`}>{l}</button>
+            ))}
+          </div>
+          {itemForm.recurrence_type === 'count' && (
+            <div className="flex items-center gap-2">
+              <input className="form-input" type="number" min="1" value={itemForm.recurrence_count}
+                onChange={e => setIf('recurrence_count', parseInt(e.target.value) || 1)}/>
+              <span className="text-xs text-slate-400 whitespace-nowrap">شهر / مرة</span>
+            </div>
+          )}
+        </FormField>
+        <div className="flex gap-2 justify-end mt-4">
+          <button className="btn btn-ghost" onClick={() => setShowAddItem(false)}>إلغاء</button>
+          <button className="btn btn-primary" onClick={addFixedItem} disabled={saving}>{saving ? <Spinner size="sm"/> : 'إضافة'}</button>
+        </div>
+      </Modal>
+
+      {/* Pay Fixed Item */}
+      <Modal open={!!showPayFixed} onClose={() => { setShowPayFixed(null); setPayFixedAmt('') }}
+        title={`✅ تأكيد السداد — ${showPayFixed?.item?.name}`}>
+        {showPayFixed && (
+          <>
+            <div className="bg-slate-50 rounded-xl p-3 mb-4 text-sm">
+              <div className="flex justify-between mb-1">
+                <span className="text-slate-500">الفترة</span>
+                <span className="font-bold text-slate-700">{showPayFixed.periodLabel}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">المبلغ الافتراضي</span>
+                <span className="font-bold text-brand-700">{Number(showPayFixed.item.default_amount).toLocaleString()} {RIYAL}</span>
+              </div>
+            </div>
+            <FormField label={`المبلغ الفعلي (${RIYAL})`}>
+              <input className="form-input" type="number" value={payFixedAmt}
+                onChange={e => setPayFixedAmt(e.target.value)}
+                placeholder={String(showPayFixed.item.default_amount)}/>
+              <div className="text-xs text-slate-400 mt-1">يمكن تعديله إذا اختلف المبلغ الفعلي عن الافتراضي</div>
+            </FormField>
+            <div className="flex gap-2 justify-end mt-4">
+              <button className="btn btn-ghost" onClick={() => { setShowPayFixed(null); setPayFixedAmt('') }}>إلغاء</button>
+              <button className="btn btn-primary" onClick={payFixedItem} disabled={saving}>{saving ? <Spinner size="sm"/> : 'تأكيد السداد'}</button>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      {/* Edit Fixed Payment */}
+      <Modal open={!!showEditPayment} onClose={() => { setShowEditPayment(null); setEditPayAmt(''); setEditPayReason('') }}
+        title={`تعديل المبلغ — ${showEditPayment?.itemName}`}>
+        {showEditPayment && (
+          <>
+            <div className="bg-slate-50 rounded-xl p-3 mb-4 text-sm">
+              <div className="flex justify-between mb-1">
+                <span className="text-slate-500">الفترة</span>
+                <span className="font-bold">{showEditPayment.periodLabel}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">المبلغ الحالي</span>
+                <span className="font-bold text-brand-700">{showEditPayment.amount} {RIYAL}</span>
+              </div>
+              {showEditPayment.original_amount && (
+                <div className="mt-2 text-xs text-amber-700 bg-amber-50 rounded-lg p-2">
+                  سبق تعديله بواسطة: <strong>{showEditPayment.edited_by_name || '—'}</strong> — السبب: {showEditPayment.edit_reason}
+                </div>
+              )}
+            </div>
+            <FormField label={`المبلغ الجديد (${RIYAL})`} required>
+              <input className="form-input" type="number" value={editPayAmt} onChange={e => setEditPayAmt(e.target.value)}/>
+            </FormField>
+            <FormField label="سبب التعديل" required>
+              <input className="form-input" value={editPayReason} onChange={e => setEditPayReason(e.target.value)}
+                placeholder="مثال: ارتفع المبلغ هذا الشهر، تصحيح خطأ في الإدخال..."/>
+            </FormField>
+            <div className="flex gap-2 justify-end mt-4">
+              <button className="btn btn-ghost" onClick={() => { setShowEditPayment(null); setEditPayAmt(''); setEditPayReason('') }}>إلغاء</button>
+              <button className="btn btn-primary" onClick={editFixedPayment} disabled={saving || !editPayReason}>
+                {saving ? <Spinner size="sm"/> : 'حفظ التعديل'}
+              </button>
+            </div>
+          </>
+        )}
       </Modal>
 
       {/* Image Preview */}

@@ -289,3 +289,34 @@ export interface JoinRequest {
   profile?: Profile
   team?: Team
 }
+
+export interface FixedExpenseItem {
+  id: string
+  team_id: string
+  item_type: 'راتب' | 'فاتورة' | 'التزام' | 'إيجار'
+  name: string
+  due_day: number
+  recurrence_type: 'count' | 'continuous'
+  recurrence_count?: number
+  default_amount: number
+  is_active: boolean
+  created_by?: string
+  created_at: string
+}
+
+export interface FixedExpensePayment {
+  id: string
+  item_id: string
+  team_id: string
+  period_month: string
+  amount: number
+  paid_at: string
+  paid_by?: string
+  original_amount?: number
+  edit_reason?: string
+  edited_by?: string
+  edited_at?: string
+  edited_by_name?: string
+  team_expense_id?: string
+  created_at: string
+}
