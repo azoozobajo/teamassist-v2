@@ -33,6 +33,8 @@ import MyChildPage from './pages/team/MyChildPage'
 import RegulationsPage from './pages/team/RegulationsPage'
 import MedicalPage from './pages/team/MedicalPage'
 import MeasurementsPage from './pages/team/MeasurementsPage'
+import MailPage from './pages/team/MailPage'
+import SportProfilePage from './pages/team/SportProfilePage'
 import AdminLayout from './components/layout/AdminLayout'
 import AdminDashboardPage from './pages/admin/AdminDashboardPage'
 import AdminTeamsPage from './pages/admin/AdminTeamsPage'
@@ -95,6 +97,8 @@ export default function App() {
               <Route path="/team/:teamId/regulations" element={<RegulationsPage/>}/>
               <Route path="/team/:teamId/medical" element={<MedicalPage/>}/>
               <Route path="/team/:teamId/measurements" element={<MeasurementsPage/>}/>
+              <Route path="/team/:teamId/mail" element={<MailPage/>}/>
+              <Route path="/team/:teamId/sport-profile" element={<SportProfilePage/>}/>
             </Route>
           </Route>
           <Route path="/join/:code" element={<JoinViaLink/>}/>

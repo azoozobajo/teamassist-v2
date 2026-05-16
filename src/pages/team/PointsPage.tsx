@@ -14,11 +14,23 @@ const CAT_COLOR: Record<string,string> = {
 }
 const MEDALS = ['🥇','🥈','🥉']
 const DEFAULT_AUTO = [
-  { event_trigger:'حضور التدريب', points: 5, is_active: true },
+  { event_trigger:'حضور التدريب',  points: 5,  is_active: true },
   { event_trigger:'حضور المباراة', points: 10, is_active: true },
-  { event_trigger:'حضور الاجتماع', points: 3, is_active: true },
-  { event_trigger:'حضور المعسكر', points: 15, is_active: false },
+  { event_trigger:'حضور الاجتماع', points: 3,  is_active: true },
+  { event_trigger:'حضور المعسكر',  points: 15, is_active: false },
+  { event_trigger:'سلسلة 3',       points: 15, is_active: true },
+  { event_trigger:'سلسلة 5',       points: 25, is_active: true },
+  { event_trigger:'سلسلة 10',      points: 50, is_active: true },
+  { event_trigger:'سلسلة كل 5',    points: 10, is_active: true },
 ]
+const ATTENDANCE_TRIGGERS = ['حضور التدريب','حضور المباراة','حضور الاجتماع','حضور المعسكر']
+const STREAK_TRIGGERS     = ['سلسلة 3','سلسلة 5','سلسلة 10','سلسلة كل 5']
+const STREAK_LABELS: Record<string,string> = {
+  'سلسلة 3':    '🔥 3 جلسات متتالية',
+  'سلسلة 5':    '🔥 5 جلسات متتالية',
+  'سلسلة 10':   '🔥 10 جلسات متتالية',
+  'سلسلة كل 5': '🔥 كل 5 بعد العاشرة',
+}
 
 export default function PointsPage() {
   const { teamId } = useParams()
@@ -50,38 +62,43 @@ export default function PointsPage() {
   useEffect(() => {
     if (!teamId || !user) return
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
-    teamService.getMembers(teamId).then(setMembers)
-    load()
+    teamService.getMembers(teamId).then(mems => {
+      setMembers(mems)
+      load(mems)
+    })
   }, [teamId, user])
 
-  async function load() {
+  function buildLeaderboard(allMembers: any[], txList: any[]) {
+    const players = allMembers.filter(m => m.role === 'player' && m.status !== 'removed')
+    const totals: Record<string, number> = {}
+    txList.forEach((t: any) => { totals[t.user_id] = (totals[t.user_id] || 0) + t.points })
+    return players.map(p => ({
+      userId: p.user_id,
+      name:   p.profile?.full_name || '?',
+      init:   (p.profile?.full_name || '?')[0],
+      pts:    totals[p.user_id] || 0,
+    })).sort((a, b) => b.pts - a.pts)
+  }
+
+  async function load(mems?: any[]) {
     if (!teamId) return
     setLoading(true)
-    const [lbData, h, c, a] = await Promise.all([
-      pointsService.getLeaderboard(teamId),
+    const [h, c, a] = await Promise.all([
       pointsService.getHistory(teamId, 500),
       pointsService.getCompetitions(teamId),
       pointsService.getAutoSettings(teamId),
     ])
     setHistory(h); setComps(c)
-    if (a.length) setAutoSettings(a)
-    // Use RPC leaderboard if available, otherwise build from full history
-    if (lbData && lbData.length > 0) {
-      setLb(lbData.map((r: any) => ({
-        userId: r.user_id,
-        name: r.full_name || r.profile?.full_name || '?',
-        init: (r.full_name || r.profile?.full_name || '?')[0],
-        pts: r.total_points ?? r.pts ?? 0
-      })).sort((a: any, b: any) => b.pts - a.pts))
-    } else {
-      // Fallback: build from history
-      const totals: Record<string,{name:string,init:string,pts:number,userId:string}> = {}
-      h.forEach((t: any) => {
-        if (!totals[t.user_id]) totals[t.user_id] = { name: t.profile?.full_name || '?', init: t.profile?.full_name?.[0] || '?', pts: 0, userId: t.user_id }
-        totals[t.user_id].pts += t.points
-      })
-      setLb(Object.values(totals).sort((a,b) => b.pts - a.pts))
-    }
+    // Merge DB settings with defaults so all triggers always appear
+    const merged = DEFAULT_AUTO.map(def => {
+      const fromDb = a.find((x: any) => x.event_trigger === def.event_trigger)
+      return fromDb ? { ...def, ...fromDb } : def
+    })
+    a.forEach((x: any) => {
+      if (!merged.find(m => m.event_trigger === x.event_trigger)) merged.push(x)
+    })
+    setAutoSettings(merged)
+    setLb(buildLeaderboard(mems ?? members, h))
     setLoading(false)
   }
 
@@ -93,14 +110,7 @@ export default function PointsPage() {
     return true
   })
 
-  const filteredLb = (() => {
-    const totals: Record<string,{name:string,init:string,pts:number,userId:string}> = {}
-    filteredHistory.forEach((t: any) => {
-      if (!totals[t.user_id]) totals[t.user_id] = { name: t.profile?.full_name || '?', init: t.profile?.full_name?.[0] || '?', pts: 0, userId: t.user_id }
-      totals[t.user_id].pts += t.points
-    })
-    return Object.values(totals).sort((a,b) => b.pts - a.pts)
-  })()
+  const filteredLb = buildLeaderboard(members, filteredHistory)
 
   const displayLb      = hasFilter ? filteredLb      : lb
   const displayHistory = hasFilter ? filteredHistory : history
@@ -375,22 +385,60 @@ export default function PointsPage() {
 
       {/* Auto Settings Modal */}
       <Modal open={showSettings} onClose={() => setShowSettings(false)} title="⚙️ النقاط التلقائية">
-        <div className="text-xs text-slate-400 mb-3">تُضاف تلقائياً عند تسجيل الحضور</div>
-        <div className="space-y-2">
-          {autoSettings.map((s,i) => (
-            <div key={i} className="flex items-center gap-3 p-2.5 bg-slate-50 rounded-xl">
-              <input type="checkbox" checked={s.is_active}
-                onChange={e => { const a=[...autoSettings]; a[i]={...a[i],is_active:e.target.checked}; setAutoSettings(a) }}
-                className="w-4 h-4 accent-brand-500"/>
-              <span className="flex-1 text-sm">{s.event_trigger}</span>
-              <input type="number" value={s.points}
-                onChange={e => { const a=[...autoSettings]; a[i]={...a[i],points:parseInt(e.target.value)||0}; setAutoSettings(a) }}
-                className="w-16 text-center border border-slate-200 rounded-lg py-1 text-sm"/>
-              <span className="text-xs text-slate-400">نقطة</span>
-            </div>
-          ))}
+
+        {/* Attendance Points Section */}
+        <div className="mb-5">
+          <div className="flex items-center gap-1.5 mb-1">
+            <span className="text-sm">📋</span>
+            <span className="text-xs font-bold text-slate-700">نقاط الحضور</span>
+          </div>
+          <div className="text-xs text-slate-400 mb-2">تُضاف تلقائياً عند تسجيل حضور اللاعب</div>
+          <div className="space-y-2">
+            {autoSettings.filter(s => ATTENDANCE_TRIGGERS.includes(s.event_trigger)).map(s => {
+              const i = autoSettings.findIndex(x => x.event_trigger === s.event_trigger)
+              return (
+                <div key={s.event_trigger} className="flex items-center gap-3 p-2.5 bg-slate-50 rounded-xl">
+                  <input type="checkbox" checked={s.is_active}
+                    onChange={e => { const a=[...autoSettings]; a[i]={...a[i],is_active:e.target.checked}; setAutoSettings(a) }}
+                    className="w-4 h-4 accent-brand-500"/>
+                  <span className="flex-1 text-sm">{s.event_trigger}</span>
+                  <input type="number" value={s.points}
+                    onChange={e => { const a=[...autoSettings]; a[i]={...a[i],points:parseInt(e.target.value)||0}; setAutoSettings(a) }}
+                    className="w-16 text-center border border-slate-200 rounded-lg py-1 text-sm"/>
+                  <span className="text-xs text-slate-400">نقطة</span>
+                </div>
+              )
+            })}
+          </div>
         </div>
-        <div className="flex gap-2 justify-end mt-4">
+
+        {/* Streak Bonuses Section */}
+        <div>
+          <div className="flex items-center gap-1.5 mb-1">
+            <span className="text-sm">🔥</span>
+            <span className="text-xs font-bold text-slate-700">مكافآت السلسلة التلقائية</span>
+          </div>
+          <div className="text-xs text-slate-400 mb-2">مكافآت إضافية تُمنح عند الحضور المتواصل — الغياب بعذر لا يقطع السلسلة</div>
+          <div className="space-y-2">
+            {autoSettings.filter(s => STREAK_TRIGGERS.includes(s.event_trigger)).map(s => {
+              const i = autoSettings.findIndex(x => x.event_trigger === s.event_trigger)
+              return (
+                <div key={s.event_trigger} className="flex items-center gap-3 p-2.5 bg-amber-50 rounded-xl border border-amber-100">
+                  <input type="checkbox" checked={s.is_active}
+                    onChange={e => { const a=[...autoSettings]; a[i]={...a[i],is_active:e.target.checked}; setAutoSettings(a) }}
+                    className="w-4 h-4 accent-amber-500"/>
+                  <span className="flex-1 text-sm">{STREAK_LABELS[s.event_trigger] || s.event_trigger}</span>
+                  <input type="number" value={s.points}
+                    onChange={e => { const a=[...autoSettings]; a[i]={...a[i],points:parseInt(e.target.value)||0}; setAutoSettings(a) }}
+                    className="w-16 text-center border border-amber-200 rounded-lg py-1 text-sm"/>
+                  <span className="text-xs text-slate-400">نقطة</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="flex gap-2 justify-end mt-5">
           <button className="btn btn-ghost" onClick={() => setShowSettings(false)}>إغلاق</button>
           <button className="btn btn-primary" onClick={saveAutoSettings}>حفظ</button>
         </div>

@@ -276,39 +276,49 @@ export function ConfirmDialog({ open, title, message, onConfirm, onCancel, dange
 }
 
 // ── AttendanceButton ───────────────────────────────────────────────────
-export function AttendanceButton({ status, onSelect, locked, compact }: {
-  status: string; onSelect: (s: string) => void; locked?: boolean; compact?: boolean
+export function AttendanceButton({ status, onSelect, locked, compact, includeExcused }: {
+  status: string; onSelect: (s: string) => void; locked?: boolean; compact?: boolean; includeExcused?: boolean
 }) {
-  const options = [
+  const baseOptions = [
     {
       key: 'present',
-      label: 'سأحضر',
+      label: 'حاضر',
       icon: '✓',
       activeCls: 'bg-emerald-500 text-white shadow-lg shadow-emerald-200',
       idleCls:   'bg-white border-2 border-emerald-200 text-emerald-600 hover:bg-emerald-50',
     },
     {
-      key: 'uncertain',
-      label: 'ربما',
-      icon: '?',
-      activeCls: 'bg-amber-400 text-white shadow-lg shadow-amber-200',
-      idleCls:   'bg-white border-2 border-amber-200 text-amber-600 hover:bg-amber-50',
+      key: 'late',
+      label: 'متأخر',
+      icon: '⏱',
+      activeCls: 'bg-orange-400 text-white shadow-lg shadow-orange-200',
+      idleCls:   'bg-white border-2 border-orange-200 text-orange-500 hover:bg-orange-50',
     },
     {
       key: 'absent',
-      label: 'لن أحضر',
+      label: 'غائب',
       icon: '✗',
       activeCls: 'bg-red-500 text-white shadow-lg shadow-red-200',
       idleCls:   'bg-white border-2 border-red-200 text-red-500 hover:bg-red-50',
     },
     {
-      key: 'late',
-      label: 'سأتأخر',
-      icon: '⏱',
-      activeCls: 'bg-orange-400 text-white shadow-lg shadow-orange-200',
-      idleCls:   'bg-white border-2 border-orange-200 text-orange-500 hover:bg-orange-50',
+      key: 'uncertain',
+      label: 'غير متأكد',
+      icon: '?',
+      activeCls: 'bg-amber-400 text-white shadow-lg shadow-amber-200',
+      idleCls:   'bg-white border-2 border-amber-200 text-amber-600 hover:bg-amber-50',
     },
   ]
+
+  const excusedOption = {
+    key: 'excused',
+    label: 'بعذر',
+    icon: '📋',
+    activeCls: 'bg-slate-500 text-white shadow-lg shadow-slate-200',
+    idleCls:   'bg-white border-2 border-slate-300 text-slate-600 hover:bg-slate-50',
+  }
+
+  const options = includeExcused ? [...baseOptions, excusedOption] : baseOptions
 
   if (compact) {
     return (
@@ -318,6 +328,7 @@ export function AttendanceButton({ status, onSelect, locked, compact }: {
             key={o.key}
             disabled={locked}
             onClick={() => !locked && onSelect(o.key)}
+            title={o.label}
             className={cn(
               'rounded-xl border-none font-bold transition-all text-xs px-2.5 py-1.5 active:scale-95',
               status === o.key ? o.activeCls : o.idleCls,

@@ -8,7 +8,7 @@ import {
 import { useAuth } from '../../contexts/AuthContext'
 import {
   financeService, teamService, teamExpensesService,
-  permissionService, subscriptionService
+  permissionService, subscriptionService, rewardService, notificationService
 } from '../../services'
 import {
   Spinner, PageHeader, Modal, FormField, ProgressBar,
@@ -23,7 +23,7 @@ function monthAgoStr() {
 
 export default function FinancePage() {
   const { teamId } = useParams()
-  const { user } = useAuth()
+  const { user, profile } = useAuth()
 
   const [obs, setObs] = useState<any[]>([])
   const [payments, setPayments] = useState<any[]>([])
@@ -85,6 +85,14 @@ export default function FinancePage() {
   const [previewImg, setPreviewImg] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // ── rewards state ─────────────────────────────────────────────────────
+  const [rewards, setRewards] = useState<any[]>([])
+  const [showReward, setShowReward] = useState(false)
+  const [rewardForm, setRewardForm] = useState({
+    title: '', notes: '', amount: '', user_ids: [] as string[]
+  })
+  const setRwf = (k: string, v: any) => setRewardForm(p => ({ ...p, [k]: v }))
+
   useEffect(() => {
     if (!teamId || !user) return
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
@@ -97,12 +105,13 @@ export default function FinancePage() {
   async function load() {
     if (!teamId) return
     setLoading(true)
-    const [o, p, e] = await Promise.all([
+    const [o, p, e, rw] = await Promise.all([
       financeService.getObligations(teamId),
       financeService.getPayments(teamId),
-      teamExpensesService.getAll(teamId)
+      teamExpensesService.getAll(teamId),
+      rewardService.getAll(teamId),
     ])
-    setObs(o); setPayments(p); setExpenses(e); setLoading(false)
+    setObs(o); setPayments(p); setExpenses(e); setRewards(rw); setLoading(false)
     loadSubs()
   }
 
@@ -167,9 +176,14 @@ export default function FinancePage() {
     (!stDateFrom || e.expense_date >= stDateFrom) &&
     (!stDateTo   || e.expense_date <= stDateTo)
   )
+  const stRewards = rewards.filter(r =>
+    (!stDateFrom || (r.created_at || '').slice(0, 10) >= stDateFrom) &&
+    (!stDateTo   || (r.created_at || '').slice(0, 10) <= stDateTo)
+  )
   const stTotalCredit = stPayments.reduce((s, p) => s + Number(p.paid_amount), 0)
                       + stSubs.reduce((s, sub) => s + Number(sub.paid_amount), 0)
   const stTotalDebit  = stExpenses.reduce((s, e) => s + Number(e.amount), 0)
+                      + stRewards.reduce((s, r) => s + Number(r.amount), 0)
   const stBalance     = stTotalCredit - stTotalDebit
 
   // group filtered subs by player
@@ -366,6 +380,42 @@ export default function FinancePage() {
     await teamExpensesService.delete(id); await load()
   }
 
+  async function addReward() {
+    if (!rewardForm.title || !rewardForm.amount || rewardForm.user_ids.length === 0 || !teamId || !user) return
+    setSaving(true); setOpError('')
+    const amount = parseFloat(rewardForm.amount)
+    const inserts = rewardForm.user_ids.map(uid => ({
+      team_id: teamId, user_id: uid, title: rewardForm.title,
+      notes: rewardForm.notes || null, amount, created_by: user.id,
+    }))
+    for (const rec of inserts) {
+      const { error } = await rewardService.create(rec)
+      if (error) { setOpError('فشل إضافة المكافأة: ' + (error.message || 'خطأ')); setSaving(false); return }
+    }
+    // Send in-app notification to each rewarded member
+    await notificationService.create(
+      rewardForm.user_ids.map(uid => ({
+        user_id: uid,
+        team_id: teamId,
+        title: '🎁 مكافأة مالية',
+        body: `تم منحك مكافأة "${rewardForm.title}" بمبلغ ${amount.toLocaleString()} ${RIYAL}`,
+        type: 'reward',
+        is_read: false,
+        sender_name: profile?.full_name || null,
+        team_logo: team?.logo_url || null,
+      }))
+    )
+    await load()
+    setShowReward(false)
+    setRewardForm({ title: '', notes: '', amount: '', user_ids: [] })
+    setSaving(false)
+  }
+
+  async function deleteReward(id: string) {
+    if (!confirm('هل تريد حذف هذه المكافأة؟')) return
+    await rewardService.delete(id); await load()
+  }
+
   async function handleReceiptUpload(files: FileList | null) {
     if (!files || files.length === 0) return
     setUploadingImg(true)
@@ -461,6 +511,9 @@ export default function FinancePage() {
             {isAdmin && tab === 'obligations' && (
               <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}><Plus size={14}/>التزام جديد</button>
             )}
+            {isAdmin && tab === 'rewards' && (
+              <button className="btn btn-primary btn-sm" onClick={() => setShowReward(true)}><Plus size={14}/>مكافأة</button>
+            )}
           </div>
         }/>
 
@@ -469,7 +522,8 @@ export default function FinancePage() {
           { key: 'obligations', label: '﷼ الالتزامات' },
           { key: 'subscriptions', label: isPlayer ? '📅 اشتراكاتي' : '📅 الاشتراكات' },
           ...(canViewExpenses ? [{ key: 'expenses', label: '🧾 مصاريف الفريق' }] : []),
-          ...(canViewExpenses ? [{ key: 'statement', label: '📊 كشف الحساب' }] : [])
+          ...(canViewExpenses ? [{ key: 'statement', label: '📊 كشف الحساب' }] : []),
+          ...(isAdmin ? [{ key: 'rewards', label: '🎁 المكافآت' }] : []),
         ]}
         active={tab} onChange={setTab}/>
 
@@ -1079,6 +1133,16 @@ export default function FinancePage() {
               })
             })
 
+            stRewards.forEach(r => {
+              entries.push({
+                date: (r.created_at || '').slice(0, 10),
+                label: r.profile?.full_name || 'عضو',
+                sub: `🎁 مكافأة — ${r.title}`,
+                amount: Number(r.amount),
+                type: 'debit'
+              })
+            })
+
             entries.sort((a, b) => b.date.localeCompare(a.date))
 
             if (entries.length === 0) return (
@@ -1110,6 +1174,77 @@ export default function FinancePage() {
               </div>
             )
           })()}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* REWARDS TAB                                                       */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {tab === 'rewards' && isAdmin && (
+        <div>
+          {/* Summary hero */}
+          {rewards.length > 0 && (
+            <div className="hero-card mb-5">
+              <div className="relative">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-10 h-10 bg-white/20 rounded-2xl flex items-center justify-center text-xl">🎁</div>
+                  <div>
+                    <div className="text-white/70 text-xs font-bold">إجمالي المكافآت</div>
+                    <div className="text-white text-2xl font-extrabold leading-none">
+                      {rewards.reduce((s, r) => s + Number(r.amount), 0).toLocaleString()} {RIYAL}
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mt-1">
+                  <div className="bg-white/15 rounded-2xl p-3 text-center">
+                    <div className="text-white text-lg font-extrabold">{rewards.length}</div>
+                    <div className="text-white/70 text-xs mt-0.5">عدد المكافآت</div>
+                  </div>
+                  <div className="bg-white/15 rounded-2xl p-3 text-center">
+                    <div className="text-white text-lg font-extrabold">
+                      {new Set(rewards.map(r => r.user_id)).size}
+                    </div>
+                    <div className="text-white/70 text-xs mt-0.5">عضو مكافأ</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Rewards list */}
+          {rewards.length === 0 ? (
+            <div className="card text-center py-10">
+              <div className="text-4xl mb-3">🎁</div>
+              <div className="font-bold text-slate-600 text-sm">لا توجد مكافآت بعد</div>
+              <div className="text-xs text-slate-400 mt-1">اضغط "مكافأة" أعلى الصفحة لإضافة أولى المكافآت</div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {rewards.map(r => (
+                <div key={r.id} className="card mb-0 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-100 flex items-center justify-center flex-shrink-0 text-xl">🎁</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-sm text-slate-800 truncate">{r.title}</div>
+                    <div className="text-xs text-slate-500 truncate">
+                      {r.profile?.full_name || '—'}
+                      {r.notes && <span className="text-slate-400"> · {r.notes}</span>}
+                    </div>
+                    <div className="text-xs text-slate-400 mt-0.5">{(r.created_at || '').slice(0, 10)}</div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <div className="text-right">
+                      <div className="text-base font-extrabold text-emerald-600">+{Number(r.amount).toLocaleString()}</div>
+                      <div className="text-xs text-slate-400">{RIYAL}</div>
+                    </div>
+                    <button onClick={() => deleteReward(r.id)}
+                      className="w-8 h-8 flex items-center justify-center rounded-xl bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-600 transition-colors border-none cursor-pointer">
+                      <Trash2 size={14}/>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -1458,6 +1593,57 @@ export default function FinancePage() {
             </>
           )
         })()}
+      </Modal>
+
+      {/* Add Reward Modal */}
+      <Modal open={showReward} onClose={() => { setShowReward(false); setRewardForm({ title: '', notes: '', amount: '', user_ids: [] }) }}
+        title="🎁 إضافة مكافأة مالية" width="max-w-lg">
+        <FormField label="عنوان المكافأة" required>
+          <input className="form-input" value={rewardForm.title}
+            onChange={e => setRwf('title', e.target.value)} placeholder="مكافأة أداء الموسم..."/>
+        </FormField>
+        <FormField label="ملاحظة (اختياري)">
+          <input className="form-input" value={rewardForm.notes}
+            onChange={e => setRwf('notes', e.target.value)} placeholder="تفاصيل إضافية عن المكافأة..."/>
+        </FormField>
+        <FormField label="من يستحق المكافأة" required>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-slate-400">جميع أعضاء الفريق عدا أولياء الأمور والضيوف</span>
+            <button type="button"
+              className="text-xs font-bold text-brand-600 hover:text-brand-800 transition-colors"
+              onClick={() => {
+                const eligible = members.filter(m => !['parent', 'guest'].includes(m.role)).map(m => m.user_id)
+                const allSel   = eligible.length > 0 && eligible.every(id => rewardForm.user_ids.includes(id))
+                setRwf('user_ids', allSel ? [] : eligible)
+              }}>
+              {members.filter(m => !['parent', 'guest'].includes(m.role)).length > 0 &&
+               members.filter(m => !['parent', 'guest'].includes(m.role)).every(m => rewardForm.user_ids.includes(m.user_id))
+                ? '✕ إلغاء الكل'
+                : '✓ تحديد الكل'}
+            </button>
+          </div>
+          <CheckboxList
+            items={members
+              .filter(m => !['parent', 'guest'].includes(m.role))
+              .map(m => ({ value: m.user_id, label: m.profile?.full_name || '?', sub: ROLE_LABELS[m.role] || m.role }))}
+            selected={rewardForm.user_ids}
+            onChange={v => setRwf('user_ids', v)}/>
+        </FormField>
+        <FormField label={`المبلغ لكل شخص (${RIYAL})`} required>
+          <input className="form-input" type="number" min="1" value={rewardForm.amount}
+            onChange={e => setRwf('amount', e.target.value)} placeholder="500"/>
+        </FormField>
+        {rewardForm.user_ids.length > 0 && rewardForm.amount && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5 text-xs text-emerald-700 mt-1">
+            💰 إجمالي المكافآت: <strong>{(parseFloat(rewardForm.amount) * rewardForm.user_ids.length).toLocaleString()} {RIYAL}</strong> لـ {rewardForm.user_ids.length} شخص
+          </div>
+        )}
+        <div className="flex gap-2 justify-end mt-4">
+          <button className="btn btn-ghost" onClick={() => setShowReward(false)}>إلغاء</button>
+          <button className="btn btn-primary" onClick={addReward} disabled={saving || !rewardForm.title || !rewardForm.amount || rewardForm.user_ids.length === 0}>
+            {saving ? <Spinner size="sm"/> : 'إضافة المكافأة'}
+          </button>
+        </div>
       </Modal>
 
       {/* Image Preview */}

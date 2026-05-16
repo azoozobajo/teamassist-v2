@@ -3,18 +3,234 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   Plus, Trophy, ChevronDown, ChevronUp, Send, ExternalLink,
   Paperclip, List, LayoutGrid, ArrowUpDown, ChevronRight,
-  X, AlertCircle, Image, FileText
+  X, AlertCircle, Image, FileText,
+  Ruler, Activity, Star, CheckSquare, DollarSign, Stethoscope, BookOpen
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, noteService, medicalService, financeService, pointsService, eventService } from '../../services'
+import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService } from '../../services'
 import { Spinner, PageHeader, SearchBox, Avatar, Modal, FormField, EmptyState, ProgressBar } from '../../components/ui'
 import { NOTE_TYPES, canManageEvents, canManageTeam, formatDate, RIYAL } from '../../utils/helpers'
+import { getTestDef } from '../../utils/fitnessTestDefinitions'
+import { METRIC_KEYS, METRIC_LABELS, METRIC_UNITS, getMetricTimeSeries, getBMITimeSeries } from '../../utils/measurementHelpers'
 
 const NOTE_COLOR: Record<string, { bg: string; tc: string }> = {
   مدح:   { bg: 'bg-emerald-50', tc: 'text-emerald-700' },
   توجيه: { bg: 'bg-blue-50',    tc: 'text-blue-700' },
   تحذير: { bg: 'bg-red-50',     tc: 'text-red-700' },
   تطوير: { bg: 'bg-amber-50',   tc: 'text-amber-700' },
+}
+
+const METRIC_HIGHER_IS_BETTER: Record<string, boolean | null> = {
+  standing_height_cm: true, sitting_height_cm: true, weight_kg: null,
+  body_fat_percent: false, body_fat_mass_kg: false,
+  muscle_percent: true, muscle_mass_kg: true, bmi: null,
+}
+
+const ATT_STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  present:   { label: 'حاضر',  color: 'text-emerald-600 bg-emerald-50' },
+  absent:    { label: 'غائب',  color: 'text-red-600 bg-red-50' },
+  late:      { label: 'متأخر', color: 'text-amber-600 bg-amber-50' },
+  excused:   { label: 'بعذر',  color: 'text-slate-600 bg-slate-100' },
+  uncertain: { label: 'غير متأكد', color: 'text-amber-700 bg-amber-50' },
+}
+
+function fmtEventDateTime(iso: string | undefined): { day: string; date: string; time: string } {
+  if (!iso) return { day: '', date: '—', time: '' }
+  const d = new Date(iso)
+  return {
+    day:  d.toLocaleDateString('ar-SA', { weekday: 'long' }),
+    date: d.toLocaleDateString('ar-SA', { year: 'numeric', month: 'short', day: 'numeric' }),
+    time: d.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' }),
+  }
+}
+
+function MiniChartPl({ chartId, series }: { chartId: string; series: Array<{ date: string; value: number }> }) {
+  if (series.length < 2) return null
+  const W = 300, H = 90, PX = 28, CTOP = 6, CBOT = 68
+  const vals = series.map(p => p.value)
+  const minV = Math.min(...vals), maxV = Math.max(...vals), range = maxV - minV || 1
+  const xs = series.map((_, i) => PX + (i / (series.length - 1)) * (W - PX - 8))
+  const ys = series.map(p => CTOP + (1 - (p.value - minV) / range) * (CBOT - CTOP))
+  const pts     = xs.map((x, i) => `${x.toFixed(1)},${ys[i].toFixed(1)}`).join(' ')
+  const fillPts = [`${xs[0].toFixed(1)},${CBOT + 1}`, pts, `${xs[xs.length - 1].toFixed(1)},${CBOT + 1}`].join(' ')
+  const gradId  = `plcg_${chartId.replace(/[^a-z0-9]/gi, '_')}`
+  const C = '#6366f1'
+  const fmtD = (d: string) => new Date(d).toLocaleDateString('ar-SA', { month: 'numeric', day: 'numeric' })
+  const labelIdx: number[] = [0]
+  if (series.length >= 5) labelIdx.push(Math.floor(series.length / 2))
+  labelIdx.push(series.length - 1)
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: 'block' }}>
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor={C} stopOpacity="0.18"/>
+          <stop offset="100%" stopColor={C} stopOpacity="0.01"/>
+        </linearGradient>
+      </defs>
+      {[0, 0.5, 1].map((t, gi) => {
+        const gy = CTOP + t * (CBOT - CTOP), val = maxV - t * range
+        return (
+          <g key={gi}>
+            <line x1={PX} y1={gy.toFixed(1)} x2={W - 4} y2={gy.toFixed(1)} stroke="#e2e8f0" strokeWidth="0.7" strokeDasharray="3,3"/>
+            <text x={PX - 4} y={gy.toFixed(1)} fontSize="7.5" fill="#94a3b8" textAnchor="end" dominantBaseline="middle">
+              {val % 1 === 0 ? Math.round(val) : val.toFixed(1)}
+            </text>
+          </g>
+        )
+      })}
+      <polygon points={fillPts} fill={`url(#${gradId})`}/>
+      <polyline points={pts} fill="none" stroke={C} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/>
+      {xs.map((x, i) => (
+        <circle key={i} cx={x.toFixed(1)} cy={ys[i].toFixed(1)} r={i === xs.length - 1 ? 4 : 2.5}
+          fill={i === xs.length - 1 ? C : '#fff'} stroke={C} strokeWidth="1.5"/>
+      ))}
+      {labelIdx.map(i => (
+        <text key={i} x={xs[i].toFixed(1)} y={H - 3} fontSize="7.5" fill="#94a3b8"
+          textAnchor={i === 0 ? 'start' : i === series.length - 1 ? 'end' : 'middle'}>
+          {fmtD(series[i].date)}
+        </text>
+      ))}
+    </svg>
+  )
+}
+
+function TrendChipPl({ diff, unit, higherIsBetter }: { diff: number | null; unit: string; higherIsBetter: boolean | null }) {
+  if (diff === null) return <span className="text-[11px] text-slate-400">أول قياس</span>
+  const inc = diff > 0
+  const isGood = higherIsBetter === null || diff === 0 ? null : inc === higherIsBetter
+  const cls = diff === 0 ? 'text-slate-400 bg-slate-100'
+    : isGood === null ? 'text-slate-600 bg-slate-100'
+    : isGood ? 'text-emerald-700 bg-emerald-50' : 'text-red-600 bg-red-50'
+  const arrow = diff === 0 ? '—' : inc ? '↑' : '↓'
+  const absVal = Math.abs(diff), display = absVal % 1 === 0 ? absVal.toFixed(0) : absVal.toFixed(1)
+  return (
+    <span className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-lg text-[11px] font-bold ${cls}`}>
+      {arrow} {diff > 0 ? '+' : ''}{display} {unit}
+    </span>
+  )
+}
+
+function MetricCardPl({ metricKey, series, label, unit }: {
+  metricKey: string; series: Array<{ date: string; value: number }>; label: string; unit: string
+}) {
+  const hib = METRIC_HIGHER_IS_BETTER[metricKey] ?? null
+  const latest = series[series.length - 1], prev = series[series.length - 2]
+  const diff = prev ? Math.round((latest.value - prev.value) * 1000) / 1000 : null
+  const histDesc = [...series].reverse()
+  return (
+    <div className="card p-0 overflow-hidden">
+      <div className="flex items-start justify-between px-4 pt-4 pb-2">
+        <div>
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">{label}</div>
+          <div className="text-2xl font-extrabold text-slate-900 mt-0.5 leading-none">
+            {latest.value}<span className="text-sm text-slate-400 font-normal mr-1">{unit}</span>
+          </div>
+          <div className="text-[11px] text-slate-400 mt-1">{formatDate(latest.date)}</div>
+        </div>
+        <div className="flex flex-col items-end gap-1 pt-1">
+          <TrendChipPl diff={diff} unit={unit} higherIsBetter={hib}/>
+          <span className="text-[10px] text-slate-400">{series.length} قياس</span>
+        </div>
+      </div>
+      {series.length >= 2 && (
+        <div className="px-2 pb-1"><MiniChartPl chartId={metricKey} series={series}/></div>
+      )}
+      <div className="border-t border-slate-100 divide-y divide-slate-50">
+        {histDesc.map((pt, idx) => {
+          const prevPt = histDesc[idx + 1]
+          const ptDiff = prevPt ? Math.round((pt.value - prevPt.value) * 1000) / 1000 : null
+          const absD = ptDiff !== null ? Math.abs(ptDiff) : null
+          const dispD = absD !== null ? (absD % 1 === 0 ? absD.toFixed(0) : absD.toFixed(1)) : null
+          const dClr = ptDiff === null ? '' : ptDiff === 0 ? 'text-slate-400'
+            : hib === null ? 'text-slate-500'
+            : (ptDiff > 0) === hib ? 'text-emerald-600' : 'text-red-500'
+          return (
+            <div key={pt.date + idx} className="flex items-center justify-between px-4 py-2">
+              <div className="flex items-center gap-1.5">
+                {idx === 0 && <span className="text-[9px] bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded font-bold">آخر</span>}
+                <span className="text-xs text-slate-500">
+                  {new Date(pt.date).toLocaleDateString('ar-SA', { year: 'numeric', month: 'short', day: 'numeric' })}
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                {dispD !== null && (
+                  <span className={`text-[10px] font-bold ${dClr}`}>
+                    {ptDiff! > 0 ? '+' : ''}{ptDiff! < 0 ? '-' : ''}{dispD} {unit}
+                  </span>
+                )}
+                <span className="text-sm font-bold text-slate-800 tabular-nums">
+                  {pt.value} <span className="text-[10px] text-slate-400 font-normal">{unit}</span>
+                </span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function TestCardPl({ testKey, results }: { testKey: string; results: any[] }) {
+  const def = getTestDef(testKey)
+  const unit = def?.result_unit || ''
+  const hib: boolean | null = def?.best_rule === 'highest' ? true : def?.best_rule === 'lowest' ? false : null
+  const series = results.map(r => ({ date: r.test_date, value: Number(r.official_result) }))
+  const latest = series[series.length - 1], prev = series[series.length - 2]
+  const diff = prev ? Math.round((latest.value - prev.value) * 1000) / 1000 : null
+  const histDesc = [...series].reverse()
+  return (
+    <div className="card p-0 overflow-hidden">
+      <div className="flex items-start justify-between px-4 pt-4 pb-2">
+        <div>
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">{def?.category || testKey}</div>
+          <div className="font-bold text-sm text-slate-800 mt-0.5">{def?.name_ar || testKey}</div>
+          <div className="text-2xl font-extrabold text-slate-900 mt-0.5 leading-none">
+            {latest.value}<span className="text-sm text-slate-400 font-normal mr-1">{unit}</span>
+          </div>
+          <div className="text-[11px] text-slate-400 mt-1">{formatDate(latest.date)}</div>
+        </div>
+        <div className="flex flex-col items-end gap-1 pt-1">
+          <TrendChipPl diff={diff} unit={unit} higherIsBetter={hib}/>
+          <span className="text-[10px] text-slate-400">{series.length} تجربة</span>
+          {hib !== null && <span className="text-[9px] text-slate-400">{hib ? '↑ الأعلى أفضل' : '↓ الأقل أفضل'}</span>}
+        </div>
+      </div>
+      {series.length >= 2 && (
+        <div className="px-2 pb-1"><MiniChartPl chartId={testKey} series={series}/></div>
+      )}
+      <div className="border-t border-slate-100 divide-y divide-slate-50">
+        {histDesc.map((pt, idx) => {
+          const prevPt = histDesc[idx + 1]
+          const ptDiff = prevPt ? Math.round((pt.value - prevPt.value) * 1000) / 1000 : null
+          const absD = ptDiff !== null ? Math.abs(ptDiff) : null
+          const dispD = absD !== null ? (absD % 1 === 0 ? absD.toFixed(0) : absD.toFixed(2)) : null
+          const dClr = ptDiff === null ? '' : ptDiff === 0 ? 'text-slate-400'
+            : hib === null ? 'text-slate-500'
+            : (ptDiff > 0) === hib ? 'text-emerald-600' : 'text-red-500'
+          return (
+            <div key={pt.date + idx} className="flex items-center justify-between px-4 py-2">
+              <div className="flex items-center gap-1.5">
+                {idx === 0 && <span className="text-[9px] bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded font-bold">آخر</span>}
+                <span className="text-xs text-slate-500">
+                  {new Date(pt.date).toLocaleDateString('ar-SA', { year: 'numeric', month: 'short', day: 'numeric' })}
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                {dispD !== null && (
+                  <span className={`text-[10px] font-bold ${dClr}`}>
+                    {ptDiff! > 0 ? '+' : ptDiff! < 0 ? '-' : ''}{dispD} {unit}
+                  </span>
+                )}
+                <span className="text-sm font-bold text-slate-800 tabular-nums">
+                  {pt.value} <span className="text-[10px] text-slate-400 font-normal">{unit}</span>
+                </span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 const CASE_STATUS: Record<string, { label: string; color: string; dot: string }> = {
@@ -41,7 +257,9 @@ const REPORT_TYPES = [
 type SortKey = 'join_asc' | 'join_desc' | 'age_asc' | 'age_desc' | 'att_asc' | 'att_desc' | 'inj_asc' | 'inj_desc'
 
 interface PlayerStat {
-  attendancePct: number
+  attendancePct: number    // overall (excused counts as absent)
+  effectiveAttPct: number  // effective (excused events removed from denominator)
+  excusedCount: number
   totalEvents: number
   injuryCount: number
   points: number
@@ -87,7 +305,7 @@ function FileIcon({ name }: { name: string }) {
 
 export default function PlayersPage() {
   const { teamId } = useParams()
-  const { user } = useAuth()
+  const { user, profile } = useAuth()
   const navigate = useNavigate()
 
   // Members & roles
@@ -113,11 +331,20 @@ export default function PlayersPage() {
   const [playerPts, setPlayerPts] = useState(0)
   const [detailTab, setDetailTab] = useState('notes')
 
+  // Extended player data (for new tabs)
+  const [playerAttendance, setPlayerAttendance] = useState<any[]>([])
+  const [playerMeasurements, setPlayerMeasurements] = useState<any[]>([])
+  const [playerFitnessResults, setPlayerFitnessResults] = useState<any[]>([])
+  const [playerPointsTxs, setPlayerPointsTxs] = useState<any[]>([])
+  const [playerRewards, setPlayerRewards] = useState<any[]>([])
+  const [loadingPlayerData, setLoadingPlayerData] = useState(false)
+
   // Notes
   const [showNote, setShowNote] = useState(false)
-  const [noteForm, setNoteForm] = useState({ note_type: 'مدح' as any, content: '', event_title: '' })
+  const [noteForm, setNoteForm] = useState({ note_type: 'مدح' as any, content: '', event_title: '', is_visible_to_player: false })
   const [saving, setSaving] = useState(false)
   const [saveNoteError, setSaveNoteError] = useState('')
+  const [noteLoadError, setNoteLoadError] = useState('')
   const [replyingTo, setReplyingTo] = useState<string | null>(null)
   const [replyText, setReplyText] = useState('')
   const [sendingReply, setSendingReply] = useState(false)
@@ -168,9 +395,13 @@ export default function PlayersPage() {
         pointsService.getUserPointsTotal ? pointsService.getUserPointsTotal(teamId!, m.user_id) : Promise.resolve(0)
       ])
       const present = att.filter((a: any) => a.status === 'present' || a.status === 'late').length
+      const excused = att.filter((a: any) => a.status === 'excused').length
       const total = att.length
+      const effectiveDenom = total - excused
       statsMap[m.user_id] = {
         attendancePct: total > 0 ? Math.round(present / total * 100) : 0,
+        effectiveAttPct: effectiveDenom > 0 ? Math.round(present / effectiveDenom * 100) : (total > 0 ? 100 : 0),
+        excusedCount: excused,
         totalEvents: total,
         injuryCount: medical.filter((r: any) => r.report_type === 'injury').length,
         points: pts as number || 0
@@ -183,19 +414,38 @@ export default function PlayersPage() {
   async function openPlayer(m: any) {
     setSelPlayer(m); setDetailTab('notes')
     setExpandedCaseId(null); setCaseNotes({})
+    setNoteLoadError(''); setSaveNoteError('')
+    setPlayerAttendance([]); setPlayerMeasurements([])
+    setPlayerFitnessResults([]); setPlayerPointsTxs([]); setPlayerRewards([])
     if (!teamId || !user) return
+    setLoadingPlayerData(true)
     const isCoach = canManageEvents(myRole) || canManageTeam(myRole)
-    const [notes, medical, finance] = await Promise.all([
+    const [notesResult, medical, finance, att, meas, fit, pts, rw] = await Promise.all([
       isCoach
         ? noteService.getPlayerNotesForCoach(teamId, m.user_id, user.id)
         : noteService.getMyNotes(teamId, m.user_id),
       medicalService.getPlayerReports(teamId, m.user_id),
       financeService.getPlayerFinance(teamId, m.user_id),
+      eventService.getMyAttendance(teamId, m.user_id),
+      measurementService.getPlayerMeasurements(teamId, m.user_id),
+      fitnessService.getPlayerFitnessResults(teamId, m.user_id),
+      pointsService.getPlayerTransactions(teamId, m.user_id),
+      rewardService.getPlayerRewards(teamId, m.user_id),
     ])
-    setPlayerNotes(notes)
+    if (notesResult.error) {
+      setNoteLoadError(notesResult.error.message)
+    } else {
+      setPlayerNotes(notesResult.data)
+    }
     setPlayerMedical(medical)
     setPlayerFinance(finance)
+    setPlayerAttendance(att)
+    setPlayerMeasurements(meas)
+    setPlayerFitnessResults(fit)
+    setPlayerPointsTxs(pts)
+    setPlayerRewards(rw)
     setPlayerPts(playerStats[m.user_id]?.points ?? 0)
+    setLoadingPlayerData(false)
     await noteService.markRead(m.user_id, teamId)
     setUnreadNotes(p => ({ ...p, [m.user_id]: 0 }))
   }
@@ -203,16 +453,33 @@ export default function PlayersPage() {
   async function saveNote() {
     if (!noteForm.content.trim() || !selPlayer || !teamId || !user) return
     setSaving(true); setSaveNoteError('')
-    const { error } = await noteService.create({ ...noteForm, team_id: teamId, player_id: selPlayer.user_id, coach_id: user.id, is_read: false })
+    const { data: created, error } = await noteService.create({ ...noteForm, team_id: teamId, player_id: selPlayer.user_id, coach_id: user.id, is_read: false })
     if (error) {
-      setSaveNoteError('حدث خطأ في الحفظ. تأكد من صلاحياتك وحاول مجدداً.')
+      console.error('coach_notes insert error:', error)
+      setSaveNoteError(`حدث خطأ في الحفظ: ${error.message || 'تأكد من تشغيل ملف SQL وصلاحياتك'}`)
       setSaving(false)
       return
     }
-    const notes = await noteService.getPlayerNotesForCoach(teamId, selPlayer.user_id, user.id)
-    setPlayerNotes(notes)
+    // Notify the player only if the note is visible to them
+    if (noteForm.is_visible_to_player) {
+      notificationService.create({
+        user_id: selPlayer.user_id,
+        team_id: teamId,
+        title: '📋 توجيه جديد من المدرب',
+        body: `${noteForm.note_type}: ${noteForm.content.slice(0, 60)}${noteForm.content.length > 60 ? '...' : ''}`,
+        type: 'mail',
+        is_read: false,
+      })
+    }
+    // Optimistically add the new note to the list immediately
+    if (created) {
+      setPlayerNotes(prev => [{ ...created, coach: { id: user.id, full_name: profile?.full_name, avatar_url: profile?.avatar_url } }, ...prev])
+    } else {
+      const { data } = await noteService.getPlayerNotesForCoach(teamId, selPlayer.user_id, user.id)
+      setPlayerNotes(data)
+    }
     setShowNote(false)
-    setNoteForm({ note_type: 'مدح', content: '', event_title: '' })
+    setNoteForm({ note_type: 'مدح', content: '', event_title: '', is_visible_to_player: false })
     setSaving(false)
   }
 
@@ -342,19 +609,83 @@ export default function PlayersPage() {
   const injuryCases = playerMedical.filter(r => r.report_type === 'injury')
   const activeInjuries = injuryCases.filter(r => r.status === 'active' || r.status === 'monitoring')
 
-  const getMyPaid = (obId: string) => {
-    const p = playerFinance.payments.find(p => p.obligation_id === obId)
-    return p?.paid_amount || 0
-  }
-  const totalRequired = playerFinance.obligations.reduce((s, o) => s + o.amount, 0)
-  const totalPaid = playerFinance.obligations.reduce((s, o) => s + getMyPaid(o.id), 0)
-
   // ══════════════════════════════════════════
   // PLAYER DETAIL VIEW
   // ══════════════════════════════════════════
   if (selPlayer) {
     const age = calcAge(selPlayer.profile?.date_of_birth)
     const stat = playerStats[selPlayer.user_id]
+
+    // ── Attendance computed ──
+    const plPresentCount  = playerAttendance.filter(a => a.status === 'present' || a.status === 'late').length
+    const plExcusedCount  = playerAttendance.filter(a => a.status === 'excused').length
+    const plTotalEvents   = playerAttendance.length
+    const plEffDenom      = plTotalEvents - plExcusedCount
+    const plAttPct        = plTotalEvents > 0 ? Math.round(plPresentCount / plTotalEvents * 100) : 0
+    const plEffAttPct     = plEffDenom > 0 ? Math.round(plPresentCount / plEffDenom * 100) : (plTotalEvents > 0 ? 100 : 0)
+
+    // ── Measurements computed ──
+    const plMetricSeries: Record<string, Array<{ date: string; value: number }>> = {}
+    METRIC_KEYS.forEach(k => { plMetricSeries[k] = getMetricTimeSeries(playerMeasurements, k) })
+    const plBmiSeries    = getBMITimeSeries(playerMeasurements)
+    const plActiveMetrics = METRIC_KEYS.filter(k => plMetricSeries[k].length > 0)
+    const plHasBMI        = plBmiSeries.length > 0
+    const plHSeries = plMetricSeries['standing_height_cm']
+    const plWSeries = plMetricSeries['weight_kg']
+    const plLatestHeight = plHSeries.length > 0 ? plHSeries[plHSeries.length - 1].value : null
+    const plLatestWeight = plWSeries.length > 0 ? plWSeries[plWSeries.length - 1].value : null
+
+    // ── Fitness computed ──
+    const plByTestKey: Record<string, any[]> = {}
+    playerFitnessResults.forEach(r => {
+      if (!plByTestKey[r.test_key]) plByTestKey[r.test_key] = []
+      plByTestKey[r.test_key].push(r)
+    })
+    Object.values(plByTestKey).forEach(arr =>
+      arr.sort((a, b) => new Date(a.test_date).getTime() - new Date(b.test_date).getTime())
+    )
+    const plFitnessByCategory: Record<string, string[]> = {}
+    Object.keys(plByTestKey).forEach(tk => {
+      const cat = getTestDef(tk)?.category || 'أخرى'
+      if (!plFitnessByCategory[cat]) plFitnessByCategory[cat] = []
+      plFitnessByCategory[cat].push(tk)
+    })
+
+    // ── Points computed ──
+    const plTotalPoints = playerPointsTxs.reduce((s, tx) => s + (tx.points || 0), 0)
+    const plTxAsc = [...playerPointsTxs].reverse()
+    let plRunning = 0
+    const plTxWithBalance = plTxAsc.map(tx => {
+      plRunning += tx.points || 0
+      return { ...tx, balance: plRunning }
+    })
+    const plTxDesc = [...plTxWithBalance].reverse()
+
+    // ── Finance computed ──
+    const plGetMyPaid = (obId: string) => {
+      const p = playerFinance.payments.find((p: any) => p.obligation_id === obId)
+      return p?.paid_amount || 0
+    }
+    const plTotalRequired = playerFinance.obligations.reduce((s, o) => s + o.amount, 0)
+    const plTotalPaid     = playerFinance.obligations.reduce((s, o) => s + plGetMyPaid(o.id), 0)
+    const plFinancePct    = plTotalRequired > 0 ? Math.round(plTotalPaid / plTotalRequired * 100) : null
+
+    // ── Health status ──
+    const plHealthStatus = playerMedical.some(r => r.status === 'active')
+      ? { label: 'مصاب', color: 'text-red-300' }
+      : playerMedical.some(r => r.status === 'monitoring')
+      ? { label: 'مراقبة', color: 'text-amber-300' }
+      : { label: 'متعافي', color: 'text-emerald-300' }
+
+    const DETAIL_TABS = [
+      { key: 'notes',        icon: <BookOpen size={13}/>,    label: 'الملاحظات',       count: playerNotes.length },
+      { key: 'medical',      icon: <Stethoscope size={13}/>, label: 'التقارير الطبية', count: injuryCases.length },
+      { key: 'finance',      icon: <DollarSign size={13}/>,  label: 'المالية',         count: playerFinance.obligations.length },
+      { key: 'measurements', icon: <Ruler size={13}/>,       label: 'القياسات',        count: plActiveMetrics.length + (plHasBMI ? 1 : 0) },
+      { key: 'fitness',      icon: <Activity size={13}/>,    label: 'اللياقة',         count: Object.keys(plByTestKey).length },
+      { key: 'attendance',   icon: <CheckSquare size={13}/>, label: 'الحضور',          count: plTotalEvents },
+      { key: 'points',       icon: <Star size={13}/>,        label: 'النقاط',          count: playerPointsTxs.length },
+    ]
 
     return (
       <div>
@@ -363,93 +694,126 @@ export default function PlayersPage() {
           ← العودة للقائمة
         </button>
 
-        {/* Player Card */}
+        {/* ── Player Header Card ── */}
         <div className="bg-gradient-to-l from-brand-600 to-brand-800 rounded-2xl p-5 text-white mb-4">
-          <div className="flex items-center gap-4 mb-3">
+          <div className="flex items-center gap-4 mb-4">
             <Avatar name={selPlayer.profile?.full_name || '?'} src={selPlayer.profile?.avatar_url} size="xl"
               className="ring-4 ring-white/30 flex-shrink-0"/>
             <div className="flex-1 min-w-0">
               <div className="text-xl font-bold">{selPlayer.profile?.full_name}</div>
-              <div className="text-sm opacity-80">{selPlayer.role}{selPlayer.position_label ? ` · ${selPlayer.position_label}` : ''}</div>
+              <div className="text-sm opacity-80">
+                {selPlayer.position_label || 'لاعب'}
+                {age !== null && ` · ${age} سنة`}
+              </div>
+              <div className="text-[11px] opacity-60 mt-0.5">انضم {formatFullDate(selPlayer.joined_at)}</div>
               {activeInjuries.length > 0 && (
-                <div className="inline-flex items-center gap-1 bg-red-500/30 border border-red-300/40 rounded-lg px-2 py-0.5 mt-1">
+                <div className="inline-flex items-center gap-1 bg-red-500/30 border border-red-300/40 rounded-lg px-2 py-0.5 mt-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-red-300 animate-pulse"/>
                   <span className="text-xs text-red-100 font-bold">{activeInjuries.length} إصابة نشطة</span>
                 </div>
               )}
             </div>
-            <div className="text-center bg-white/15 px-4 py-3 rounded-xl flex-shrink-0">
-              <div className="text-2xl font-bold text-yellow-300">{playerPts}</div>
-              <div className="text-xs opacity-80">نقطة</div>
-            </div>
           </div>
 
-          {/* Info grid */}
-          <div className="grid grid-cols-2 gap-2 mt-2">
-            <div className="bg-white/10 rounded-xl p-2.5">
-              <div className="text-white/60 text-[10px] font-bold mb-0.5">تاريخ الانضمام</div>
-              <div className="text-white text-xs font-bold">{formatFullDate(selPlayer.joined_at)}</div>
+          {/* 6-stat grid */}
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-white/10 rounded-xl p-2.5 text-center">
+              <div className="text-base font-extrabold leading-none">{loadingPlayerData ? '…' : plLatestHeight != null ? plLatestHeight : '—'}</div>
+              <div className="text-[10px] opacity-70 mt-0.5">الطول سم</div>
             </div>
-            <div className="bg-white/10 rounded-xl p-2.5">
-              <div className="text-white/60 text-[10px] font-bold mb-0.5">تاريخ الميلاد</div>
-              <div className="text-white text-xs font-bold">
-                {selPlayer.profile?.date_of_birth
-                  ? `${formatFullDate(selPlayer.profile.date_of_birth)}${age !== null ? ` (${age} سنة)` : ''}`
-                  : '—'}
+            <div className="bg-white/10 rounded-xl p-2.5 text-center">
+              <div className="text-base font-extrabold leading-none">{loadingPlayerData ? '…' : plLatestWeight != null ? plLatestWeight : '—'}</div>
+              <div className="text-[10px] opacity-70 mt-0.5">الوزن كغ</div>
+            </div>
+            <div className="bg-white/10 rounded-xl p-2.5 text-center">
+              <div className={`text-base font-extrabold leading-none ${plFinancePct !== null ? (plFinancePct >= 100 ? 'text-emerald-300' : 'text-red-300') : ''}`}>
+                {loadingPlayerData ? '…' : plFinancePct !== null ? `${plFinancePct}%` : '—'}
               </div>
+              <div className="text-[10px] opacity-70 mt-0.5">المالية</div>
             </div>
-            {stat && (
-              <>
-                <div className="bg-white/10 rounded-xl p-2.5">
-                  <div className="text-white/60 text-[10px] font-bold mb-0.5">نسبة الحضور</div>
-                  <div className="text-white text-xs font-bold">{stat.attendancePct}% <span className="opacity-60">({stat.totalEvents} حدث)</span></div>
-                </div>
-                <div className="bg-white/10 rounded-xl p-2.5">
-                  <div className="text-white/60 text-[10px] font-bold mb-0.5">الإصابات</div>
-                  <div className="text-white text-xs font-bold">{stat.injuryCount} حالة</div>
-                </div>
-              </>
-            )}
+            <div className="bg-white/10 rounded-xl p-2.5 text-center">
+              <div className={`text-sm font-extrabold leading-none ${plHealthStatus.color}`}>
+                {loadingPlayerData ? '…' : plHealthStatus.label}
+              </div>
+              <div className="text-[10px] opacity-70 mt-0.5">الصحة</div>
+            </div>
+            <div className="bg-white/10 rounded-xl p-2.5 text-center">
+              <div className="text-base font-extrabold leading-none">{loadingPlayerData ? '…' : plTotalEvents > 0 ? `${plAttPct}%` : '—'}</div>
+              {!loadingPlayerData && plExcusedCount > 0 && (
+                <div className="text-[9px] opacity-70">{plEffAttPct}% فعلي</div>
+              )}
+              <div className="text-[10px] opacity-70 mt-0.5">الحضور</div>
+            </div>
+            <div className="bg-white/10 rounded-xl p-2.5 text-center">
+              <div className={`text-base font-extrabold leading-none ${plTotalPoints > 0 ? 'text-yellow-300' : plTotalPoints < 0 ? 'text-red-300' : ''}`}>
+                {loadingPlayerData ? '…' : plTotalPoints > 0 ? `+${plTotalPoints}` : plTotalPoints || '—'}
+              </div>
+              <div className="text-[10px] opacity-70 mt-0.5">النقاط</div>
+            </div>
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 mb-4 bg-slate-100 p-1 rounded-xl overflow-x-auto">
-          {[
-            ['notes', `📬 بريد (${playerNotes.length})`],
-            ['injuries', `🤕 إصابات (${injuryCases.length})`],
-            ['finance', `${RIYAL} المالية`]
-          ].map(([k, l]) => (
-            <button key={k} onClick={() => setDetailTab(k)}
-              className={`flex-shrink-0 flex-1 py-2 text-xs font-bold rounded-lg transition-all ${detailTab === k ? 'bg-white shadow text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>
-              {l}
+        {/* ── Tab bar ── */}
+        <div className="flex gap-1 mb-4 overflow-x-auto pb-0.5">
+          {DETAIL_TABS.map(t => (
+            <button key={t.key} onClick={() => setDetailTab(t.key)}
+              className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all
+                ${detailTab === t.key
+                  ? 'bg-brand-600 text-white shadow'
+                  : 'bg-white text-slate-500 hover:text-slate-700 border border-slate-100'}`}>
+              {t.icon}
+              {t.label}
+              {t.count !== undefined && t.count > 0 && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold
+                  ${detailTab === t.key ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                  {t.count}
+                </span>
+              )}
             </button>
           ))}
         </div>
 
+        {loadingPlayerData && (
+          <div className="flex items-center justify-center gap-2 py-6 text-slate-400 text-sm">
+            <Spinner/> جارٍ تحميل بيانات اللاعب...
+          </div>
+        )}
+
         {/* ── Notes Tab ── */}
-        {detailTab === 'notes' && (
+        {detailTab === 'notes' && !loadingPlayerData && (
           <div className="card">
             <div className="flex justify-between items-center mb-3">
               <div>
-                <h3 className="font-bold text-sm">البريد</h3>
-                <p className="text-[10px] text-slate-400 mt-0.5">تظهر فقط لمن كتبها واللاعب</p>
+                <h3 className="font-bold text-sm">الملاحظات</h3>
+                <p className="text-[10px] text-slate-400 mt-0.5">ملاحظات خاصة بالملف — المدرب يختار إذا يراها اللاعب</p>
               </div>
               {canWriteNote && (
                 <button className="btn btn-primary btn-sm" onClick={() => setShowNote(true)}>
-                  <Plus size={12}/> رسالة
+                  <Plus size={12}/> إضافة
                 </button>
               )}
             </div>
-            {playerNotes.length === 0
-              ? <EmptyState title="لا توجد رسائل"/>
+            {noteLoadError ? (
+              <div className="rounded-xl bg-red-50 border border-red-200 p-4 text-center">
+                <p className="font-bold text-red-700 text-sm mb-1">⚠️ لم يتم إعداد جدول الملاحظات</p>
+                <p className="text-xs text-slate-500 mb-1">شغّل الملف التالي في Supabase Dashboard:</p>
+                <code className="text-[11px] bg-white border border-slate-200 rounded px-2 py-1 text-slate-700">supabase/coach_notes_setup.sql</code>
+                <p className="text-[10px] text-red-400 mt-2 font-mono">{noteLoadError}</p>
+              </div>
+            ) : playerNotes.length === 0
+              ? <EmptyState title="لا توجد ملاحظات"/>
               : <div className="space-y-3">
                   {playerNotes.map(n => {
                     const clr = NOTE_COLOR[n.note_type] || NOTE_COLOR['توجيه']
                     return (
                       <div key={n.id} className={`rounded-xl p-3 ${clr.bg}`}>
                         <div className="flex justify-between items-center mb-1.5">
-                          <span className={`badge text-xs ${clr.bg} ${clr.tc} border border-current/20`}>{n.note_type}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className={`badge text-xs ${clr.bg} ${clr.tc} border border-current/20`}>{n.note_type}</span>
+                            {n.is_visible_to_player
+                              ? <span className="text-[10px] bg-emerald-50 text-emerald-600 border border-emerald-200 rounded px-1.5 py-0.5">مرئية للاعب</span>
+                              : <span className="text-[10px] bg-slate-100 text-slate-500 border border-slate-200 rounded px-1.5 py-0.5">خاصة</span>}
+                          </div>
                           <div className="text-right">
                             {n.event_title && <span className="text-xs text-slate-400">{n.event_title} · </span>}
                             <span className="text-xs text-slate-400">{formatDate(n.created_at)}</span>
@@ -457,16 +821,12 @@ export default function PlayersPage() {
                         </div>
                         <p className={`text-sm leading-relaxed ${clr.tc}`}>{n.content}</p>
                         {n.coach && <div className="text-xs text-slate-400 mt-1.5">— {n.coach.full_name}</div>}
-
-                        {/* Player reply (if exists) */}
                         {n.player_reply && (
                           <div className="mt-2 bg-white/70 rounded-lg p-2.5 border border-current/10">
                             <div className="text-[10px] font-bold text-slate-500 mb-1">رد اللاعب · {formatDate(n.player_replied_at)}</div>
                             <p className="text-xs text-slate-700">{n.player_reply}</p>
                           </div>
                         )}
-
-                        {/* Reply button (only player can reply - handled in TeamDashboard) */}
                       </div>
                     )
                   })}
@@ -474,12 +834,12 @@ export default function PlayersPage() {
           </div>
         )}
 
-        {/* ── Injuries Tab ── */}
-        {detailTab === 'injuries' && (
+        {/* ── Medical/Injuries Tab ── */}
+        {detailTab === 'medical' && !loadingPlayerData && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <h3 className="font-bold text-sm text-slate-800">سجل الإصابات</h3>
+                <h3 className="font-bold text-sm text-slate-800">التقارير الطبية</h3>
                 {activeInjuries.length > 0 && (
                   <span className="badge bg-red-100 text-red-700 text-xs">{activeInjuries.length} نشط</span>
                 )}
@@ -632,44 +992,285 @@ export default function PlayersPage() {
         )}
 
         {/* ── Finance Tab ── */}
-        {detailTab === 'finance' && (
-          <div className="card">
-            <h3 className="font-bold text-sm mb-3">المستحقات المالية</h3>
-            {playerFinance.obligations.length === 0
-              ? <div className="text-center py-6 text-slate-400 text-sm">لا توجد مستحقات مالية</div>
-              : <>
-                  <div className="grid grid-cols-3 gap-2 mb-4">
-                    <div className="stat-box"><div className="stat-value text-base">{totalRequired} {RIYAL}</div><div className="stat-label">المطلوب</div></div>
-                    <div className="stat-box"><div className="stat-value text-base text-emerald-600">{totalPaid} {RIYAL}</div><div className="stat-label">المسدد</div></div>
-                    <div className="stat-box"><div className="stat-value text-base text-red-600">{(totalRequired - totalPaid).toFixed(0)} {RIYAL}</div><div className="stat-label">المتبقي</div></div>
-                  </div>
-                  <div className="space-y-3">
-                    {playerFinance.obligations.map(o => {
-                      const paid = getMyPaid(o.id)
-                      const pct = Math.round(paid / o.amount * 100)
-                      return (
-                        <div key={o.id}>
-                          <div className="flex justify-between text-xs mb-1">
-                            <span className="font-bold">{o.title}</span>
-                            <span className="text-slate-500">{paid}/{o.amount} {RIYAL}</span>
+        {detailTab === 'finance' && !loadingPlayerData && (
+          <div className="space-y-3">
+            {/* Obligations */}
+            <div className="card">
+              <h3 className="font-bold text-sm mb-3">المستحقات المالية</h3>
+              {playerFinance.obligations.length === 0
+                ? <div className="text-center py-4 text-slate-400 text-sm">لا توجد مستحقات مالية</div>
+                : <>
+                    <div className="grid grid-cols-3 gap-2 mb-4">
+                      <div className="stat-box"><div className="stat-value text-base">{plTotalRequired} {RIYAL}</div><div className="stat-label">المطلوب</div></div>
+                      <div className="stat-box"><div className="stat-value text-base text-emerald-600">{plTotalPaid} {RIYAL}</div><div className="stat-label">المسدد</div></div>
+                      <div className="stat-box"><div className="stat-value text-base text-red-600">{(plTotalRequired - plTotalPaid).toFixed(0)} {RIYAL}</div><div className="stat-label">المتبقي</div></div>
+                    </div>
+                    <div className="space-y-3">
+                      {playerFinance.obligations.map(o => {
+                        const paid = plGetMyPaid(o.id)
+                        const pct = Math.round(paid / o.amount * 100)
+                        return (
+                          <div key={o.id}>
+                            <div className="flex justify-between text-xs mb-1">
+                              <span className="font-bold">{o.title}</span>
+                              <span className="text-slate-500">{paid}/{o.amount} {RIYAL}</span>
+                            </div>
+                            <ProgressBar value={pct} color={paid >= o.amount ? 'bg-emerald-500' : 'bg-amber-400'}/>
+                            {o.due_date && <div className="text-xs text-slate-400 mt-0.5">الاستحقاق: {o.due_date}</div>}
                           </div>
-                          <ProgressBar value={pct} color={paid >= o.amount ? 'bg-emerald-500' : 'bg-amber-400'}/>
-                          {o.due_date && <div className="text-xs text-slate-400 mt-0.5">الاستحقاق: {o.due_date}</div>}
+                        )
+                      })}
+                    </div>
+                  </>}
+            </div>
+
+            {/* Rewards */}
+            <div className="card">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-sm">المكافآت</h3>
+                {playerRewards.length > 0 && (
+                  <span className="text-xs font-extrabold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-xl">
+                    +{playerRewards.reduce((s, r) => s + Number(r.amount), 0).toLocaleString()} {RIYAL}
+                  </span>
+                )}
+              </div>
+              {playerRewards.length === 0
+                ? <div className="text-center py-4 text-slate-400 text-sm">لا توجد مكافآت</div>
+                : <div className="space-y-2">
+                    {playerRewards.map(r => (
+                      <div key={r.id} className="flex items-center justify-between bg-emerald-50 rounded-xl px-3 py-2.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-base flex-shrink-0">🎁</span>
+                          <div className="min-w-0">
+                            <div className="font-bold text-xs text-slate-800 truncate">{r.title}</div>
+                            {r.notes && <div className="text-xs text-slate-400 truncate">{r.notes}</div>}
+                            <div className="text-xs text-slate-400">{(r.created_at || '').slice(0, 10)}</div>
+                          </div>
                         </div>
-                      )
-                    })}
+                        <div className="text-sm font-extrabold text-emerald-600 flex-shrink-0 mr-2">
+                          +{Number(r.amount).toLocaleString()} {RIYAL}
+                        </div>
+                      </div>
+                    ))}
+                  </div>}
+            </div>
+          </div>
+        )}
+
+        {/* ── Measurements Tab ── */}
+        {detailTab === 'measurements' && !loadingPlayerData && (
+          <div className="space-y-4">
+            {plActiveMetrics.length === 0 && !plHasBMI ? (
+              <div className="card text-center py-8">
+                <Ruler size={30} className="mx-auto text-slate-300 mb-2"/>
+                <div className="font-bold text-slate-500 text-sm">لا توجد قياسات أساسية مسجلة</div>
+              </div>
+            ) : (
+              <>
+                {plActiveMetrics.map(key => (
+                  <MetricCardPl key={key} metricKey={key} series={plMetricSeries[key]}
+                    label={METRIC_LABELS[key]} unit={METRIC_UNITS[key]}/>
+                ))}
+                {plHasBMI && (() => {
+                  const latest   = plBmiSeries[plBmiSeries.length - 1]
+                  const prev     = plBmiSeries[plBmiSeries.length - 2]
+                  const diff     = prev ? Math.round((latest.value - prev.value) * 100) / 100 : null
+                  const histDesc = [...plBmiSeries].reverse()
+                  return (
+                    <div className="card p-0 overflow-hidden">
+                      <div className="flex items-start justify-between px-4 pt-4 pb-2">
+                        <div>
+                          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">مؤشر كتلة الجسم</div>
+                          <div className="text-2xl font-extrabold text-slate-900 mt-0.5 leading-none">{latest.value}</div>
+                          <div className="text-[11px] text-slate-400 mt-1">{formatDate(latest.date)}</div>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 pt-1">
+                          <TrendChipPl diff={diff} unit="" higherIsBetter={null}/>
+                          <span className="text-[10px] text-slate-400">{plBmiSeries.length} قياس</span>
+                        </div>
+                      </div>
+                      {plBmiSeries.length >= 2 && <div className="px-2 pb-1"><MiniChartPl chartId="bmi_pl" series={plBmiSeries}/></div>}
+                      <div className="border-t border-slate-100 divide-y divide-slate-50">
+                        {histDesc.map((pt, idx) => {
+                          const prevPt = histDesc[idx + 1]
+                          const ptDiff = prevPt ? Math.round((pt.value - prevPt.value) * 100) / 100 : null
+                          return (
+                            <div key={pt.date + idx} className="flex items-center justify-between px-4 py-2">
+                              <div className="flex items-center gap-1.5">
+                                {idx === 0 && <span className="text-[9px] bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded font-bold">آخر</span>}
+                                <span className="text-xs text-slate-500">
+                                  {new Date(pt.date).toLocaleDateString('ar-SA', { year: 'numeric', month: 'short', day: 'numeric' })}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                {ptDiff !== null && (
+                                  <span className="text-[10px] font-bold text-slate-500">{ptDiff > 0 ? '+' : ''}{ptDiff}</span>
+                                )}
+                                <span className="text-sm font-bold text-slate-800 tabular-nums">{pt.value}</span>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })()}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Fitness Tab ── */}
+        {detailTab === 'fitness' && !loadingPlayerData && (
+          <div className="space-y-5">
+            {Object.keys(plByTestKey).length === 0 ? (
+              <div className="card text-center py-8">
+                <Activity size={30} className="mx-auto text-slate-300 mb-2"/>
+                <div className="font-bold text-slate-500 text-sm">لا توجد نتائج اختبارات لياقة</div>
+              </div>
+            ) : (
+              Object.entries(plFitnessByCategory).map(([category, testKeys]) => (
+                <div key={category}>
+                  <div className="text-[11px] font-extrabold text-slate-400 uppercase tracking-widest px-1 mb-2">{category}</div>
+                  <div className="space-y-4">
+                    {testKeys.map(tk => <TestCardPl key={tk} testKey={tk} results={plByTestKey[tk]}/>)}
                   </div>
-                </>}
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* ── Attendance Tab ── */}
+        {detailTab === 'attendance' && !loadingPlayerData && (
+          <div className="card">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-sm">سجل الحضور والغياب</h3>
+              <div className="flex flex-col items-end gap-1">
+                {plTotalEvents > 0 && (
+                  <span className={`badge text-xs font-bold ${plAttPct >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                    {plPresentCount}/{plTotalEvents} · إجمالي {plAttPct}%
+                  </span>
+                )}
+                {plExcusedCount > 0 && (
+                  <span className={`badge text-xs font-bold ${plEffAttPct >= 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                    فعلي {plEffAttPct}% <span className="font-normal opacity-70">(بعذر: {plExcusedCount})</span>
+                  </span>
+                )}
+              </div>
+            </div>
+            {playerAttendance.length === 0
+              ? <p className="text-center text-slate-400 text-sm py-6">لا توجد سجلات حضور</p>
+              : <div className="space-y-2">
+                  {[...playerAttendance].sort((a, b) =>
+                    new Date(b.event?.start_time || b.created_at).getTime() -
+                    new Date(a.event?.start_datetime || a.created_at).getTime()
+                  ).map(a => {
+                    const st  = ATT_STATUS_LABELS[a.status] || { label: a.status, color: 'text-slate-600 bg-slate-100' }
+                    const dt  = fmtEventDateTime(a.event?.start_datetime)
+                    return (
+                      <div key={a.id} className="flex items-start justify-between rounded-xl bg-slate-50 px-3 py-2.5 gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-sm text-slate-800 truncate">{a.event?.title || 'حدث'}</div>
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                            <span className="text-xs font-bold text-brand-700">{dt.day}</span>
+                            <span className="text-xs text-slate-500">{dt.date}</span>
+                            {dt.time && <span className="text-xs text-slate-400">· {dt.time}</span>}
+                          </div>
+                          {a.status === 'excused' && a.excuse_reason && (
+                            <div className="text-[11px] text-slate-500 mt-1 bg-slate-100 rounded px-2 py-0.5">العذر: {a.excuse_reason}</div>
+                          )}
+                        </div>
+                        <span className={`text-xs font-bold px-2.5 py-1 rounded-lg flex-shrink-0 ${st.color}`}>{st.label}</span>
+                      </div>
+                    )
+                  })}
+                </div>}
+          </div>
+        )}
+
+        {/* ── Points Tab ── */}
+        {detailTab === 'points' && !loadingPlayerData && (
+          <div className="space-y-3">
+            <div className="card">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-sm text-slate-800">كشف نقاط اللاعب</h3>
+                <div className={`text-2xl font-extrabold ${plTotalPoints > 0 ? 'text-emerald-600' : plTotalPoints < 0 ? 'text-red-500' : 'text-slate-500'}`}>
+                  {plTotalPoints > 0 ? '+' : ''}{plTotalPoints} <span className="text-sm font-normal text-slate-400">نقطة</span>
+                </div>
+              </div>
+              {playerPointsTxs.length > 0 && (
+                <div className="grid grid-cols-2 gap-2 mt-3">
+                  <div className="bg-emerald-50 rounded-xl p-3 text-center">
+                    <div className="text-base font-bold text-emerald-700">
+                      +{playerPointsTxs.filter(t => (t.points || 0) > 0).reduce((s, t) => s + t.points, 0)}
+                    </div>
+                    <div className="text-[11px] text-slate-400">مكتسبة</div>
+                  </div>
+                  <div className="bg-red-50 rounded-xl p-3 text-center">
+                    <div className="text-base font-bold text-red-600">
+                      {playerPointsTxs.filter(t => (t.points || 0) < 0).reduce((s, t) => s + t.points, 0)}
+                    </div>
+                    <div className="text-[11px] text-slate-400">مخصومة</div>
+                  </div>
+                </div>
+              )}
+            </div>
+            {playerPointsTxs.length === 0 ? (
+              <div className="card text-center py-8">
+                <Star size={30} className="mx-auto text-slate-300 mb-2"/>
+                <div className="font-bold text-slate-500 text-sm">لا توجد نقاط مسجلة</div>
+              </div>
+            ) : (
+              <div className="card p-0 overflow-hidden">
+                <div className="divide-y divide-slate-50">
+                  {plTxDesc.map((tx, idx) => {
+                    const pts   = tx.points || 0
+                    const isPos = pts > 0
+                    const d     = new Date(tx.created_at)
+                    const dayStr = d.toLocaleDateString('ar-SA', { weekday: 'short' })
+                    const datStr = d.toLocaleDateString('ar-SA', { year: 'numeric', month: 'short', day: 'numeric' })
+                    const timStr = d.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' })
+                    return (
+                      <div key={tx.id || idx} className="flex items-start gap-3 px-4 py-3">
+                        <div className={`flex-shrink-0 w-12 h-12 rounded-2xl flex items-center justify-center font-extrabold text-base
+                          ${isPos ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
+                          {isPos ? `+${pts}` : pts}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-bold text-slate-800 truncate">{tx.reason || 'نقاط'}</span>
+                            {tx.category && (
+                              <span className="flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
+                                {tx.category}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="text-xs font-bold text-slate-400">{dayStr}</span>
+                            <span className="text-xs text-slate-400">· {datStr} · {timStr}</span>
+                            {tx.is_auto && (
+                              <span className="text-[9px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded font-bold">تلقائي</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex-shrink-0 text-left">
+                          <div className="text-xs font-bold text-slate-500 tabular-nums">{tx.balance}</div>
+                          <div className="text-[9px] text-slate-400">الرصيد</div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {/* Note Modal */}
-        <Modal open={showNote} onClose={() => { setShowNote(false); setSaveNoteError('') }} title={`رسالة إلى ${selPlayer.profile?.full_name}`}>
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 text-xs text-blue-700">
-            🔒 هذه الرسالة لن تظهر إلا لك وللاعب فقط.
-          </div>
+        <Modal open={showNote} onClose={() => { setShowNote(false); setSaveNoteError('') }} title={`توجيه وإرشاد — ${selPlayer.profile?.full_name}`}>
           <div className="form-group">
-            <label className="form-label">نوع الرسالة</label>
+            <label className="form-label">نوع الملاحظة</label>
             <div className="flex gap-2 flex-wrap">
               {NOTE_TYPES.map(t => (
                 <button key={t} onClick={() => setNoteForm(p => ({ ...p, note_type: t }))}
@@ -683,10 +1284,27 @@ export default function PlayersPage() {
             <input className="form-input" value={noteForm.event_title}
               onChange={e => setNoteForm(p => ({ ...p, event_title: e.target.value }))} placeholder="تدريب الثلاثاء..."/>
           </FormField>
-          <FormField label="نص الرسالة" required>
+          <FormField label="نص الملاحظة" required>
             <textarea className="form-input" rows={3} value={noteForm.content}
-              onChange={e => setNoteForm(p => ({ ...p, content: e.target.value }))} placeholder="اكتب رسالتك هنا..."/>
+              onChange={e => setNoteForm(p => ({ ...p, content: e.target.value }))} placeholder="اكتب ملاحظتك هنا..."/>
           </FormField>
+          {/* Visibility toggle */}
+          <div className="flex items-center justify-between bg-slate-50 rounded-xl px-3 py-2.5 mt-1">
+            <div>
+              <div className="text-xs font-bold text-slate-700">إظهار للاعب وولي أمره</div>
+              <div className="text-[10px] text-slate-400">إذا أوقفت هذا الخيار تبقى الملاحظة خاصة للمدربين فقط</div>
+            </div>
+            <button
+              onClick={() => setNoteForm(p => ({ ...p, is_visible_to_player: !p.is_visible_to_player }))}
+              className={`relative w-10 h-5 rounded-full transition-colors border-none cursor-pointer flex-shrink-0 ${noteForm.is_visible_to_player ? 'bg-brand-500' : 'bg-slate-300'}`}>
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${noteForm.is_visible_to_player ? 'right-0.5' : 'right-5'}`}/>
+            </button>
+          </div>
+          {noteForm.is_visible_to_player && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 text-xs text-emerald-700 mt-2">
+              ✅ سيتلقى اللاعب إشعاراً بهذه الملاحظة وستظهر له في ملفه.
+            </div>
+          )}
           {saveNoteError && (
             <div className="bg-red-50 border border-red-200 rounded-xl px-3 py-2 text-xs text-red-600 mt-2">
               {saveNoteError}
@@ -694,7 +1312,7 @@ export default function PlayersPage() {
           )}
           <div className="flex gap-2 justify-end mt-4">
             <button className="btn btn-ghost" onClick={() => { setShowNote(false); setSaveNoteError('') }}>إلغاء</button>
-            <button className="btn btn-primary" onClick={saveNote} disabled={saving}>{saving ? <Spinner size="sm"/> : 'إرسال'}</button>
+            <button className="btn btn-primary" onClick={saveNote} disabled={saving}>{saving ? <Spinner size="sm"/> : 'حفظ'}</button>
           </div>
         </Modal>
 
@@ -910,9 +1528,16 @@ export default function PlayersPage() {
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       {stat ? (
                         <>
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${stat.attendancePct >= 70 ? 'bg-emerald-50 text-emerald-700' : stat.attendancePct >= 40 ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-600'}`}>
-                            {stat.attendancePct}%
-                          </span>
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${stat.attendancePct >= 70 ? 'bg-emerald-50 text-emerald-700' : stat.attendancePct >= 40 ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-600'}`}>
+                              {stat.attendancePct}%
+                            </span>
+                            {stat.excusedCount > 0 && (
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg ${stat.effectiveAttPct >= 70 ? 'bg-emerald-50 text-emerald-600' : stat.effectiveAttPct >= 40 ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-500'}`}>
+                                {stat.effectiveAttPct}% ف
+                              </span>
+                            )}
+                          </div>
                           {stat.points > 0 && (
                             <span className="text-xs font-bold px-2 py-0.5 rounded-lg bg-yellow-50 text-yellow-700">
                               {stat.points}⭐
@@ -961,7 +1586,12 @@ export default function PlayersPage() {
                         <div className={`text-sm font-bold ${!stat ? 'text-slate-400' : stat.attendancePct >= 70 ? 'text-emerald-700' : 'text-amber-700'}`}>
                           {stat ? `${stat.attendancePct}%` : loadingStats ? '…' : '—'}
                         </div>
-                        <div className="text-xs text-slate-400">حضور</div>
+                        <div className="text-xs text-slate-400">إجمالي</div>
+                        {stat && stat.excusedCount > 0 && (
+                          <div className={`text-[10px] font-bold mt-0.5 ${stat.effectiveAttPct >= 70 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                            {stat.effectiveAttPct}% فعلي
+                          </div>
+                        )}
                       </div>
                       <div className="bg-yellow-50 rounded-xl p-2 text-center">
                         <div className="text-sm font-bold text-yellow-600">

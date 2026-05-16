@@ -351,6 +351,16 @@ export const notificationService = {
   async markAllRead(userId: string) {
     return supabase.from('notifications').update({ is_read: true }).eq('user_id', userId)
   },
+  async markAllReadForTeam(teamId: string, userId: string) {
+    return supabase.from('notifications').update({ is_read: true })
+      .eq('user_id', userId).eq('team_id', teamId)
+  },
+  async getForTeam(teamId: string, userId: string) {
+    const { data } = await supabase.from('notifications').select('*')
+      .eq('user_id', userId).eq('team_id', teamId)
+      .order('created_at', { ascending: false }).limit(40)
+    return data ?? []
+  },
   async create(data: any) {
     return supabase.from('notifications').insert(data)
   },
@@ -454,21 +464,24 @@ export const leaveService = {
 
 // ── COACH NOTES ───────────────────────────────────────────────────────
 export const noteService = {
-  // Coach sees only their own notes for a player
+  // Coach sees all notes they wrote for this player
   async getPlayerNotesForCoach(teamId: string, playerId: string, coachId: string) {
-    const { data } = await supabase.from('coach_notes')
-      .select('*, coach:profiles(id, full_name, avatar_url)')
+    const { data, error } = await supabase.from('coach_notes')
+      .select('*, coach:profiles!coach_notes_coach_id_fkey(id, full_name, avatar_url)')
       .eq('team_id', teamId).eq('player_id', playerId).eq('coach_id', coachId)
       .order('created_at', { ascending: false })
-    return data ?? []
+    if (error) console.error('noteService.getPlayerNotesForCoach:', error.message)
+    return { data: data ?? [], error }
   },
-  // Player sees all notes written for them (by any coach/admin)
+  // Player sees only notes the coach marked as visible
   async getMyNotes(teamId: string, playerId: string) {
-    const { data } = await supabase.from('coach_notes')
-      .select('*, coach:profiles(id, full_name, avatar_url)')
+    const { data, error } = await supabase.from('coach_notes')
+      .select('*, coach:profiles!coach_notes_coach_id_fkey(id, full_name, avatar_url)')
       .eq('team_id', teamId).eq('player_id', playerId)
+      .eq('is_visible_to_player', true)
       .order('created_at', { ascending: false })
-    return data ?? []
+    if (error) console.error('noteService.getMyNotes:', error.message)
+    return { data: data ?? [], error }
   },
   async create(data: any) {
     return supabase.from('coach_notes').insert(data).select().single()
@@ -486,8 +499,76 @@ export const noteService = {
   async getUnreadCount(teamId: string, playerId: string) {
     const { count } = await supabase.from('coach_notes')
       .select('id', { count: 'exact' })
-      .eq('team_id', teamId).eq('player_id', playerId).eq('is_read', false)
+      .eq('team_id', teamId).eq('player_id', playerId)
+      .eq('is_read', false).eq('is_visible_to_player', true)
     return count ?? 0
+  }
+}
+
+// ── INTERNAL MAIL ─────────────────────────────────────────────────────
+const MAIL_SELECT = '*, sender:profiles!internal_mail_sender_id_fkey(id, full_name, avatar_url), receiver:profiles!internal_mail_receiver_id_fkey(id, full_name, avatar_url)'
+
+export const mailService = {
+  async getInbox(teamId: string, userId: string) {
+    const { data, error } = await supabase.from('internal_mail')
+      .select(MAIL_SELECT)
+      .eq('team_id', teamId).eq('receiver_id', userId)
+      .is('parent_id', null)
+      .order('created_at', { ascending: false })
+    if (error) console.error('mailService.getInbox:', error.message)
+    return { data: data ?? [], error }
+  },
+  async getSent(teamId: string, userId: string) {
+    const { data, error } = await supabase.from('internal_mail')
+      .select(MAIL_SELECT)
+      .eq('team_id', teamId).eq('sender_id', userId)
+      .is('parent_id', null)
+      .order('created_at', { ascending: false })
+    if (error) console.error('mailService.getSent:', error.message)
+    return { data: data ?? [], error }
+  },
+  async getStarred(teamId: string, userId: string) {
+    const { data, error } = await supabase.from('internal_mail')
+      .select(MAIL_SELECT)
+      .eq('team_id', teamId).eq('receiver_id', userId)
+      .eq('is_starred', true).is('parent_id', null)
+      .order('created_at', { ascending: false })
+    if (error) console.error('mailService.getStarred:', error.message)
+    return { data: data ?? [], error }
+  },
+  async getReplies(parentId: string) {
+    const { data, error } = await supabase.from('internal_mail')
+      .select(MAIL_SELECT)
+      .eq('parent_id', parentId)
+      .order('created_at', { ascending: true })
+    if (error) console.error('mailService.getReplies:', error.message)
+    return { data: data ?? [], error }
+  },
+  async send(data: any) {
+    return supabase.from('internal_mail').insert(data).select().single()
+  },
+  async reply(parentId: string, data: any) {
+    return supabase.from('internal_mail').insert({ ...data, parent_id: parentId }).select().single()
+  },
+  async markRead(mailId: string) {
+    return supabase.from('internal_mail').update({ is_read: true }).eq('id', mailId)
+  },
+  async toggleStar(mailId: string, starred: boolean) {
+    return supabase.from('internal_mail').update({ is_starred: starred }).eq('id', mailId)
+  },
+  async getUnreadCount(teamId: string, userId: string) {
+    const { count } = await supabase.from('internal_mail')
+      .select('id', { count: 'exact' })
+      .eq('team_id', teamId).eq('receiver_id', userId).eq('is_read', false)
+    return count ?? 0
+  },
+  // Returns reply stubs (id, sender_id) for a list of parent message IDs
+  async getReplyStubs(parentIds: string[]) {
+    if (!parentIds.length) return []
+    const { data } = await supabase.from('internal_mail')
+      .select('id, parent_id, sender_id, created_at')
+      .in('parent_id', parentIds)
+    return data ?? []
   }
 }
 
@@ -514,10 +595,17 @@ export const pointsService = {
     return data ?? []
   },
   async getHistory(teamId: string, limit = 50) {
-    const { data } = await supabase.from('points_transactions')
-      .select('*, profile:profiles(*)')
+    const { data, error } = await supabase.from('points_transactions')
+      .select('*')
       .eq('team_id', teamId).order('created_at', { ascending: false }).limit(limit)
-    return data ?? []
+    if (error) { console.error('[getHistory]', error.message); return [] }
+    if (!data?.length) return []
+    const uids = [...new Set(data.map((r: any) => r.user_id))]
+    const { data: profs } = await supabase.from('profiles')
+      .select('id, full_name, avatar_url').in('id', uids)
+    const pm: Record<string, any> = {}
+    ;(profs ?? []).forEach((p: any) => { pm[p.id] = p })
+    return data.map((r: any) => ({ ...r, profile: pm[r.user_id] ?? null }))
   },
   async addPoints(records: any[]) {
     return supabase.from('points_transactions').insert(records)
@@ -543,6 +631,36 @@ export const pointsService = {
     const { data } = await supabase.from('points_transactions')
       .select('points').eq('team_id', teamId).eq('user_id', userId)
     return (data ?? []).reduce((s: number, r: any) => s + (r.points || 0), 0)
+  },
+  async getPlayerTransactions(teamId: string, userId: string) {
+    const { data } = await supabase.from('points_transactions')
+      .select('id, points, category, reason, is_auto, created_at')
+      .eq('team_id', teamId).eq('user_id', userId)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+  async awardAttendancePoints(teamId: string, userId: string, eventId: string, points: number, reason: string) {
+    return supabase.from('points_transactions').insert({
+      team_id: teamId, user_id: userId, event_id: eventId,
+      points, category: 'حضور', reason, is_auto: true
+    })
+  },
+  async revokeAttendancePoints(teamId: string, userId: string, eventId: string) {
+    return supabase.from('points_transactions')
+      .delete()
+      .eq('team_id', teamId).eq('user_id', userId)
+      .eq('event_id', eventId).eq('is_auto', true)
+  },
+  async awardStreakPoints(teamId: string, userId: string, eventId: string, points: number, reason: string) {
+    // Prevent double-awarding streak bonus for the same event
+    const { data: existing } = await supabase.from('points_transactions')
+      .select('id').eq('team_id', teamId).eq('user_id', userId)
+      .eq('event_id', eventId).eq('category', 'سلسلة').limit(1)
+    if (existing && existing.length > 0) return
+    return supabase.from('points_transactions').insert({
+      team_id: teamId, user_id: userId, event_id: eventId,
+      points, category: 'سلسلة', reason, is_auto: true
+    })
   }
 }
 
@@ -1332,5 +1450,36 @@ export const regulationsService = {
   },
   async delete(id: string) {
     return supabase.from('regulations').delete().eq('id', id)
+  },
+}
+
+// ── REWARDS ────────────────────────────────────────────────────────────
+export const rewardService = {
+  async getAll(teamId: string) {
+    const { data, error } = await supabase.from('rewards')
+      .select('*').eq('team_id', teamId)
+      .order('created_at', { ascending: false })
+    if (error) { console.error('[rewardService.getAll]', error.message); return [] }
+    if (!data?.length) return []
+    const uids = [...new Set(data.map((r: any) => r.user_id))]
+    const { data: profs } = await supabase.from('profiles')
+      .select('id, full_name, avatar_url').in('id', uids)
+    const pm: Record<string, any> = {}
+    ;(profs ?? []).forEach((p: any) => { pm[p.id] = p })
+    return data.map((r: any) => ({ ...r, profile: pm[r.user_id] ?? null }))
+  },
+  async getPlayerRewards(teamId: string, userId: string) {
+    const { data, error } = await supabase.from('rewards')
+      .select('id, title, notes, amount, created_at')
+      .eq('team_id', teamId).eq('user_id', userId)
+      .order('created_at', { ascending: false })
+    if (error) console.error('[getPlayerRewards]', error.message)
+    return data ?? []
+  },
+  async create(record: any) {
+    return supabase.from('rewards').insert(record).select().single()
+  },
+  async delete(id: string) {
+    return supabase.from('rewards').delete().eq('id', id)
   },
 }

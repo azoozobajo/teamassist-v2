@@ -2,16 +2,17 @@ import React, { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { Lock, Search, X } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { eventService, teamService } from '../../services'
+import { eventService, teamService, pointsService } from '../../services'
 import { Spinner, PageHeader, AttendanceButton, Modal, FormField, Avatar } from '../../components/ui'
 import { EVENT_CONFIG, formatDate, canManageEvents, isEventLocked } from '../../utils/helpers'
 import { supabase } from '../../lib/supabase'
 
 const STATUS_CHIPS = [
   { key: 'present',   label: 'حاضر',      cls: 'bg-emerald-100 text-emerald-700' },
-  { key: 'uncertain', label: 'غير متأكد', cls: 'bg-amber-100 text-amber-700' },
-  { key: 'absent',    label: 'غائب',      cls: 'bg-red-100 text-red-600' },
   { key: 'late',      label: 'متأخر',     cls: 'bg-orange-100 text-orange-700' },
+  { key: 'absent',    label: 'غائب',      cls: 'bg-red-100 text-red-600' },
+  { key: 'excused',   label: 'بعذر',      cls: 'bg-slate-100 text-slate-600' },
+  { key: 'uncertain', label: 'غير متأكد', cls: 'bg-amber-100 text-amber-700' },
 ]
 
 const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
@@ -19,14 +20,67 @@ const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   uncertain: { label: 'غير متأكد', cls: 'bg-amber-100 text-amber-700' },
   absent:    { label: 'غائب',      cls: 'bg-red-100 text-red-600' },
   late:      { label: 'متأخر',     cls: 'bg-orange-100 text-orange-700' },
+  excused:   { label: 'بعذر',      cls: 'bg-slate-100 text-slate-600' },
 }
 
 const SECTIONS = [
-  { key: 'present',   label: 'الحاضرون',    bg: 'bg-emerald-50', tc: 'text-emerald-700', icon: '✓' },
-  { key: 'late',      label: 'المتأخرون',    bg: 'bg-orange-50',  tc: 'text-orange-700',  icon: '⏱' },
-  { key: 'uncertain', label: 'غير متأكدون', bg: 'bg-amber-50',   tc: 'text-amber-700',   icon: '?' },
-  { key: 'absent',    label: 'الغائبون',    bg: 'bg-red-50',     tc: 'text-red-700',     icon: '✗' },
+  { key: 'present',   label: 'الحاضرون',       bg: 'bg-emerald-50', tc: 'text-emerald-700', icon: '✓' },
+  { key: 'late',      label: 'المتأخرون',       bg: 'bg-orange-50',  tc: 'text-orange-700',  icon: '⏱' },
+  { key: 'excused',   label: 'غياب بعذر',       bg: 'bg-slate-50',   tc: 'text-slate-600',   icon: '📋' },
+  { key: 'uncertain', label: 'غير متأكدون',     bg: 'bg-amber-50',   tc: 'text-amber-700',   icon: '?' },
+  { key: 'absent',    label: 'الغائبون',        bg: 'bg-red-50',     tc: 'text-red-700',     icon: '✗' },
 ]
+
+const EVENT_TYPE_TRIGGER: Record<string, string> = {
+  training: 'حضور التدريب',
+  match:    'حضور المباراة',
+  meeting:  'حضور الاجتماع',
+  camp:     'حضور المعسكر',
+}
+
+// ── Streak helpers ─────────────────────────────────────────────────────────
+function calcStreak(records: any[]): number {
+  const sorted = [...records]
+    .filter(a => a.event?.start_datetime)
+    .sort((a, b) =>
+      new Date(a.event.start_datetime).getTime() - new Date(b.event.start_datetime).getTime()
+    )
+  let streak = 0
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const s = sorted[i].status
+    if (s === 'present' || s === 'late') streak++
+    else if (s === 'excused') continue   // excused: skip, doesn't break streak
+    else break                           // absent / uncertain: breaks streak
+  }
+  return streak
+}
+
+async function awardStreakBonus(
+  teamId: string, userId: string, eventId: string,
+  streak: number, settings: any[]
+) {
+  const milestones = [
+    { count: 3,  trigger: 'سلسلة 3' },
+    { count: 5,  trigger: 'سلسلة 5' },
+    { count: 10, trigger: 'سلسلة 10' },
+  ]
+  for (const { count, trigger } of milestones) {
+    if (streak === count) {
+      const s = settings.find(x => x.event_trigger === trigger && x.is_active)
+      if (s && s.points > 0) {
+        await pointsService.awardStreakPoints(teamId, userId, eventId, s.points, `🔥 سلسلة ${count} حصص متتالية`)
+      }
+      return
+    }
+  }
+  // Every 5 sessions after 10 (15, 20, 25 …)
+  if (streak > 10 && (streak - 10) % 5 === 0) {
+    const s = settings.find(x => x.event_trigger === 'سلسلة كل 5' && x.is_active)
+    if (s && s.points > 0) {
+      await pointsService.awardStreakPoints(teamId, userId, eventId, s.points, `🔥 سلسلة ${streak} حصص متتالية`)
+    }
+  }
+}
 
 export default function AttendancePage() {
   const { teamId } = useParams()
@@ -60,6 +114,13 @@ export default function AttendancePage() {
   const [lateExcuse, setLateExcuse]   = useState('')
   const [hasExcuse, setHasExcuse]     = useState(false)
 
+  // Excused absence modal
+  const [showExcused, setShowExcused]         = useState<any>(null)
+  const [excusedReason, setExcusedReason]     = useState('')
+
+  // Auto-point settings
+  const [autoSettings, setAutoSettings] = useState<any[]>([])
+
   // ── Load on mount ──
   useEffect(() => {
     if (!teamId || !user) return
@@ -68,8 +129,10 @@ export default function AttendancePage() {
       teamService.getMembers(teamId),
       teamService.getMyRole(teamId, user.id),
       fetchSummary(teamId),
-    ]).then(([evs, mems, role, sum]) => {
+      pointsService.getAutoSettings(teamId),
+    ]).then(([evs, mems, role, sum, autoS]) => {
       setEvents(evs); setMembers(mems); setMyRole(role || ''); setSummary(sum)
+      setAutoSettings(autoS)
       setLoading(false)
     })
   }, [teamId, user])
@@ -125,13 +188,39 @@ export default function AttendancePage() {
 
   async function setStatus(userId: string, status: string, extra?: any) {
     if (!modalEv || !teamId) return
+
+    const prevStatus = modalAtt.find(a => a.user_id === userId)?.status
+    const wasPresent = prevStatus === 'present' || prevStatus === 'late'
+    const isNowPresent = status === 'present' || status === 'late'
+
     await eventService.setAttendance({
       event_id: modalEv.id, team_id: teamId, user_id: userId,
       status, ...extra, updated_at: new Date().toISOString()
     })
+
+    // ── Auto-points ──
+    if (isNowPresent && !wasPresent) {
+      // Award attendance points
+      const trigger = EVENT_TYPE_TRIGGER[modalEv.event_type as string]
+      if (trigger) {
+        const setting = autoSettings.find(s => s.event_trigger === trigger && s.is_active)
+        if (setting && setting.points > 0) {
+          await pointsService.awardAttendancePoints(teamId, userId, modalEv.id, setting.points, trigger)
+        }
+      }
+      // Award streak bonus — fetch full history first (includes the updated record)
+      const allAtt = await eventService.getMyAttendance(teamId, userId)
+      const streak = calcStreak(allAtt)
+      if (streak >= 3) {
+        await awardStreakBonus(teamId, userId, modalEv.id, streak, autoSettings)
+      }
+    } else if (!isNowPresent && wasPresent) {
+      // Revoke attendance + streak points when changed away from present/late
+      await pointsService.revokeAttendancePoints(teamId, userId, modalEv.id)
+    }
+
     const updated = await eventService.getAttendance(modalEv.id)
     setModalAtt(updated); refreshSummary(modalEv.id, updated)
-    // Refresh member att map if filter active
     if (filterMemberId === userId) {
       setMemberAttMap(prev => ({ ...prev, [modalEv.id]: status }))
     }
@@ -144,6 +233,12 @@ export default function AttendancePage() {
       late_excuse: lateExcuse, has_excuse: hasExcuse
     })
     setShowLate(null); setLateMinutes(''); setLateExcuse(''); setHasExcuse(false)
+  }
+
+  async function saveExcused() {
+    if (!showExcused) return
+    await setStatus(showExcused.user_id, 'excused', { excuse_reason: excusedReason })
+    setShowExcused(null); setExcusedReason('')
   }
 
   function clearFilters() {
@@ -172,8 +267,9 @@ export default function AttendancePage() {
   const mLate      = modalAtt.filter(a => a.status === 'late')
   const mUncertain = modalAtt.filter(a => a.status === 'uncertain')
   const mAbsent    = modalAtt.filter(a => a.status === 'absent')
+  const mExcused   = modalAtt.filter(a => a.status === 'excused')
   const mNotRec    = members.filter(m => !modalAtt.find(a => a.user_id === m.user_id))
-  const mLists: Record<string, any[]> = { present: mPresent, late: mLate, uncertain: mUncertain, absent: mAbsent }
+  const mLists: Record<string, any[]> = { present: mPresent, late: mLate, excused: mExcused, uncertain: mUncertain, absent: mAbsent }
 
   function MemberRow({ a, m }: { a?: any; m?: any }) {
     const profile = a?.profile || m?.profile
@@ -188,11 +284,15 @@ export default function AttendancePage() {
               {a.late_minutes} دقيقة {a.has_excuse ? '(بعذر)' : ''}
             </div>
           )}
+          {a?.status === 'excused' && a?.excuse_reason && (
+            <div className="text-xs text-slate-500">📋 {a.excuse_reason}</div>
+          )}
         </div>
         {isCoach && (
-          <AttendanceButton status={a?.status || 'present'} locked={false} compact
+          <AttendanceButton status={a?.status || 'present'} locked={false} compact includeExcused
             onSelect={s => {
-              if (s === 'late') setShowLate({ user_id: userId, profile })
+              if (s === 'late')    setShowLate({ user_id: userId, profile })
+              else if (s === 'excused') setShowExcused({ user_id: userId, profile })
               else setStatus(userId, s)
             }}/>
         )}
@@ -309,13 +409,13 @@ export default function AttendancePage() {
                   </div>
                 </div>
 
-                {/* 4 chips (only when no member filter) */}
+                {/* 5 chips (only when no member filter) */}
                 {!filterMemberId && (
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-5 gap-1.5">
                     {STATUS_CHIPS.map(chip => (
-                      <div key={chip.key} className={`${chip.cls} rounded-xl py-2.5 text-center`}>
-                        <div className="text-xl font-black leading-none">{counts[chip.key] || 0}</div>
-                        <div className="text-xs mt-1 font-bold opacity-75">{chip.label}</div>
+                      <div key={chip.key} className={`${chip.cls} rounded-xl py-2 text-center`}>
+                        <div className="text-lg font-black leading-none">{counts[chip.key] || 0}</div>
+                        <div className="text-[10px] mt-0.5 font-bold opacity-75 leading-tight">{chip.label}</div>
                       </div>
                     ))}
                   </div>
@@ -391,6 +491,24 @@ export default function AttendancePage() {
         <div className="flex gap-2 justify-end">
           <button className="btn btn-ghost" onClick={() => setShowLate(null)}>إلغاء</button>
           <button className="btn btn-primary" onClick={saveLate}>حفظ</button>
+        </div>
+      </Modal>
+
+      {/* ── Excused absence modal ── */}
+      <Modal open={!!showExcused} onClose={() => { setShowExcused(null); setExcusedReason('') }}
+        title={`غياب بعذر — ${showExcused?.profile?.full_name}`}>
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-4 text-xs text-slate-600">
+          📋 الغياب بعذر <strong>لا يكسر سلسلة الحضور</strong> ولا يؤثر على نسبة الحضور الفعلية.
+        </div>
+        <FormField label="سبب الغياب">
+          <input className="form-input" value={excusedReason}
+            onChange={e => setExcusedReason(e.target.value)}
+            placeholder="مرض، ظرف طارئ، رحلة..."
+            onKeyDown={e => e.key === 'Enter' && saveExcused()}/>
+        </FormField>
+        <div className="flex gap-2 justify-end mt-4">
+          <button className="btn btn-ghost" onClick={() => { setShowExcused(null); setExcusedReason('') }}>إلغاء</button>
+          <button className="btn btn-primary" onClick={saveExcused}>تسجيل الغياب بعذر</button>
         </div>
       </Modal>
     </div>

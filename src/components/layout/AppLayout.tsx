@@ -4,12 +4,12 @@ import {
   Home, Users, Calendar, CheckSquare, MessageCircle, Bell, Swords, Star as StarIcon,
   DollarSign, FileText, Mail, Settings, Star,
   Umbrella, Trophy, LogOut, Menu, ChevronDown, Shield, UserCircle,
-  Plus, LogIn, Archive, Baby, BookOpen, Stethoscope, Ruler
+  Plus, LogIn, Archive, Baby, BookOpen, Stethoscope, Ruler, Inbox, ClipboardList
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { Avatar } from '../ui'
 import { supabase } from '../../lib/supabase'
-import { teamService, notificationService, dmService, adminService } from '../../services'
+import { teamService, notificationService, dmService, adminService, mailService } from '../../services'
 import { cn, ROLE_LABELS, canManageTeam, canManageEvents, canViewReports, canManageFinance, isParent } from '../../utils/helpers'
 
 export default function AppLayout() {
@@ -22,7 +22,10 @@ export default function AppLayout() {
   const [archivedTeams, setArchivedTeams] = useState<any[]>([])
   const [myRole, setMyRole] = useState('')
   const [unreadN, setUnreadN] = useState(0)
+  const [teamNotifs, setTeamNotifs] = useState<any[]>([])
+  const [showNotif, setShowNotif] = useState(false)
   const [unreadDM, setUnreadDM] = useState(0)
+  const [unreadMail, setUnreadMail] = useState(0)
   const [teamName, setTeamName] = useState('')
   const [showLeave, setShowLeave] = useState(false)
   const [leavePassword, setLeavePassword] = useState('')
@@ -35,18 +38,25 @@ export default function AppLayout() {
     if (!user) return
     teamService.getMyTeams(user.id).then(setMyTeams)
     teamService.getMyArchivedTeams(user.id).then(setArchivedTeams)
-    notificationService.getAll(user.id).then(ns =>
-      setUnreadN(ns.filter((n: any) => !n.is_read).length))
     adminService.isPlatformAdmin(user.id).then(setIsPlatformAdmin)
   }, [user])
 
   useEffect(() => {
-    if (!teamId || !user) return
+    if (!teamId || !user) {
+      setTeamNotifs([])
+      setUnreadN(0)
+      return
+    }
     setIsFrozen(false)
+    setShowNotif(false)
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
     teamService.getTeam(teamId).then(t => setTeamName(t?.name || ''))
     dmService.getConversations(teamId, user.id).then(convs =>
       setUnreadDM(convs.reduce((s: number, c: any) => s + c.unread, 0)))
+    notificationService.getForTeam(teamId, user.id).then(ns => {
+      setTeamNotifs(ns)
+      setUnreadN(ns.filter((n: any) => !n.is_read).length)
+    })
     // Check if this member is frozen
     supabase.from('team_members')
       .select('is_frozen')
@@ -55,6 +65,11 @@ export default function AppLayout() {
       .eq('status', 'active')
       .maybeSingle()
       .then(({ data }) => setIsFrozen(data?.is_frozen ?? false))
+  }, [teamId, user])
+
+  useEffect(() => {
+    if (!teamId || !user) { setUnreadMail(0); return }
+    mailService.getUnreadCount(teamId, user.id).then(setUnreadMail)
   }, [teamId, user])
 
   async function handleLeave() {
@@ -67,6 +82,19 @@ export default function AppLayout() {
     teamService.getMyTeams(user.id).then(setMyTeams)
     navigate('/')
     setLeaving(false)
+  }
+
+  function markRead(id: string) {
+    notificationService.markRead(id)
+    setTeamNotifs(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n))
+    setUnreadN(prev => Math.max(0, prev - 1))
+  }
+
+  function markAllTeamRead() {
+    if (!teamId || !user) return
+    notificationService.markAllReadForTeam(teamId, user.id)
+    setTeamNotifs(prev => prev.map(n => ({ ...n, is_read: true })))
+    setUnreadN(0)
   }
 
   const parent    = isParent(myRole)
@@ -93,12 +121,14 @@ export default function AppLayout() {
     { to: `/team/${teamId}/my-child`,      icon: Baby,          label: 'ابني في الفريق',    parentOnly: true },
     { to: `/team/${teamId}/regulations`,  icon: BookOpen,      label: 'اللوائح والأنظمة' },
     { to: `/team/${teamId}/medical`,      icon: Stethoscope,   label: 'التقارير الطبية',   medicalNav: true },
+    { to: `/team/${teamId}/sport-profile`, icon: ClipboardList, label: 'الملف الرياضي',    playerOnly: true },
     { to: `/team/${teamId}/permissions`,  icon: Shield,        label: 'الصلاحيات',         ownerOnly: true, hiddenNav: true },
     { to: `/team/${teamId}/settings`,     icon: Settings,      label: 'الإعدادات',          adminOnly: true },
   ]
 
   const teamNav = teamId ? allTeamNav.filter(n => {
     if ((n as any).hiddenNav) return false
+    if ((n as any).playerOnly && myRole !== 'player') return false
     if ((n as any).parentOnly && !parent) return false
     if (parent && (n as any).parentHide) return false
     if ((n as any).adminOnly && !canAdmin) return false
@@ -225,9 +255,8 @@ export default function AppLayout() {
     { to: `/team/${teamId}/chat`,       icon: MessageCircle, label: 'التواصل',   badge: unreadDM },
     { to: '/',                          icon: Home,          label: 'رئيسي',     exact: true, isHome: true },
   ] : [
-    { to: '/',              icon: Home,        label: 'الرئيسية', exact: true },
-    { to: '/notifications', icon: Bell,        label: 'إشعارات',  badge: unreadN },
-    { to: '/profile',       icon: UserCircle,  label: 'حسابي' },
+    { to: '/',        icon: Home,       label: 'الرئيسية', exact: true },
+    { to: '/profile', icon: UserCircle, label: 'حسابي' },
   ]
 
   return (
@@ -406,19 +435,91 @@ export default function AppLayout() {
             <Home size={19} />
           </NavLink>
 
-          {/* Notifications */}
-          <NavLink to="/notifications"
-            className={({ isActive }) => cn(
-              'relative p-2 rounded-xl hover:bg-slate-100 transition-colors',
-              isActive ? 'text-brand-600 bg-brand-50' : 'text-slate-500'
-            )}>
-            <Bell size={19} />
-            {unreadN > 0 && (
-              <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white">
-                {unreadN > 9 ? '9+' : unreadN}
-              </span>
-            )}
-          </NavLink>
+          {/* Notifications — team-scoped dropdown, only visible when inside a team */}
+          {teamId && (
+            <div className="relative">
+              <button
+                onClick={() => setShowNotif(o => !o)}
+                className={cn(
+                  'relative p-2 rounded-xl hover:bg-slate-100 transition-colors',
+                  showNotif ? 'text-brand-600 bg-brand-50' : 'text-slate-500'
+                )}>
+                <Bell size={19} />
+                {unreadN > 0 && (
+                  <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white">
+                    {unreadN > 9 ? '9+' : unreadN}
+                  </span>
+                )}
+              </button>
+
+              {showNotif && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowNotif(false)} />
+                  <div className="absolute top-full mt-2 left-0 w-80 bg-white rounded-2xl shadow-xl border border-slate-100 z-50 overflow-hidden"
+                    dir="rtl" style={{ animation: 'scaleIn .12s ease' }}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+                      <span className="font-bold text-sm text-slate-800">الإشعارات</span>
+                      {unreadN > 0 && (
+                        <button onClick={markAllTeamRead}
+                          className="text-xs text-brand-600 font-bold hover:underline border-none bg-transparent cursor-pointer p-0">
+                          تحديد الكل كمقروء
+                        </button>
+                      )}
+                    </div>
+                    <div className="max-h-[360px] overflow-y-auto divide-y divide-slate-50">
+                      {teamNotifs.length === 0 ? (
+                        <div className="py-10 text-center">
+                          <Bell size={26} className="mx-auto text-slate-300 mb-2" />
+                          <p className="text-sm text-slate-400">لا توجد إشعارات</p>
+                        </div>
+                      ) : teamNotifs.map((n: any) => (
+                        <button key={n.id}
+                          onClick={() => markRead(n.id)}
+                          className={cn(
+                            'w-full text-right px-4 py-3 hover:bg-slate-50 transition-colors border-none cursor-pointer',
+                            !n.is_read ? 'bg-brand-50/40' : 'bg-white'
+                          )}>
+                          <div className="flex items-start gap-2.5">
+                            <div className="flex-shrink-0 mt-1.5">
+                              <span className={cn(
+                                'block w-2 h-2 rounded-full',
+                                n.is_read ? 'bg-transparent' : 'bg-brand-500'
+                              )} />
+                            </div>
+                            <div className="flex-1 min-w-0 text-right">
+                              <div className="text-sm font-bold text-slate-800 leading-tight">{n.title}</div>
+                              {n.body && <div className="text-xs text-slate-500 mt-0.5 line-clamp-2">{n.body}</div>}
+                              <div className="text-[10px] text-slate-400 mt-1">
+                                {new Date(n.created_at).toLocaleDateString('ar-SA', { month: 'short', day: 'numeric' })}
+                                {' · '}
+                                {new Date(n.created_at).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' })}
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Mail inbox — all team members */}
+          {teamId && (
+            <NavLink to={`/team/${teamId}/mail`}
+              className={({ isActive }) => cn(
+                'relative p-2 rounded-xl hover:bg-slate-100 transition-colors',
+                isActive ? 'text-brand-600 bg-brand-50' : 'text-slate-500'
+              )}>
+              <Inbox size={19} />
+              {unreadMail > 0 && (
+                <span className="absolute top-1 right-1 w-4 h-4 bg-brand-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white">
+                  {unreadMail > 9 ? '9+' : unreadMail}
+                </span>
+              )}
+            </NavLink>
+          )}
 
           {/* Profile */}
           <NavLink to="/profile"
