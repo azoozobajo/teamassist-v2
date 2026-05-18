@@ -106,6 +106,7 @@ export default function AppLayout() {
     { to: `/team/${teamId}`,              icon: Home,          label: 'لوحة الفريق',       exact: true },
     { to: `/team/${teamId}/members`,      icon: Users,         label: 'الأعضاء' },
     { to: `/team/${teamId}/events`,       icon: Calendar,      label: 'المواعيد' },
+    { to: `/team/${teamId}/matches`,      icon: Trophy,        label: 'المباريات' },
     { to: `/team/${teamId}/attendance`,   icon: CheckSquare,   label: 'الحضور',             coachOnly: true },
     { to: `/team/${teamId}/leaves`,       icon: Umbrella,      label: 'الإجازات',           parentHide: true },
     { to: `/team/${teamId}/players`,      icon: Trophy,        label: 'اللاعبون',           coachOnly: true },

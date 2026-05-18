@@ -66,10 +66,11 @@ export default function TeamDashboard() {
 
       const role = r || ''
 
-      // Determine which events the current user should attend
-      // No canManageEvents shortcut — filter purely by att_group / att_member_ids
+      // Determine which events the current user should attend.
+      // Match and training are always player-only regardless of stored att_group.
       const isVisible = (ev: any): boolean => {
         if (ev.att_member_ids?.length > 0) return ev.att_member_ids.includes(user!.id)
+        if (ev.event_type === 'match' || ev.event_type === 'training') return role === 'player'
         const allowedRoles = ROLE_GROUPS_EVENT[ev.att_group]
         if (allowedRoles) return allowedRoles.includes(role)
         return true // 'الكل' or unknown group → everyone
@@ -161,9 +162,10 @@ export default function TeamDashboard() {
   if (!team)   return <div className="card text-center py-10 text-slate-400">الفريق غير موجود</div>
 
   // ── Computed ──
-  // Filter purely by att_group / att_member_ids — no role-based bypass
+  // Filter by att_group / att_member_ids. Match and training are player-only regardless of stored att_group.
   function isEventForMe(ev: any): boolean {
     if (ev.att_member_ids?.length > 0) return ev.att_member_ids.includes(user?.id)
+    if (ev.event_type === 'match' || ev.event_type === 'training') return myRole === 'player'
     const allowedRoles = ROLE_GROUPS_EVENT[ev.att_group]
     if (allowedRoles) return allowedRoles.includes(myRole)
     return true

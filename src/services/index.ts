@@ -10,7 +10,9 @@ export const teamService = {
       .eq('user_id', userId)
       .eq('status', 'active')
       .is('removed_at', null)
-    return (data ?? []).map((r: any) => ({ ...r.teams, myRole: r.role, joinedAt: r.joined_at }))
+    return (data ?? [])
+      .filter((r: any) => r.teams?.is_active !== false)
+      .map((r: any) => ({ ...r.teams, myRole: r.role, joinedAt: r.joined_at }))
   },
   async getTeam(id: string) {
     const { data } = await supabase.from('teams').select('*').eq('id', id).single()
@@ -67,6 +69,13 @@ export const teamService = {
   },
   async updateMemberRole(memberId: string, role: string) {
     return supabase.from('team_members').update({ role }).eq('id', memberId)
+  },
+  async updateMemberPositions(memberId: string, primaryPosition: string | null, secondaryPositions: string[]) {
+    return supabase.from('team_members').update({
+      primary_position: primaryPosition || null,
+      secondary_positions: secondaryPositions.slice(0, 3),
+      position_label: primaryPosition || null,
+    }).eq('id', memberId)
   },
   async removeMember(memberId: string) {
     return supabase.from('team_members')
@@ -832,6 +841,14 @@ export const matchService = {
       .eq('team_id', teamId).order('match_date', { ascending: false })
     return data ?? []
   },
+  async getOne(id: string) {
+    const { data } = await supabase.from('matches').select('*').eq('id', id).single()
+    return data
+  },
+  async getByEventId(eventId: string) {
+    const { data } = await supabase.from('matches').select('id').eq('event_id', eventId).maybeSingle()
+    return data
+  },
   async getUpcoming(teamId: string) {
     const { data } = await supabase.from('matches').select('*')
       .eq('team_id', teamId).eq('status', 'upcoming')
@@ -839,14 +856,149 @@ export const matchService = {
       .order('match_date', { ascending: true })
     return data ?? []
   },
-  async create(data: any) {
-    return supabase.from('matches').insert(data).select().single()
+  async create(matchData: any, userId: string) {
+    // 1. Create a linked event so the match appears in the schedule
+    const { data: event, error: evErr } = await supabase.from('events').insert({
+      team_id: matchData.team_id,
+      title: `مباراة ضد ${matchData.opponent}`,
+      event_type: 'match',
+      start_datetime: matchData.match_date,
+      location: matchData.location || '',
+      att_group: 'اللاعبون فقط',
+      is_locked: false,
+      default_status: 'uncertain',
+      created_by: userId
+    }).select().single()
+    if (evErr) throw evErr
+    // 2. Insert only CORE columns that are guaranteed to exist in the base schema
+    const corePayload: any = {
+      team_id: matchData.team_id,
+      opponent: matchData.opponent,
+      match_date: matchData.match_date,
+      location: matchData.location || '',
+      match_type: matchData.match_type || 'friendly',
+      home_away: matchData.home_away || 'home',
+      status: matchData.status || 'upcoming',
+      tournament_id: matchData.tournament_id || null,
+      notes: matchData.notes || '',
+      event_id: event.id,
+      created_by: userId
+    }
+    const { data: match, error: mErr } = await supabase.from('matches')
+      .insert(corePayload).select().single()
+    if (mErr) {
+      // Clean up orphaned event so it doesn't appear in the calendar
+      await supabase.from('events').delete().eq('id', event.id)
+      throw mErr
+    }
+    // 3. Try extended columns (V_MATCHES_V2+) — silently skip if migration not yet applied
+    const ext: any = {}
+    if (matchData.map_url) ext.map_url = matchData.map_url
+    if (matchData.leg && matchData.leg !== 'none') ext.leg = matchData.leg
+    if (matchData.round_number) ext.round_number = parseInt(String(matchData.round_number))
+    if (matchData.stage) ext.stage = matchData.stage
+    if (Object.keys(ext).length > 0) {
+      await supabase.from('matches').update(ext).eq('id', match.id)
+    }
+    return { data: match, error: null }
   },
   async update(id: string, data: any) {
+    // Sync title/date/location to linked event if it exists
+    const { data: match } = await supabase.from('matches').select('event_id,opponent').eq('id', id).single()
+    if (match?.event_id) {
+      const patch: any = {}
+      if (data.match_date) patch.start_datetime = data.match_date
+      if (data.location !== undefined) patch.location = data.location
+      if (data.map_url !== undefined) patch.map_url = data.map_url
+      if (data.opponent) patch.title = `مباراة ضد ${data.opponent}`
+      if (Object.keys(patch).length) {
+        await supabase.from('events').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', match.event_id)
+      }
+    }
     return supabase.from('matches').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id)
   },
   async delete(id: string) {
-    return supabase.from('matches').delete().eq('id', id)
+    const { data: match } = await supabase.from('matches').select('event_id').eq('id', id).single()
+    const { error } = await supabase.from('matches').delete().eq('id', id)
+    if (error) throw error
+    if (match?.event_id) await supabase.from('events').delete().eq('id', match.event_id)
+  },
+  async syncCardCounts(matchId: string) {
+    const { data: events } = await supabase.from('match_events')
+      .select('event_type, player_id').eq('match_id', matchId)
+    const yellow = (events ?? []).filter((e: any) => e.event_type === 'yellow_card').map((e: any) => e.player_id).filter(Boolean)
+    const red = (events ?? []).filter((e: any) => e.event_type === 'red_card').map((e: any) => e.player_id).filter(Boolean)
+    return supabase.from('matches').update({ yellow_cards: yellow, red_cards: red }).eq('id', matchId)
+  }
+}
+
+// ── MATCH LINEUP ────────────────────────────────────────────────────────
+export const matchLineupService = {
+  async get(matchId: string) {
+    const { data } = await supabase.from('match_lineup').select('*').eq('match_id', matchId).maybeSingle()
+    return data
+  },
+  async save(matchId: string, teamId: string, formation: string, players: any[], userId: string) {
+    return supabase.from('match_lineup').upsert(
+      { match_id: matchId, team_id: teamId, formation, players, created_by: userId, updated_at: new Date().toISOString() },
+      { onConflict: 'match_id' }
+    )
+  }
+}
+
+// ── MATCH EVENTS ────────────────────────────────────────────────────────
+export const matchEventsService = {
+  async getAll(matchId: string) {
+    const { data } = await supabase.from('match_events')
+      .select('*, player:profiles!player_id(id,full_name), player_out:profiles!player_out_id(id,full_name)')
+      .eq('match_id', matchId).order('minute', { ascending: true })
+    return data ?? []
+  },
+  async add(data: any) {
+    return supabase.from('match_events').insert(data).select().single()
+  },
+  async remove(id: string) {
+    return supabase.from('match_events').delete().eq('id', id)
+  }
+}
+
+// ── MATCH STATS ─────────────────────────────────────────────────────────
+export const matchStatsService = {
+  async getTeamMatchStats(teamId: string) {
+    const { data: matches } = await supabase.from('matches')
+      .select('id, match_date, tournament_id, status, goals_for, goals_against, opponent, home_away, location, round_number')
+      .eq('team_id', teamId)
+    const matchIds = (matches ?? []).map((m: any) => m.id)
+    if (matchIds.length === 0) return { matches: [], lineups: [], events: [] }
+    const [lineupRes, eventRes] = await Promise.all([
+      supabase.from('match_lineup').select('match_id, players').in('match_id', matchIds),
+      supabase.from('match_events')
+        .select('match_id, event_type, player_id, player_out_id, minute')
+        .in('match_id', matchIds)
+    ])
+    return {
+      matches: matches ?? [],
+      lineups: lineupRes.data ?? [],
+      events: eventRes.data ?? []
+    }
+  }
+}
+
+// ── MATCH NOTES ─────────────────────────────────────────────────────────
+export const matchNotesService = {
+  async getAll(matchId: string) {
+    const { data } = await supabase.from('match_notes')
+      .select('*').eq('match_id', matchId).order('created_at', { ascending: true })
+    return data ?? []
+  },
+  async add(data: any) {
+    return supabase.from('match_notes').insert(data).select().single()
+  },
+  async update(id: string, content: string, visibility: string) {
+    return supabase.from('match_notes').update({ content, visibility, updated_at: new Date().toISOString() }).eq('id', id)
+  },
+  async remove(id: string) {
+    return supabase.from('match_notes').delete().eq('id', id)
   }
 }
 

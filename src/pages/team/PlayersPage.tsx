@@ -4,14 +4,15 @@ import {
   Plus, Trophy, ChevronDown, ChevronUp, Send, ExternalLink,
   Paperclip, List, LayoutGrid, ArrowUpDown, ChevronRight,
   X, AlertCircle, Image, FileText,
-  Ruler, Activity, Star, CheckSquare, DollarSign, Stethoscope, BookOpen
+  Ruler, Activity, Star, CheckSquare, DollarSign, Stethoscope, BookOpen, BarChart2
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService } from '../../services'
+import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService, matchStatsService, tournamentService } from '../../services'
 import { Spinner, PageHeader, SearchBox, Avatar, Modal, FormField, EmptyState, ProgressBar } from '../../components/ui'
 import { NOTE_TYPES, canManageEvents, canManageTeam, formatDate, RIYAL } from '../../utils/helpers'
 import { getTestDef } from '../../utils/fitnessTestDefinitions'
 import { METRIC_KEYS, METRIC_LABELS, METRIC_UNITS, getMetricTimeSeries, getBMITimeSeries } from '../../utils/measurementHelpers'
+import { PositionBadges } from '../../components/sports/PositionBadges'
 
 const NOTE_COLOR: Record<string, { bg: string; tc: string }> = {
   مدح:   { bg: 'bg-emerald-50', tc: 'text-emerald-700' },
@@ -329,7 +330,7 @@ export default function PlayersPage() {
   const [playerMedical, setPlayerMedical] = useState<any[]>([])
   const [playerFinance, setPlayerFinance] = useState<{ obligations: any[]; payments: any[] }>({ obligations: [], payments: [] })
   const [playerPts, setPlayerPts] = useState(0)
-  const [detailTab, setDetailTab] = useState('notes')
+  const [detailTab, setDetailTab] = useState('matchstats')
 
   // Extended player data (for new tabs)
   const [playerAttendance, setPlayerAttendance] = useState<any[]>([])
@@ -348,6 +349,9 @@ export default function PlayersPage() {
   const [replyingTo, setReplyingTo] = useState<string | null>(null)
   const [replyText, setReplyText] = useState('')
   const [sendingReply, setSendingReply] = useState(false)
+
+  // Match popup
+  const [matchPopup, setMatchPopup] = useState<any>(null)
 
   // Injury cases
   const [showCaseModal, setShowCaseModal] = useState(false)
@@ -368,9 +372,18 @@ export default function PlayersPage() {
 
   const [unreadNotes, setUnreadNotes] = useState<Record<string, number>>({})
 
+  // Match stats for player detail
+  const [allTournaments, setAllTournaments] = useState<any[]>([])
+  const [playerMatchStats, setPlayerMatchStats] = useState<{ matches: any[]; lineups: any[]; events: any[] } | null>(null)
+  const [playerMatchStatsLoading, setPlayerMatchStatsLoading] = useState(false)
+  const [statsFilterTourn, setStatsFilterTourn] = useState('')
+  const [statsFilterFrom, setStatsFilterFrom] = useState('')
+  const [statsFilterTo, setStatsFilterTo] = useState('')
+
   useEffect(() => {
     if (!teamId || !user) return
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
+    tournamentService.getAll(teamId).then(t => setAllTournaments(t))
     teamService.getMembers(teamId).then(async m => {
       const players = m.filter((mem: any) => mem.role === 'player')
       setMembers(players)
@@ -412,11 +425,12 @@ export default function PlayersPage() {
   }
 
   async function openPlayer(m: any) {
-    setSelPlayer(m); setDetailTab('notes')
+    setSelPlayer(m); setDetailTab('matchstats')
     setExpandedCaseId(null); setCaseNotes({})
     setNoteLoadError(''); setSaveNoteError('')
     setPlayerAttendance([]); setPlayerMeasurements([])
     setPlayerFitnessResults([]); setPlayerPointsTxs([]); setPlayerRewards([])
+    setPlayerMatchStats(null); setStatsFilterTourn(''); setStatsFilterFrom(''); setStatsFilterTo('')
     if (!teamId || !user) return
     setLoadingPlayerData(true)
     const isCoach = canManageEvents(myRole) || canManageTeam(myRole)
@@ -449,6 +463,16 @@ export default function PlayersPage() {
     await noteService.markRead(m.user_id, teamId)
     setUnreadNotes(p => ({ ...p, [m.user_id]: 0 }))
   }
+
+  // Lazy-load match stats when stats tab is opened
+  useEffect(() => {
+    if (detailTab !== 'matchstats' || !selPlayer || !teamId || playerMatchStats || playerMatchStatsLoading) return
+    setPlayerMatchStatsLoading(true)
+    matchStatsService.getTeamMatchStats(teamId).then(data => {
+      setPlayerMatchStats(data)
+      setPlayerMatchStatsLoading(false)
+    })
+  }, [detailTab, selPlayer, teamId])
 
   async function saveNote() {
     if (!noteForm.content.trim() || !selPlayer || !teamId || !user) return
@@ -685,6 +709,7 @@ export default function PlayersPage() {
       { key: 'fitness',      icon: <Activity size={13}/>,    label: 'اللياقة',         count: Object.keys(plByTestKey).length },
       { key: 'attendance',   icon: <CheckSquare size={13}/>, label: 'الحضور',          count: plTotalEvents },
       { key: 'points',       icon: <Star size={13}/>,        label: 'النقاط',          count: playerPointsTxs.length },
+      { key: 'matchstats',   icon: <BarChart2 size={13}/>,   label: 'إحصائيات',        count: undefined },
     ]
 
     return (
@@ -701,9 +726,9 @@ export default function PlayersPage() {
               className="ring-4 ring-white/30 flex-shrink-0"/>
             <div className="flex-1 min-w-0">
               <div className="text-xl font-bold">{selPlayer.profile?.full_name}</div>
-              <div className="text-sm opacity-80">
-                {selPlayer.position_label || 'لاعب'}
-                {age !== null && ` · ${age} سنة`}
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                <PositionBadges member={selPlayer} />
+                {age !== null && <span className="text-xs text-white/70">{age} سنة</span>}
               </div>
               <div className="text-[11px] opacity-60 mt-0.5">انضم {formatFullDate(selPlayer.joined_at)}</div>
               {activeInjuries.length > 0 && (
@@ -1267,6 +1292,254 @@ export default function PlayersPage() {
           </div>
         )}
 
+        {/* ── Match Stats Tab ── */}
+        {detailTab === 'matchstats' && (() => {
+          const userId = selPlayer.user_id
+          if (playerMatchStatsLoading || (!playerMatchStats && detailTab === 'matchstats')) {
+            return <div className="flex justify-center py-10"><Spinner /></div>
+          }
+          if (!playerMatchStats) return null
+
+          // Filter matches where this player appeared in lineup
+          const playerLineups = playerMatchStats.lineups.filter((l: any) =>
+            (l.players || []).some((p: any) => p.user_id === userId && p.role !== 'excluded')
+          )
+          const playerMatchIds = new Set(playerLineups.map((l: any) => l.match_id))
+          let filtMatches = playerMatchStats.matches.filter((m: any) => playerMatchIds.has(m.id))
+
+          if (statsFilterTourn === '__friendly__') {
+            filtMatches = filtMatches.filter((m: any) => !m.tournament_id)
+          } else if (statsFilterTourn) {
+            filtMatches = filtMatches.filter((m: any) => m.tournament_id === statsFilterTourn)
+          }
+          if (statsFilterFrom) filtMatches = filtMatches.filter((m: any) => m.match_date >= statsFilterFrom)
+          if (statsFilterTo) filtMatches = filtMatches.filter((m: any) => m.match_date <= statsFilterTo + 'T23:59')
+
+          const filtMatchIds = new Set(filtMatches.map((m: any) => m.id))
+          const filtLineups = playerMatchStats.lineups.filter((l: any) => filtMatchIds.has(l.match_id))
+          const filtEvents = playerMatchStats.events.filter((e: any) => filtMatchIds.has(e.match_id))
+
+          let matchesPlayed = 0, starter = 0, sub = 0, startedAndSubbed = 0, minutes = 0
+          let goals = 0, assists = 0, yellow = 0, red = 0, cleanSheets = 0
+
+          for (const lineup of filtLineups) {
+            const players: any[] = lineup.players || []
+            const plEntry = players.find((p: any) => p.user_id === userId)
+            if (!plEntry || plEntry.role === 'excluded') continue
+            matchesPlayed++
+            const matchEvts = filtEvents.filter((e: any) => e.match_id === lineup.match_id)
+            const subOuts = matchEvts.filter((e: any) => e.event_type === 'substitution' && e.player_out_id === userId)
+            const subIn = matchEvts.find((e: any) => e.event_type === 'substitution' && e.player_id === userId)
+            if (plEntry.role === 'starter') {
+              starter++
+              if (subOuts.length > 0) {
+                startedAndSubbed++
+                minutes += subOuts[0].minute || 90
+              } else {
+                minutes += 90
+              }
+            } else {
+              sub++
+              minutes += subIn ? (90 - (subIn.minute || 0)) : 0
+            }
+          }
+          for (const evt of filtEvents) {
+            if (evt.player_id !== userId && evt.player_out_id !== userId) continue
+            if (evt.event_type === 'goal' && evt.player_id === userId) goals++
+            else if (evt.event_type === 'assist' && evt.player_id === userId) assists++
+            else if (evt.event_type === 'yellow_card' && evt.player_id === userId) yellow++
+            else if (evt.event_type === 'red_card' && evt.player_id === userId) red++
+            else if (evt.event_type === 'clean_sheet' && evt.player_id === userId) cleanSheets++
+          }
+
+          const matchList = filtMatches.map((m: any) => {
+            const lineup = filtLineups.find((l: any) => l.match_id === m.id)
+            const plEntry = (lineup?.players || []).find((p: any) => p.user_id === userId)
+            const tourney = allTournaments.find((t: any) => t.id === m.tournament_id)
+            const mEvts = filtEvents.filter((e: any) => e.match_id === m.id)
+            const plGoals = mEvts.filter((e: any) => e.event_type === 'goal' && e.player_id === userId).length
+            const plAssists = mEvts.filter((e: any) => e.event_type === 'assist' && e.player_id === userId).length
+            const plYellow = mEvts.filter((e: any) => e.event_type === 'yellow_card' && e.player_id === userId).length
+            const plRed = mEvts.filter((e: any) => e.event_type === 'red_card' && e.player_id === userId).length
+            const plCleanSheet = mEvts.filter((e: any) => e.event_type === 'clean_sheet' && e.player_id === userId).length
+            return { ...m, playerRole: plEntry?.role, tourney, plGoals, plAssists, plYellow, plRed, plCleanSheet }
+          }).sort((a: any, b: any) => new Date(b.match_date).getTime() - new Date(a.match_date).getTime())
+
+          return (
+            <div className="space-y-3">
+              {/* Filters */}
+              <div className="flex flex-wrap items-center gap-2">
+                <select className="form-input text-xs" style={{ maxWidth: 160 }} value={statsFilterTourn} onChange={e => setStatsFilterTourn(e.target.value)}>
+                  <option value="">كل المباريات</option>
+                  <option value="__friendly__">ودية فقط</option>
+                  {allTournaments.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <input type="date" className="form-input text-xs" style={{ maxWidth: 140 }} value={statsFilterFrom} onChange={e => setStatsFilterFrom(e.target.value)} />
+                <input type="date" className="form-input text-xs" style={{ maxWidth: 140 }} value={statsFilterTo} onChange={e => setStatsFilterTo(e.target.value)} />
+                {(statsFilterTourn || statsFilterFrom || statsFilterTo) && (
+                  <button onClick={() => { setStatsFilterTourn(''); setStatsFilterFrom(''); setStatsFilterTo('') }}
+                    className="text-xs text-red-500 hover:underline flex items-center gap-0.5">
+                    <X size={11} /> مسح
+                  </button>
+                )}
+              </div>
+
+              {/* Stats summary grid */}
+              <div className="grid grid-cols-4 gap-2">
+                {([
+                  ['م', matchesPlayed, 'text-slate-700'],
+                  ['أساسي', starter, 'text-blue-600'],
+                  ['بديل', sub, 'text-amber-600'],
+                  ['دقائق', minutes, 'text-slate-600'],
+                ] as [string, number, string][]).map(([l, v, c]) => (
+                  <div key={l} className="bg-slate-50 rounded-xl p-2.5 text-center">
+                    <div className={`text-lg font-bold ${c}`}>{v}</div>
+                    <div className="text-[10px] text-slate-400">{l}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+                {([
+                  ['⚽', goals, 'text-emerald-600'],
+                  ['🎯', assists, 'text-blue-500'],
+                  ['🟡', yellow, 'text-yellow-600'],
+                  ['🔴', red, 'text-red-600'],
+                  ['🥅', cleanSheets, 'text-teal-600'],
+                ] as [string, number, string][]).map(([l, v, c]) => (
+                  <div key={l} className="bg-slate-50 rounded-xl p-2.5 text-center">
+                    <div className={`text-base font-bold ${c}`}>{v}</div>
+                    <div className="text-[11px] text-slate-400">{l}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Match list */}
+              {matchList.length === 0 ? (
+                <div className="card text-center text-slate-400 py-6 text-sm">لا توجد مباريات بهذا الفلتر</div>
+              ) : (
+                <div className="space-y-2">
+                  {matchList.map((m: any) => {
+                    const hasResult = m.goals_for !== null && m.goals_against !== null
+                    const result = hasResult ? (m.goals_for > m.goals_against ? { l: 'فوز', c: 'bg-emerald-100 text-emerald-700' } : m.goals_for === m.goals_against ? { l: 'تعادل', c: 'bg-amber-100 text-amber-700' } : { l: 'خسارة', c: 'bg-red-100 text-red-700' }) : null
+                    return (
+                      <div key={m.id} className="card mb-0 cursor-pointer hover:shadow-md transition-all"
+                        onClick={() => setMatchPopup({ ...m, result })}>
+                        <div className="flex items-center gap-3">
+                          <div className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center flex-shrink-0 text-xs font-bold ${result?.l === 'فوز' ? 'bg-emerald-50' : result?.l === 'خسارة' ? 'bg-red-50' : result?.l === 'تعادل' ? 'bg-amber-50' : 'bg-slate-50'}`}>
+                            {hasResult ? (
+                              <><span className="text-base font-bold">{m.goals_for}-{m.goals_against}</span><span className={`text-[10px] px-1.5 py-0.5 rounded-full ${result!.c}`}>{result!.l}</span></>
+                            ) : <span className="text-xl">⚽</span>}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold text-sm truncate">ضد {m.opponent || '—'}</div>
+                            <div className="text-xs text-slate-400 mt-0.5">{new Date(m.match_date).toLocaleDateString('ar-SA', { year: 'numeric', month: 'short', day: 'numeric' })}</div>
+                            <div className="flex gap-1.5 mt-1 flex-wrap">
+                              {m.tourney ? <span className="badge badge-purple text-[10px]">{m.tourney.name}</span> : <span className="badge badge-gray text-[10px]">ودية</span>}
+                              <span className={`badge text-[10px] ${m.playerRole === 'starter' ? 'badge-blue' : 'bg-amber-100 text-amber-700'}`}>{m.playerRole === 'starter' ? 'أساسي' : 'بديل'}</span>
+                              {m.plGoals > 0 && <span className="badge badge-green text-[10px]">⚽ {m.plGoals}</span>}
+                              {m.plAssists > 0 && <span className="badge badge-blue text-[10px]">👟 {m.plAssists}</span>}
+                              {m.plYellow > 0 && <span className="badge bg-yellow-100 text-yellow-700 text-[10px]">🟡</span>}
+                              {m.plRed > 0 && <span className="badge bg-red-100 text-red-700 text-[10px]">🔴</span>}
+                              {m.plCleanSheet > 0 && <span className="badge bg-teal-100 text-teal-700 text-[10px]">🥅</span>}
+                            </div>
+                          </div>
+                          <ChevronRight size={14} className="text-slate-300 flex-shrink-0" />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })()}
+
+        {/* Match Popup */}
+        <Modal open={!!matchPopup} onClose={() => setMatchPopup(null)} title="تفاصيل المباراة">
+          {matchPopup && (() => {
+            const mp = matchPopup
+            const hasResult = mp.goals_for !== null && mp.goals_against !== null
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center gap-4">
+                  <div className={`w-20 h-20 rounded-2xl flex flex-col items-center justify-center flex-shrink-0 ${mp.result?.l === 'فوز' ? 'bg-emerald-50' : mp.result?.l === 'خسارة' ? 'bg-red-50' : mp.result?.l === 'تعادل' ? 'bg-amber-50' : 'bg-slate-50'}`}>
+                    {hasResult ? (
+                      <>
+                        <span className="text-2xl font-bold">{mp.goals_for}-{mp.goals_against}</span>
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full mt-1 ${mp.result!.c}`}>{mp.result!.l}</span>
+                      </>
+                    ) : <span className="text-3xl">⚽</span>}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-base">{mp.home_away === 'home' ? `فريقنا ضد ${mp.opponent}` : `${mp.opponent} ضد فريقنا`}</div>
+                    <div className="text-sm text-slate-500 mt-0.5">
+                      {new Date(mp.match_date).toLocaleDateString('ar-SA', { year: 'numeric', month: 'long', day: 'numeric' })}
+                      {mp.match_date?.slice(11, 16) ? ` · ${mp.match_date.slice(11, 16)}` : ''}
+                    </div>
+                    {mp.location && <div className="text-xs text-slate-400 mt-0.5">📍 {mp.location}</div>}
+                    <div className="flex gap-1.5 mt-2 flex-wrap">
+                      {mp.tourney ? <span className="badge badge-purple">{mp.tourney.name}</span> : <span className="badge badge-gray">ودية</span>}
+                      {mp.round_number && <span className="badge badge-gray">الجولة {mp.round_number}</span>}
+                      <span className={`badge ${mp.playerRole === 'starter' ? 'badge-blue' : 'bg-amber-100 text-amber-700'}`}>
+                        {mp.playerRole === 'starter' ? '▶ أساسي' : '↔ بديل'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Player match stats */}
+                {(mp.plGoals > 0 || mp.plAssists > 0 || mp.plYellow > 0 || mp.plRed > 0 || mp.plCleanSheet > 0) && (
+                  <div className="bg-slate-50 rounded-xl p-3">
+                    <div className="text-xs font-semibold text-slate-500 mb-2">إحصائياته في هذه المباراة</div>
+                    <div className="flex gap-3 flex-wrap">
+                      {mp.plGoals > 0 && (
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-emerald-600">{mp.plGoals}</div>
+                          <div className="text-[10px] text-slate-400">⚽ أهداف</div>
+                        </div>
+                      )}
+                      {mp.plAssists > 0 && (
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-blue-600">{mp.plAssists}</div>
+                          <div className="text-[10px] text-slate-400">👟 صناعة</div>
+                        </div>
+                      )}
+                      {mp.plYellow > 0 && (
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-yellow-600">{mp.plYellow}</div>
+                          <div className="text-[10px] text-slate-400">🟡 صفراء</div>
+                        </div>
+                      )}
+                      {mp.plRed > 0 && (
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-red-600">{mp.plRed}</div>
+                          <div className="text-[10px] text-slate-400">🔴 حمراء</div>
+                        </div>
+                      )}
+                      {mp.plCleanSheet > 0 && (
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-teal-600">{mp.plCleanSheet}</div>
+                          <div className="text-[10px] text-slate-400">🥅 شباك نظيفة</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex gap-2 justify-end pt-2 border-t border-slate-100">
+                  <button className="btn btn-ghost" onClick={() => setMatchPopup(null)}>إغلاق</button>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => { setMatchPopup(null); navigate(`/team/${teamId}/matches/${mp.id}`) }}
+                  >
+                    انتقل لصفحة المباراة ←
+                  </button>
+                </div>
+              </div>
+            )
+          })()}
+        </Modal>
+
         {/* Note Modal */}
         <Modal open={showNote} onClose={() => { setShowNote(false); setSaveNoteError('') }} title={`توجيه وإرشاد — ${selPlayer.profile?.full_name}`}>
           <div className="form-group">
@@ -1518,7 +1791,7 @@ export default function PlayersPage() {
                     <div className="flex-1 min-w-0 text-right">
                       <div className="font-bold text-sm truncate">{m.profile?.full_name}</div>
                       <div className="flex items-center gap-2 flex-wrap mt-0.5">
-                        {m.position_label && <span className="text-xs text-brand-600 font-medium">{m.position_label}</span>}
+                        <PositionBadges member={m} compact />
                         {age !== null && <span className="text-xs text-slate-400">{age} سنة</span>}
                         <span className="text-xs text-slate-400">{new Date(m.joined_at).toLocaleDateString('ar-SA')}</span>
                       </div>
@@ -1573,7 +1846,7 @@ export default function PlayersPage() {
                       <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md" badge={unread}/>
                       <div className="flex-1 min-w-0">
                         <div className="font-bold text-sm truncate">{m.profile?.full_name}</div>
-                        <div className="text-xs text-slate-400">{m.role}{m.position_label ? ` · ${m.position_label}` : ''}</div>
+                        <div className="mt-1"><PositionBadges member={m} compact /></div>
                         <div className="flex items-center gap-2 mt-0.5">
                           {age !== null && <span className="text-xs text-slate-400">{age} سنة</span>}
                           <span className="text-xs text-slate-400">انضم {new Date(m.joined_at).toLocaleDateString('ar-SA')}</span>

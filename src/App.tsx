@@ -26,6 +26,7 @@ import ChatPage from './pages/team/ChatPage'
 import InvitePage from './pages/team/InvitePage'
 import TeamSettingsPage from './pages/team/TeamSettingsPage'
 import MatchesPage from './pages/team/MatchesPage'
+import MatchDetailPage from './pages/team/MatchDetailPage'
 import BestPlayerPage from './pages/team/BestPlayerPage'
 import PermissionsPage from './pages/team/PermissionsPage'
 import ArchivePage from './pages/team/ArchivePage'
@@ -90,6 +91,7 @@ export default function App() {
               <Route path="/team/:teamId/invite" element={<InvitePage/>}/>
               <Route path="/team/:teamId/settings" element={<TeamSettingsPage/>}/>
               <Route path="/team/:teamId/matches" element={<MatchesPage/>}/>
+              <Route path="/team/:teamId/matches/:matchId" element={<MatchDetailPage/>}/>
               <Route path="/team/:teamId/best-player" element={<BestPlayerPage/>}/>
               <Route path="/team/:teamId/permissions" element={<PermissionsPage/>}/>
               <Route path="/archive/:teamId" element={<ArchivePage/>}/>

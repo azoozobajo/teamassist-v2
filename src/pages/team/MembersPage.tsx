@@ -4,7 +4,8 @@ import { UserPlus, Edit2, Trash2, CheckCircle, XCircle, Shield, Save, Check, Lin
 import { useAuth } from '../../contexts/AuthContext'
 import { teamService, inviteService, notificationService, permissionService, memberFreezeService } from '../../services'
 import { Spinner, PageHeader, SearchBox, Avatar, Modal, FormField, ConfirmDialog, EmptyState, Tabs } from '../../components/ui'
-import { ROLE_LABELS, canManageTeam, formatDate, PERMISSIONS } from '../../utils/helpers'
+import { ROLE_LABELS, canManageEvents, canManageTeam, formatDate, PERMISSIONS } from '../../utils/helpers'
+import { PLAYER_POSITIONS, PositionBadges, getPrimaryPosition, getSecondaryPositions } from '../../components/sports/PositionBadges'
 
 const ALL_ROLES = ['owner','head_coach','assistant_coach','player','administrator','media','medical','parent','guest']
 const ROLES_NO_OWNER = ALL_ROLES.filter(r => r !== 'owner')
@@ -40,7 +41,8 @@ export default function MembersPage() {
   // Edit member modal
   const [editMember, setEditMember] = useState<any>(null)
   const [editRole, setEditRole] = useState('')
-  const [editPosLabel, setEditPosLabel] = useState('')
+  const [editPrimaryPosition, setEditPrimaryPosition] = useState('')
+  const [editSecondaryPositions, setEditSecondaryPositions] = useState<string[]>([])
   const [editLinkedPlayers, setEditLinkedPlayers] = useState<string[]>([]) // for parents
   const [editPerms, setEditPerms] = useState<string[]>([]) // for permissions tab in modal
   const [editSection, setEditSection] = useState<'info' | 'perms'>('info')
@@ -109,7 +111,8 @@ export default function MembersPage() {
   function openEdit(m: any) {
     setEditMember(m)
     setEditRole(m.role)
-    setEditPosLabel(m.position_label || '')
+    setEditPrimaryPosition(getPrimaryPosition(m))
+    setEditSecondaryPositions(getSecondaryPositions(m))
     setEditSection('info')
     setEditSaved(false)
     // Linked players (for parents)
@@ -130,11 +133,8 @@ export default function MembersPage() {
     const tasks: Promise<any>[] = []
     // Role + position
     if (editRole !== editMember.role) tasks.push(teamService.updateMemberRole(editMember.id, editRole))
-    if (editPosLabel !== (editMember.position_label || '')) {
-      tasks.push(teamService.setLinkedPlayer(editMember.id, editMember.linked_player_id ?? null)) // keep linked_player_id as-is
-    }
-    // Update position_label separately if exists in service, otherwise just update role
-    await supabaseUpdatePosLabel(editMember.id, editPosLabel)
+    const cleanSecondary = editSecondaryPositions.filter(p => p && p !== editPrimaryPosition).slice(0, 3)
+    tasks.push(teamService.updateMemberPositions(editMember.id, editPrimaryPosition || null, cleanSecondary))
     // Linked players for parents
     if (editRole === 'parent') {
       const existingDM = (allPerms[editMember.user_id] || []).filter(p => p.startsWith('parent_dm:'))
@@ -158,15 +158,25 @@ export default function MembersPage() {
       }
       return updated
     })
-    setMembers(prev => prev.map(x => x.id === editMember.id ? { ...x, role: editRole, position_label: editPosLabel } : x))
+    setMembers(prev => prev.map(x => x.id === editMember.id ? {
+      ...x,
+      role: editRole,
+      primary_position: editPrimaryPosition || null,
+      secondary_positions: cleanSecondary,
+      position_label: editPrimaryPosition || null,
+    } : x))
     setEditSaving(false); setEditSaved(true)
     setTimeout(() => { setEditMember(null); setEditSaved(false) }, 800)
   }
 
-  // Helper: update position_label via supabase directly
-  async function supabaseUpdatePosLabel(memberId: string, label: string) {
-    const { supabase } = await import('../../lib/supabase')
-    return supabase.from('team_members').update({ position_label: label }).eq('id', memberId)
+  function toggleSecondaryPosition(position: string) {
+    if (position === editPrimaryPosition) return
+    setEditSecondaryPositions(prev => {
+      if (prev.includes(position)) return prev.filter(p => p !== position)
+      if (prev.length >= 3) return prev
+      return [...prev, position]
+    })
+    setEditSaved(false)
   }
 
   // ── Permissions tab (HR panel) ──
@@ -282,7 +292,7 @@ export default function MembersPage() {
     navigate('/')
   }
 
-  const isAdmin = canManageTeam(myRole)
+  const isAdmin = canManageTeam(myRole) || canManageEvents(myRole)
   const isOwner = myRole === 'owner'
   const visibleMembers = members.filter(m => isAdmin || (m.role !== 'parent' && m.is_visible !== false && !m.is_frozen))
   const activeMembers = visibleMembers.filter(m => !m.is_frozen)
@@ -355,7 +365,7 @@ export default function MembersPage() {
                               <span className={`badge text-xs ${roleColor[m.role] || 'bg-slate-100 text-slate-600'}`}>
                                 {ROLE_LABELS[m.role] || m.role}
                               </span>
-                              {m.position_label && <span className="text-xs text-slate-400">{m.position_label}</span>}
+                              <PositionBadges member={m} compact />
                               {m.role === 'parent' && linkedNames.length > 0 && (
                                 <span className="text-xs text-brand-600 flex items-center gap-1">
                                   <Link size={9}/> {linkedNames.join(' · ')}
@@ -591,11 +601,54 @@ export default function MembersPage() {
                   </div>
                 </FormField>
 
-                {/* Position label */}
-                <FormField label="وصف إضافي (اختياري)">
-                  <input className="form-input" value={editPosLabel} onChange={e => { setEditPosLabel(e.target.value); setEditSaved(false) }}
-                    placeholder="مثال: كابتن الفريق، مدرب الحراس..."/>
-                </FormField>
+                {editRole === 'player' && (
+                  <>
+                    <FormField label="المركز الأساسي">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                        {PLAYER_POSITIONS.map(position => (
+                          <button key={position} type="button"
+                            onClick={() => {
+                              setEditPrimaryPosition(position)
+                              setEditSecondaryPositions(prev => prev.filter(p => p !== position))
+                              setEditSaved(false)
+                            }}
+                            className={`p-2 rounded-xl border text-xs font-bold transition-all ${
+                              editPrimaryPosition === position
+                                ? 'bg-brand-500 text-white border-brand-500'
+                                : 'border-slate-200 hover:bg-slate-50'
+                            }`}>
+                            {position}
+                          </button>
+                        ))}
+                      </div>
+                    </FormField>
+
+                    <FormField label={`المراكز الثانوية (${editSecondaryPositions.length}/3)`}>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                        {PLAYER_POSITIONS.map(position => {
+                          const active = editSecondaryPositions.includes(position)
+                          const disabled = position === editPrimaryPosition || (!active && editSecondaryPositions.length >= 3)
+                          return (
+                            <button key={position} type="button" disabled={disabled}
+                              onClick={() => toggleSecondaryPosition(position)}
+                              className={`p-2 rounded-xl border text-xs font-bold transition-all ${
+                                active
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                  : disabled
+                                    ? 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed'
+                                    : 'border-slate-200 hover:bg-amber-50'
+                              }`}>
+                              {position}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-2">
+                        المركز الأساسي يظهر كشارة أكبر، والمراكز الثانوية تظهر كشارات بلون مختلف بجواره.
+                      </p>
+                    </FormField>
+                  </>
+                )}
 
                 {/* Linked children — shown when role is parent */}
                 {editRole === 'parent' && (
@@ -624,7 +677,7 @@ export default function MembersPage() {
                                 </div>
                                 <div className="flex-1 min-w-0">
                                   <div className="text-sm font-bold truncate">{pl.profile?.full_name}</div>
-                                  {pl.position_label && <div className="text-xs text-slate-400">{pl.position_label}</div>}
+                                  <PositionBadges member={pl} compact />
                                 </div>
                               </div>
                             )

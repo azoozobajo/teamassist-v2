@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2, Tag, CalendarDays } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { eventService, teamService, notificationService, calendarMarkerService } from '../../services'
+import { eventService, teamService, notificationService, calendarMarkerService, matchService } from '../../services'
 import { Spinner, PageHeader, EmptyState, Modal, FormField, Tabs, AttendanceButton } from '../../components/ui'
 import { EVENT_CONFIG, WEEK_DAYS, canManageEvents, formatDate, isEventLocked } from '../../utils/helpers'
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay } from 'date-fns'
 import { arSA } from 'date-fns/locale'
 
-const EVENT_TYPES = ['training','match','meeting','camp','assessment','other']
+const EVENT_TYPES = ['training','meeting','camp','assessment','other']
 const ATT_GROUPS = ['الكل','اللاعبون فقط','المدربون فقط','اللاعبون والمدربون','الإداريون فقط','مجموعة مخصصة']
 const HOME_AWAY_LABEL: Record<string, string> = { home: '🏟️ ملعبنا', away: '🚌 ملعب المنافس', neutral: '⚖️ أرض محايدة' }
 
@@ -26,6 +26,7 @@ const MARKER_COLORS = [
 export default function EventsPage() {
   const { teamId } = useParams()
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [events, setEvents] = useState<any[]>([])
   const [members, setMembers] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -113,7 +114,7 @@ export default function EventsPage() {
   async function addEvent() {
     if (!form.title.trim() || !form.start_datetime || !teamId) return
     setSaving(true)
-    const isPlayerOnly = form.event_type === 'training' || form.event_type === 'match'
+    const isPlayerOnly = form.event_type === 'training'
     const attGroup = isPlayerOnly ? 'اللاعبون فقط' : form.att_group
     const memberIds = attGroup === 'مجموعة مخصصة' && form.selectedMembers.length > 0
       ? form.selectedMembers : null
@@ -138,7 +139,7 @@ export default function EventsPage() {
   async function addRecurring() {
     if (!recurForm.title.trim() || !recurForm.start_date || !recurForm.end_date || recurForm.days_of_week.length === 0 || !teamId) return
     setSaving(true)
-    const isPlayerOnly = recurForm.event_type === 'training' || recurForm.event_type === 'match'
+    const isPlayerOnly = recurForm.event_type === 'training'
     const attGroup = isPlayerOnly ? 'اللاعبون فقط' : recurForm.att_group
     const memberIds = attGroup === 'مجموعة مخصصة' && recurForm.selectedMembers.length > 0
       ? recurForm.selectedMembers : null
@@ -193,7 +194,7 @@ export default function EventsPage() {
   async function saveEdit() {
     if (!editEvent || !teamId || !user) return
     setSaving(true)
-    const isPlayerOnly = editForm.event_type === 'training' || editForm.event_type === 'match'
+    const isPlayerOnly = editForm.event_type === 'training'
     const attGroup = isPlayerOnly ? 'اللاعبون فقط' : editForm.att_group
     await eventService.updateEvent(editEvent.id, {
       title: editForm.title,
@@ -308,6 +309,12 @@ export default function EventsPage() {
     }
   }
 
+  async function openMatchEvent(e: any) {
+    const match = await matchService.getByEventId(e.id)
+    if (match?.id) navigate(`/team/${teamId}/matches/${match.id}`)
+    else navigate(`/team/${teamId}/matches`)
+  }
+
   const canManage = canManageEvents(myRole)
   const isParent = myRole === 'parent'
   const now = new Date()
@@ -399,11 +406,11 @@ export default function EventsPage() {
     type: string; val: string; onChange: (v: string) => void; selectedMembers: string[]
     onMemberToggle: (uid: string) => void
   }) => {
-    if (type === 'training' || type === 'match' || type === 'assessment') {
+    if (type === 'training' || type === 'assessment') {
       return (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-2.5 text-xs text-blue-700 flex items-center gap-1.5">
           <Users size={12}/>
-          التمارين والمباريات والاختبارات تظهر للاعبين فقط بشكل تلقائي
+          التمارين والاختبارات تظهر للاعبين فقط بشكل تلقائي
         </div>
       )
     }
@@ -546,7 +553,7 @@ export default function EventsPage() {
                       const hasResult = e.goals_for !== null && e.goals_for !== undefined
                       return (
                         <div key={e.id} className={`card mb-0 border-r-4 ${c.borderClass} cursor-pointer hover:shadow-md transition-all`}
-                          onClick={() => setShowDetail({ date: parseISO(e.start_datetime), events: [e], markers: [] })}>
+                          onClick={() => e.event_type === 'match' ? openMatchEvent(e) : setShowDetail({ date: parseISO(e.start_datetime), events: [e], markers: [] })}>
                           <div className="flex items-center gap-3">
                             <span className="text-2xl flex-shrink-0">{c.icon}</span>
                             <div className="flex-1 min-w-0">
@@ -579,17 +586,16 @@ export default function EventsPage() {
                               )}
                               {e.event_type === 'match' && <div className="mt-1"><ResultBadge e={e}/></div>}
                               <div className="flex items-center gap-2 mt-1.5">
-                                {canManage && (
+                                {canManage && e.event_type !== 'match' && (
                                   <button onClick={ev => { ev.stopPropagation(); openEdit(e) }}
                                     className="text-xs text-blue-500 font-bold flex items-center gap-1 hover:text-blue-700 transition-colors">
                                     <Edit2 size={11}/> تعديل
                                   </button>
                                 )}
-                                {e.event_type === 'match' && canManage && isPast && !hasResult && (
-                                  <button
-                                    onClick={ev => { ev.stopPropagation(); setShowResult(e); setResultForm({ goals_for: '', goals_against: '' }) }}
+                                {e.event_type === 'match' && (
+                                  <button onClick={ev => { ev.stopPropagation(); openMatchEvent(e) }}
                                     className="text-xs text-brand-600 font-bold flex items-center gap-1 hover:text-brand-800 transition-colors">
-                                    <Trophy size={11}/> سجّل نتيجة
+                                    <Trophy size={11}/> تفاصيل المباراة
                                   </button>
                                 )}
                               </div>
@@ -648,19 +654,12 @@ export default function EventsPage() {
                     </div>
                   )}
                   {e.event_type === 'match' && (
-                    <div className="mt-2 bg-slate-50 rounded-xl p-2.5 space-y-1">
-                      {e.opponent && <div className="text-xs font-bold text-slate-700">⚔️ ضد: {e.opponent}</div>}
-                      <div className="text-xs text-slate-500">{HOME_AWAY_LABEL[e.home_away] || ''}</div>
-                      {e.tournament_name && <div className="text-xs text-blue-600 font-bold">🏆 {e.tournament_name}</div>}
-                      {hasResult
-                        ? <div className="pt-1"><ResultBadge e={e}/></div>
-                        : isPast && canManage && (
-                          <button
-                            onClick={() => { setShowResult(e); setResultForm({ goals_for: '', goals_against: '' }); setShowDetail(null) }}
-                            className="text-xs text-brand-600 font-bold flex items-center gap-1 hover:text-brand-800">
-                            <Trophy size={11}/> سجّل النتيجة
-                          </button>
-                        )}
+                    <div className="mt-2">
+                      <button
+                        onClick={() => { setShowDetail(null); openMatchEvent(e) }}
+                        className="btn btn-primary btn-sm w-full justify-center">
+                        <Trophy size={12}/> عرض تفاصيل المباراة
+                      </button>
                     </div>
                   )}
                   {e.att_member_ids?.length > 0 && (
@@ -670,7 +669,7 @@ export default function EventsPage() {
                   )}
                   {!e.att_member_ids && e.att_group && <div className="text-xs text-slate-400 mt-1">الحضور: {e.att_group}</div>}
                 </div>
-                {canManage && (
+                {canManage && e.event_type !== 'match' && (
                   <div className="flex gap-1">
                     <button onClick={() => openEdit(e)} className="text-slate-400 hover:text-blue-500 p-1 flex-shrink-0">
                       <Edit2 size={14}/>
@@ -729,36 +728,6 @@ export default function EventsPage() {
           }}/>
         </FormField>
 
-        {form.event_type === 'match' && (
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
-            <p className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
-              ⚽ <span>بيانات المباراة (اختياري — يمكن تعديلها لاحقاً)</span>
-            </p>
-            <FormField label="اسم المنافس">
-              <input className="form-input" value={form.opponent} onChange={e => setF('opponent',e.target.value)} placeholder="الهلال، النصر..."/>
-            </FormField>
-            <div className="grid grid-cols-2 gap-3">
-              <FormField label="الأرض">
-                <select className="form-input" value={form.home_away} onChange={e => setF('home_away',e.target.value)}>
-                  <option value="home">🏟️ ملعبنا</option>
-                  <option value="away">🚌 ملعب المنافس</option>
-                  <option value="neutral">⚖️ أرض محايدة</option>
-                </select>
-              </FormField>
-              <FormField label="نوع المباراة">
-                <select className="form-input" value={form.match_category} onChange={e => setF('match_category',e.target.value)}>
-                  <option value="friendly">ودية</option>
-                  <option value="tournament">بطولة</option>
-                </select>
-              </FormField>
-            </div>
-            {form.match_category === 'tournament' && (
-              <FormField label="اسم البطولة">
-                <input className="form-input" value={form.tournament_name} onChange={e => setF('tournament_name',e.target.value)} placeholder="دوري الأبطال"/>
-              </FormField>
-            )}
-          </div>
-        )}
 
         <div className="grid grid-cols-2 gap-3">
           <FormField label="البداية" required>
@@ -912,37 +881,9 @@ export default function EventsPage() {
             <FormField label="النوع">
               <EventTypeSelector val={editForm.event_type} onChange={v => setEditForm((p: any) => ({
                 ...p, event_type: v,
-                att_group: (v === 'training' || v === 'match') ? 'اللاعبون فقط' : p.att_group
+                att_group: v === 'training' ? 'اللاعبون فقط' : p.att_group
               }))}/>
             </FormField>
-            {editForm.event_type === 'match' && (
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
-                <p className="text-[11px] font-bold text-slate-500">⚽ بيانات المباراة</p>
-                <FormField label="المنافس">
-                  <input className="form-input" value={editForm.opponent} onChange={e => setEditForm((p: any) => ({ ...p, opponent: e.target.value }))} placeholder="الهلال، النصر..."/>
-                </FormField>
-                <div className="grid grid-cols-2 gap-3">
-                  <FormField label="الأرض">
-                    <select className="form-input" value={editForm.home_away} onChange={e => setEditForm((p: any) => ({ ...p, home_away: e.target.value }))}>
-                      <option value="home">🏟️ ملعبنا</option>
-                      <option value="away">🚌 ملعب المنافس</option>
-                      <option value="neutral">⚖️ أرض محايدة</option>
-                    </select>
-                  </FormField>
-                  <FormField label="نوع المباراة">
-                    <select className="form-input" value={editForm.match_category} onChange={e => setEditForm((p: any) => ({ ...p, match_category: e.target.value }))}>
-                      <option value="friendly">ودية</option>
-                      <option value="tournament">بطولة</option>
-                    </select>
-                  </FormField>
-                </div>
-                {editForm.match_category === 'tournament' && (
-                  <FormField label="اسم البطولة">
-                    <input className="form-input" value={editForm.tournament_name} onChange={e => setEditForm((p: any) => ({ ...p, tournament_name: e.target.value }))}/>
-                  </FormField>
-                )}
-              </div>
-            )}
             <div className="grid grid-cols-2 gap-3">
               <FormField label="البداية" required>
                 <input className="form-input" type="datetime-local" value={editForm.start_datetime} onChange={e => setEditForm((p: any) => ({ ...p, start_datetime: e.target.value }))}/>
@@ -957,7 +898,7 @@ export default function EventsPage() {
             <FormField label="رابط خريطة">
               <input className="form-input" value={editForm.map_url} onChange={e => setEditForm((p: any) => ({ ...p, map_url: e.target.value }))} placeholder="https://maps.google.com/..."/>
             </FormField>
-            {(editForm.event_type !== 'training' && editForm.event_type !== 'match') ? (
+            {editForm.event_type !== 'training' ? (
               <FormField label="من يسجل الحضور؟">
                 <select className="form-input" value={editForm.att_group} onChange={e => setEditForm((p: any) => ({ ...p, att_group: e.target.value }))}>
                   {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
@@ -966,7 +907,7 @@ export default function EventsPage() {
             ) : (
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-2.5 text-xs text-blue-700 flex items-center gap-1.5">
                 <Users size={12}/>
-                التمارين والمباريات تظهر للاعبين فقط بشكل تلقائي
+                التمارين تظهر للاعبين فقط بشكل تلقائي
               </div>
             )}
             <div className="flex gap-2 justify-end mt-4">

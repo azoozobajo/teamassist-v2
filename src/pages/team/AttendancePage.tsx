@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { Lock, Search, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Lock, Search, X } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { eventService, teamService, pointsService } from '../../services'
 import { Spinner, PageHeader, AttendanceButton, Modal, FormField, Avatar } from '../../components/ui'
@@ -37,6 +37,18 @@ const EVENT_TYPE_TRIGGER: Record<string, string> = {
   meeting:  'حضور الاجتماع',
   camp:     'حضور المعسكر',
 }
+
+const REPORT_EVENT_TYPES = [
+  { key: 'all', label: 'كل المواعيد' },
+  { key: 'match', label: 'المباريات' },
+  { key: 'training', label: 'التمارين' },
+  { key: 'camp', label: 'المعسكرات' },
+  { key: 'meeting', label: 'الاجتماعات' },
+  { key: 'other', label: 'أخرى' },
+]
+
+type ReportSortKey = 'name' | 'events' | 'present' | 'late' | 'avgLate' | 'absent'
+type SortDir = 'asc' | 'desc'
 
 // ── Streak helpers ─────────────────────────────────────────────────────────
 function calcStreak(records: any[]): number {
@@ -91,14 +103,18 @@ export default function AttendancePage() {
   const [loading, setLoading] = useState(true)
   // { [eventId]: { present: N, absent: N, ... } }
   const [summary, setSummary] = useState<Record<string, Record<string, number>>>({})
+  const [attendanceRecords, setAttendanceRecords] = useState<any[]>([])
 
-  // Tabs: upcoming / past
-  const [tab, setTab] = useState<'upcoming' | 'past'>('upcoming')
+  // Tabs: upcoming / past / report
+  const [tab, setTab] = useState<'upcoming' | 'past' | 'report'>('upcoming')
 
   // Filters
   const [dateFrom, setDateFrom]           = useState('')
   const [dateTo, setDateTo]               = useState('')
   const [filterMemberId, setFilterMemberId] = useState('')
+  const [reportEventType, setReportEventType] = useState('all')
+  const [reportSortKey, setReportSortKey] = useState<ReportSortKey>('events')
+  const [reportSortDir, setReportSortDir] = useState<SortDir>('desc')
   // { [eventId]: status } for selected member
   const [memberAttMap, setMemberAttMap] = useState<Record<string, string>>({})
 
@@ -129,9 +145,11 @@ export default function AttendancePage() {
       teamService.getMembers(teamId),
       teamService.getMyRole(teamId, user.id),
       fetchSummary(teamId),
+      fetchAttendanceRecords(teamId),
       pointsService.getAutoSettings(teamId),
-    ]).then(([evs, mems, role, sum, autoS]) => {
+    ]).then(([evs, mems, role, sum, attRecords, autoS]) => {
       setEvents(evs); setMembers(mems); setMyRole(role || ''); setSummary(sum)
+      setAttendanceRecords(attRecords)
       setAutoSettings(autoS)
       setLoading(false)
     })
@@ -174,10 +192,30 @@ export default function AttendancePage() {
     return s
   }
 
+  async function fetchAttendanceRecords(tid: string) {
+    const { data } = await supabase
+      .from('attendance')
+      .select('event_id, user_id, status, late_minutes')
+      .eq('team_id', tid)
+    return data ?? []
+  }
+
   function refreshSummary(eventId: string, att: any[]) {
     const counts: Record<string, number> = {}
     att.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1 })
     setSummary(prev => ({ ...prev, [eventId]: counts }))
+    setAttendanceRecords(prev => {
+      const next = prev.filter(r => r.event_id !== eventId)
+      return [
+        ...next,
+        ...att.map(r => ({
+          event_id: r.event_id,
+          user_id: r.user_id,
+          status: r.status,
+          late_minutes: r.late_minutes,
+        })),
+      ]
+    })
   }
 
   async function openEvent(ev: any) {
@@ -242,17 +280,19 @@ export default function AttendancePage() {
   }
 
   function clearFilters() {
-    setDateFrom(''); setDateTo(''); setFilterMemberId(''); setMemberAttMap({})
+    setDateFrom(''); setDateTo(''); setFilterMemberId(''); setMemberAttMap({}); setReportEventType('all')
   }
 
   const isCoach = canManageEvents(myRole)
-  const hasFilters = !!(dateFrom || dateTo || filterMemberId)
+  const hasFilters = tab === 'report'
+    ? !!(dateFrom || dateTo || reportEventType !== 'all')
+    : !!(dateFrom || dateTo || filterMemberId)
 
   // ── Split events into upcoming / past ──
   const now = new Date()
   const upcomingBase = events.filter(e => new Date(e.start_datetime) >= now)
   const pastBase     = [...events.filter(e => new Date(e.start_datetime) < now)].reverse()
-  const base         = tab === 'upcoming' ? upcomingBase : pastBase
+  const base         = tab === 'upcoming' ? upcomingBase : tab === 'past' ? pastBase : []
 
   // ── Apply date range + member filters ──
   const filtered = base.filter(e => {
@@ -262,13 +302,127 @@ export default function AttendancePage() {
     return true
   })
 
+  // For match and training events, only players are eligible for attendance
+  const ELIGIBLE_ROLE_GROUPS: Record<string, string[]> = {
+    'اللاعبون فقط':         ['player'],
+    'المدربون فقط':         ['head_coach', 'assistant_coach'],
+    'اللاعبون والمدربون':  ['player', 'head_coach', 'assistant_coach'],
+    'الإداريون فقط':       ['administrator', 'owner'],
+  }
+  function getEligibleMembers(event: any): any[] {
+    if (!event) return members
+    if (event.att_member_ids?.length > 0)
+      return members.filter(m => event.att_member_ids.includes(m.user_id))
+    if (event.event_type === 'match' || event.event_type === 'training')
+      return members.filter(m => m.role === 'player')
+    const roles = ELIGIBLE_ROLE_GROUPS[event.att_group]
+    if (roles) return members.filter(m => roles.includes(m.role))
+    return members
+  }
+
+  const reportEvents = useMemo(() => {
+    return events.filter(e => {
+      if (reportEventType !== 'all' && e.event_type !== reportEventType) return false
+      if (dateFrom && new Date(e.start_datetime) < new Date(dateFrom)) return false
+      if (dateTo && new Date(e.start_datetime) > new Date(dateTo + 'T23:59:59')) return false
+      return true
+    })
+  }, [events, reportEventType, dateFrom, dateTo])
+
+  const reportRows = useMemo(() => {
+    const attMap = new Map<string, any>()
+    attendanceRecords.forEach(r => {
+      attMap.set(`${r.event_id}:${r.user_id}`, r)
+    })
+
+    const rows = members
+      .filter(m => m.role === 'player')
+      .map(m => {
+        let eventCount = 0
+        let present = 0
+        let late = 0
+        let absent = 0
+        let lateTotal = 0
+
+        reportEvents.forEach(e => {
+          const eligible = getEligibleMembers(e).some(em => em.user_id === m.user_id)
+          if (!eligible) return
+
+          eventCount += 1
+          const record = attMap.get(`${e.id}:${m.user_id}`)
+          if (!record) return
+
+          if (record.status === 'present' || record.status === 'late') present += 1
+          if (record.status === 'late') {
+            late += 1
+            lateTotal += Number(record.late_minutes) || 0
+          }
+          if (record.status === 'absent') absent += 1
+        })
+
+        return {
+          userId: m.user_id,
+          name: m.profile?.full_name || '',
+          avatarUrl: m.profile?.avatar_url,
+          events: eventCount,
+          present,
+          late,
+          avgLate: late > 0 ? Math.round(lateTotal / late) : 0,
+          absent,
+        }
+      })
+
+    return rows.sort((a, b) => {
+      const aVal = a[reportSortKey]
+      const bVal = b[reportSortKey]
+      const result = typeof aVal === 'string'
+        ? aVal.localeCompare(String(bVal), 'ar')
+        : Number(aVal) - Number(bVal)
+      return reportSortDir === 'asc' ? result : -result
+    })
+  }, [attendanceRecords, members, reportEvents, reportSortKey, reportSortDir])
+
+  function toggleReportSort(key: ReportSortKey) {
+    if (reportSortKey === key) {
+      setReportSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+      return
+    }
+    setReportSortKey(key)
+    setReportSortDir(key === 'name' ? 'asc' : 'desc')
+  }
+
+  function SortIcon({ sortKey }: { sortKey: ReportSortKey }) {
+    if (reportSortKey !== sortKey) {
+      return <ChevronDown size={14} className="text-slate-300" />
+    }
+    return reportSortDir === 'asc'
+      ? <ChevronUp size={14} className="text-brand-600" />
+      : <ChevronDown size={14} className="text-brand-600" />
+  }
+
+  function ReportHeader({ sortKey, children }: { sortKey: ReportSortKey; children: React.ReactNode }) {
+    return (
+      <th className="px-3 py-3 text-right">
+        <button
+          type="button"
+          onClick={() => toggleReportSort(sortKey)}
+          className="inline-flex items-center gap-1 text-xs font-black text-slate-500 hover:text-brand-700"
+        >
+          {children}
+          <SortIcon sortKey={sortKey} />
+        </button>
+      </th>
+    )
+  }
+
   // Modal sections
   const mPresent   = modalAtt.filter(a => a.status === 'present')
   const mLate      = modalAtt.filter(a => a.status === 'late')
   const mUncertain = modalAtt.filter(a => a.status === 'uncertain')
   const mAbsent    = modalAtt.filter(a => a.status === 'absent')
   const mExcused   = modalAtt.filter(a => a.status === 'excused')
-  const mNotRec    = members.filter(m => !modalAtt.find(a => a.user_id === m.user_id))
+  const eligibleMembers = getEligibleMembers(modalEv)
+  const mNotRec    = eligibleMembers.filter(m => !modalAtt.find(a => a.user_id === m.user_id))
   const mLists: Record<string, any[]> = { present: mPresent, late: mLate, excused: mExcused, uncertain: mUncertain, absent: mAbsent }
 
   function MemberRow({ a, m }: { a?: any; m?: any }) {
@@ -309,6 +463,7 @@ export default function AttendancePage() {
         {([
           { key: 'upcoming', label: `القادمة (${upcomingBase.length})` },
           { key: 'past',     label: `السابقة (${pastBase.length})` },
+          { key: 'report',   label: 'كشف الحضور' },
         ] as const).map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
             className={`px-5 py-2 rounded-xl text-sm font-bold transition-all ${
@@ -321,7 +476,18 @@ export default function AttendancePage() {
 
       {/* ── Filters ── */}
       <div className="card p-3 mb-4">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 items-end">
+        <div className={`grid grid-cols-2 ${tab === 'report' ? 'md:grid-cols-4' : 'md:grid-cols-4'} gap-2 items-end`}>
+          {tab === 'report' && (
+            <div>
+              <label className="text-xs font-bold text-slate-500 block mb-1">نوع الموعد</label>
+              <select className="form-input text-sm py-2"
+                value={reportEventType} onChange={e => setReportEventType(e.target.value)}>
+                {REPORT_EVENT_TYPES.map(type => (
+                  <option key={type.key} value={type.key}>{type.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
             <label className="text-xs font-bold text-slate-500 block mb-1">من تاريخ</label>
             <input type="date" className="form-input text-sm py-2"
@@ -332,16 +498,18 @@ export default function AttendancePage() {
             <input type="date" className="form-input text-sm py-2"
               value={dateTo} onChange={e => setDateTo(e.target.value)}/>
           </div>
-          <div>
-            <label className="text-xs font-bold text-slate-500 block mb-1">العضو</label>
-            <select className="form-input text-sm py-2"
-              value={filterMemberId} onChange={e => setFilterMemberId(e.target.value)}>
-              <option value="">— كل الأعضاء —</option>
-              {members.filter(m => m.role === 'player' || m.role === 'head_coach' || m.role === 'assistant_coach').map(m => (
-                <option key={m.user_id} value={m.user_id}>{m.profile?.full_name}</option>
-              ))}
-            </select>
-          </div>
+          {tab !== 'report' && (
+            <div>
+              <label className="text-xs font-bold text-slate-500 block mb-1">العضو</label>
+              <select className="form-input text-sm py-2"
+                value={filterMemberId} onChange={e => setFilterMemberId(e.target.value)}>
+                <option value="">— كل الأعضاء —</option>
+                {members.filter(m => m.role === 'player' || m.role === 'head_coach' || m.role === 'assistant_coach').map(m => (
+                  <option key={m.user_id} value={m.user_id}>{m.profile?.full_name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="flex items-end">
             {hasFilters ? (
               <button onClick={clearFilters}
@@ -365,6 +533,58 @@ export default function AttendancePage() {
       {/* ── Events list ── */}
       {loading ? (
         <div className="flex justify-center py-16"><Spinner size="lg"/></div>
+      ) : tab === 'report' ? (
+        <div className="card overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-2 p-4 border-b border-slate-100">
+            <div>
+              <h3 className="text-sm font-black text-slate-800">كشف الحضور</h3>
+              <p className="text-xs text-slate-400 mt-1">
+                {reportEvents.length} موعد داخل الفلاتر الحالية
+              </p>
+            </div>
+            <span className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-xl">
+              {reportRows.length} لاعب
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="bg-slate-50 border-b border-slate-100">
+                <tr>
+                  <ReportHeader sortKey="name">اسم اللاعب</ReportHeader>
+                  <ReportHeader sortKey="events">عدد المواعيد</ReportHeader>
+                  <ReportHeader sortKey="present">كم حضر</ReportHeader>
+                  <ReportHeader sortKey="late">تأخر</ReportHeader>
+                  <ReportHeader sortKey="avgLate">متوسط التأخير</ReportHeader>
+                  <ReportHeader sortKey="absent">الغياب</ReportHeader>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {reportRows.map(row => (
+                  <tr key={row.userId} className="hover:bg-slate-50/70 transition-colors">
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-2">
+                        <Avatar name={row.name || '?'} src={row.avatarUrl} size="sm" />
+                        <span className="font-extrabold text-slate-700">{row.name || 'بدون اسم'}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 font-black text-slate-700">{row.events}</td>
+                    <td className="px-3 py-3 font-black text-emerald-700">{row.present}</td>
+                    <td className="px-3 py-3 font-black text-orange-700">{row.late}</td>
+                    <td className="px-3 py-3 font-black text-slate-700">{row.avgLate} د</td>
+                    <td className="px-3 py-3 font-black text-red-600">{row.absent}</td>
+                  </tr>
+                ))}
+                {reportRows.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-10 text-center text-sm font-bold text-slate-400">
+                      لا يوجد لاعبون لعرضهم
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       ) : filtered.length === 0 ? (
         <div className="card text-center py-12">
           <div className="text-4xl mb-3">{hasFilters ? '🔍' : '📋'}</div>

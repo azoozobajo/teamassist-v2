@@ -1,5 +1,8 @@
 export type UserRole = 'owner' | 'head_coach' | 'assistant_coach' | 'player' | 'administrator' | 'media' | 'medical' | 'parent' | 'guest'
 export type AttendanceStatus = 'present' | 'absent' | 'uncertain' | 'late'
+export type MatchExcuseType = 'injured' | 'suspended' | 'excluded' | 'other'
+export type MatchEventType = 'goal' | 'assist' | 'yellow_card' | 'red_card' | 'substitution' | 'clean_sheet'
+export type FootballFormation = '4-4-2' | '4-3-3' | '4-2-3-1' | '4-1-4-1' | '4-5-1' | '4-4-1-1' | '4-3-1-2' | '3-5-2' | '3-4-3' | '3-4-2-1' | '5-3-2' | '5-4-1' | '5-2-3'
 export type EventType = 'training' | 'match' | 'meeting' | 'camp' | 'other' | 'assessment'
 export type LeaveStatus = 'pending' | 'approved' | 'rejected' | 'partial'
 export type NoteType = 'مدح' | 'توجيه' | 'تحذير' | 'تطوير'
@@ -50,6 +53,7 @@ export interface TeamMember {
   is_visible: boolean
   joined_at: string
   removed_at?: string
+  jersey_number?: number
   profile?: Profile
 }
 
@@ -319,4 +323,36 @@ export interface FixedExpensePayment {
   edited_by_name?: string
   team_expense_id?: string
   created_at: string
+}
+
+export interface LineupPlayer {
+  position_index: number
+  user_id: string
+  jersey_number: number
+  role: 'starter' | 'sub' | 'excluded'
+}
+
+export interface MatchLineup {
+  id: string
+  match_id: string
+  team_id: string
+  formation: FootballFormation
+  players: LineupPlayer[]
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface MatchEvent {
+  id: string
+  match_id: string
+  team_id: string
+  event_type: MatchEventType
+  player_id?: string
+  player_out_id?: string
+  minute: number
+  created_by?: string
+  created_at: string
+  player?: Profile
+  player_out?: Profile
 }

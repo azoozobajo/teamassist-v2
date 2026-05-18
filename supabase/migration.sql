@@ -1456,3 +1456,137 @@ CREATE POLICY "fep_select" ON fixed_expense_payments FOR SELECT USING (is_team_m
 CREATE POLICY "fep_insert" ON fixed_expense_payments FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
 CREATE POLICY "fep_update" ON fixed_expense_payments FOR UPDATE USING (is_team_admin(team_id, auth.uid()));
 CREATE POLICY "fep_delete" ON fixed_expense_payments FOR DELETE USING (is_team_admin(team_id, auth.uid()));
+
+-- =============================================
+-- V_MATCHES: FULL MATCHES MODULE
+-- =============================================
+
+-- Link matches to events (auto-created event when match is added)
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS event_id UUID REFERENCES events(id) ON DELETE SET NULL;
+
+-- Excuse type for match attendance (injured/suspended/excluded/other)
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS excuse_type TEXT
+  CHECK (excuse_type IN ('injured','suspended','excluded','other'));
+
+-- Jersey number per team member
+ALTER TABLE team_members ADD COLUMN IF NOT EXISTS jersey_number INTEGER;
+
+-- Player positions: one primary position and up to three secondary positions.
+-- position_label remains for legacy/custom staff labels.
+ALTER TABLE team_members ADD COLUMN IF NOT EXISTS primary_position TEXT;
+ALTER TABLE team_members ADD COLUMN IF NOT EXISTS secondary_positions TEXT[] DEFAULT '{}';
+
+-- Season label stored per team for the matches page header
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS current_season TEXT;
+
+-- MATCH LINEUP: formation + player assignments
+CREATE TABLE IF NOT EXISTS match_lineup (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  match_id UUID NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  formation TEXT NOT NULL DEFAULT '4-4-2',
+  players JSONB DEFAULT '[]',
+  created_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(match_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lineup_match ON match_lineup(match_id);
+
+ALTER TABLE match_lineup ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "lineup_select" ON match_lineup;
+DROP POLICY IF EXISTS "lineup_insert" ON match_lineup;
+DROP POLICY IF EXISTS "lineup_update" ON match_lineup;
+DROP POLICY IF EXISTS "lineup_delete" ON match_lineup;
+CREATE POLICY "lineup_select" ON match_lineup FOR SELECT USING (is_team_member(team_id, auth.uid()));
+CREATE POLICY "lineup_insert" ON match_lineup FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "lineup_update" ON match_lineup FOR UPDATE USING (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "lineup_delete" ON match_lineup FOR DELETE USING (is_team_admin(team_id, auth.uid()));
+
+-- MATCH EVENTS: goals, cards, substitutions with minute tracking
+CREATE TABLE IF NOT EXISTS match_events (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  match_id UUID NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL
+    CHECK (event_type IN ('goal','assist','yellow_card','red_card','substitution','clean_sheet')),
+  player_id UUID REFERENCES profiles(id),
+  player_out_id UUID REFERENCES profiles(id),
+  minute INTEGER NOT NULL DEFAULT 0,
+  created_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mevents_match ON match_events(match_id);
+CREATE INDEX IF NOT EXISTS idx_mevents_team ON match_events(team_id);
+
+ALTER TABLE match_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "mev_select" ON match_events;
+DROP POLICY IF EXISTS "mev_insert" ON match_events;
+DROP POLICY IF EXISTS "mev_update" ON match_events;
+DROP POLICY IF EXISTS "mev_delete" ON match_events;
+CREATE POLICY "mev_select" ON match_events FOR SELECT USING (is_team_member(team_id, auth.uid()));
+CREATE POLICY "mev_insert" ON match_events FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "mev_update" ON match_events FOR UPDATE USING (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "mev_delete" ON match_events FOR DELETE USING (is_team_admin(team_id, auth.uid()));
+
+-- =============================================
+-- V_MATCHES_V2: SCHEMA ADDITIONS
+-- =============================================
+
+-- Fix: map_url was missing → caused silent match creation failure (event created, match not)
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS map_url TEXT;
+
+-- Tournament context per match
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS round_number INTEGER;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS stage TEXT;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS leg TEXT DEFAULT 'none'
+  CHECK (leg IN ('home','away','none'));
+
+-- Tournament system type (determines which sub-fields appear in match form)
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS system TEXT DEFAULT 'cup'
+  CHECK (system IN ('league','groups','cup'));
+
+-- =============================================
+-- V_MATCHES_V3: MATCH NOTES
+-- =============================================
+
+-- Coach/staff technical notes per match with visibility control
+CREATE TABLE IF NOT EXISTS match_notes (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  match_id UUID NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  -- all=everyone, staff=coach+assistant+admin, management=admin only, me=creator only
+  visibility TEXT NOT NULL DEFAULT 'staff'
+    CHECK (visibility IN ('all','staff','management','me')),
+  created_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mnotes_match ON match_notes(match_id);
+
+ALTER TABLE match_notes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "mnotes_select" ON match_notes;
+DROP POLICY IF EXISTS "mnotes_insert" ON match_notes;
+DROP POLICY IF EXISTS "mnotes_update" ON match_notes;
+DROP POLICY IF EXISTS "mnotes_delete" ON match_notes;
+CREATE POLICY "mnotes_select" ON match_notes FOR SELECT USING (is_team_member(team_id, auth.uid()));
+CREATE POLICY "mnotes_insert" ON match_notes FOR INSERT WITH CHECK (is_team_admin(team_id, auth.uid()));
+CREATE POLICY "mnotes_update" ON match_notes FOR UPDATE USING (created_by = auth.uid());
+CREATE POLICY "mnotes_delete" ON match_notes FOR DELETE USING (created_by = auth.uid() OR is_team_admin(team_id, auth.uid()));
+
+
+
+-- =============================================
+-- V_MATCHES_V4: MATCH ATTENDANCE ENHANCEMENTS
+-- =============================================
+
+-- Player's pre-match self-confirmation (default: confirmed)
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS player_confirmation TEXT
+  CHECK (player_confirmation IN ('confirmed', 'absent', 'uncertain'));
+
+-- Late arrival duration in minutes (coach-recorded)
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS late_minutes INTEGER;
