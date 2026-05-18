@@ -46,3 +46,8 @@ CREATE POLICY "mail_receiver_update" ON internal_mail
   FOR UPDATE
   USING  ( receiver_id = auth.uid() )
   WITH CHECK ( receiver_id = auth.uid() );
+
+DO $$
+BEGIN
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE internal_mail; EXCEPTION WHEN others THEN NULL; END;
+END $$;

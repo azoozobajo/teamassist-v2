@@ -511,6 +511,7 @@ BEGIN
   BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE direct_messages; EXCEPTION WHEN others THEN NULL; END;
   BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE notifications; EXCEPTION WHEN others THEN NULL; END;
   BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE attendance; EXCEPTION WHEN others THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE internal_mail; EXCEPTION WHEN others THEN NULL; END;
 END $$;
 
 -- END OF MIGRATION

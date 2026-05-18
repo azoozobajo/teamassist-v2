@@ -373,6 +373,15 @@ export const notificationService = {
   async create(data: any) {
     return supabase.from('notifications').insert(data)
   },
+  async markMailThreadRead(teamId: string, userId: string, threadId: string) {
+    return supabase.from('notifications')
+      .update({ is_read: true })
+      .eq('user_id', userId)
+      .eq('team_id', teamId)
+      .eq('type', 'mail')
+      .eq('is_read', false)
+      .eq('link', `/team/${teamId}/mail?thread=${threadId}`)
+  },
   async createForTeam(teamId: string, title: string, body: string, type: string, excludeUserId?: string, senderName?: string) {
     const { data: members } = await supabase.from('team_members')
       .select('user_id').eq('team_id', teamId).eq('status', 'active')
@@ -519,13 +528,49 @@ const MAIL_SELECT = '*, sender:profiles!internal_mail_sender_id_fkey(id, full_na
 
 export const mailService = {
   async getInbox(teamId: string, userId: string) {
-    const { data, error } = await supabase.from('internal_mail')
+    const { data: roots, error } = await supabase.from('internal_mail')
       .select(MAIL_SELECT)
       .eq('team_id', teamId).eq('receiver_id', userId)
       .is('parent_id', null)
       .order('created_at', { ascending: false })
     if (error) console.error('mailService.getInbox:', error.message)
-    return { data: data ?? [], error }
+
+    const { data: receivedReplies, error: replyError } = await supabase.from('internal_mail')
+      .select('id, parent_id, sender_id, receiver_id, is_read, created_at')
+      .eq('team_id', teamId)
+      .eq('receiver_id', userId)
+      .not('parent_id', 'is', null)
+      .order('created_at', { ascending: false })
+    if (replyError) console.error('mailService.getInbox replies:', replyError.message)
+
+    const rootMap = new Map<string, any>()
+    ;(roots ?? []).forEach((m: any) => rootMap.set(m.id, { ...m, thread_last_at: m.created_at }))
+
+    const missingParentIds = [...new Set((receivedReplies ?? [])
+      .map((r: any) => r.parent_id)
+      .filter((id: string) => id && !rootMap.has(id)))]
+
+    if (missingParentIds.length) {
+      const { data: parentRoots, error: parentError } = await supabase.from('internal_mail')
+        .select(MAIL_SELECT)
+        .in('id', missingParentIds)
+      if (parentError) console.error('mailService.getInbox parent roots:', parentError.message)
+      ;(parentRoots ?? []).forEach((m: any) => rootMap.set(m.id, { ...m, thread_last_at: m.created_at }))
+    }
+
+    ;(receivedReplies ?? []).forEach((r: any) => {
+      const root = rootMap.get(r.parent_id)
+      if (!root) return
+      if (new Date(r.created_at).getTime() > new Date(root.thread_last_at || root.created_at).getTime()) {
+        root.thread_last_at = r.created_at
+      }
+      if (!r.is_read) root.has_unread_reply = true
+    })
+
+    const data = [...rootMap.values()].sort((a, b) =>
+      new Date(b.thread_last_at || b.created_at).getTime() - new Date(a.thread_last_at || a.created_at).getTime()
+    )
+    return { data, error: error || replyError }
   },
   async getSent(teamId: string, userId: string) {
     const { data, error } = await supabase.from('internal_mail')
@@ -562,6 +607,13 @@ export const mailService = {
   async markRead(mailId: string) {
     return supabase.from('internal_mail').update({ is_read: true }).eq('id', mailId)
   },
+  async markThreadRepliesRead(parentId: string, userId: string) {
+    return supabase.from('internal_mail')
+      .update({ is_read: true })
+      .eq('parent_id', parentId)
+      .eq('receiver_id', userId)
+      .eq('is_read', false)
+  },
   async toggleStar(mailId: string, starred: boolean) {
     return supabase.from('internal_mail').update({ is_starred: starred }).eq('id', mailId)
   },
@@ -575,7 +627,7 @@ export const mailService = {
   async getReplyStubs(parentIds: string[]) {
     if (!parentIds.length) return []
     const { data } = await supabase.from('internal_mail')
-      .select('id, parent_id, sender_id, created_at')
+      .select('id, parent_id, sender_id, receiver_id, is_read, created_at')
       .in('parent_id', parentIds)
     return data ?? []
   }

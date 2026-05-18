@@ -53,10 +53,22 @@ export default function AppLayout() {
     teamService.getTeam(teamId).then(t => setTeamName(t?.name || ''))
     dmService.getConversations(teamId, user.id).then(convs =>
       setUnreadDM(convs.reduce((s: number, c: any) => s + c.unread, 0)))
-    notificationService.getForTeam(teamId, user.id).then(ns => {
+    const refreshTeamNotifs = () => notificationService.getForTeam(teamId, user.id).then(ns => {
       setTeamNotifs(ns)
       setUnreadN(ns.filter((n: any) => !n.is_read).length)
     })
+    refreshTeamNotifs()
+    const notifChannel = supabase.channel(`layout-notifications:${teamId}:${user.id}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'notifications',
+        filter: `user_id=eq.${user.id}`,
+      }, (payload: any) => {
+        const row = payload.new || payload.old
+        if (!row?.team_id || row.team_id === teamId) refreshTeamNotifs()
+      })
+      .subscribe()
     // Check if this member is frozen
     supabase.from('team_members')
       .select('is_frozen')
@@ -65,11 +77,29 @@ export default function AppLayout() {
       .eq('status', 'active')
       .maybeSingle()
       .then(({ data }) => setIsFrozen(data?.is_frozen ?? false))
+    return () => { notifChannel.unsubscribe() }
   }, [teamId, user])
 
   useEffect(() => {
     if (!teamId || !user) { setUnreadMail(0); return }
-    mailService.getUnreadCount(teamId, user.id).then(setUnreadMail)
+    const refreshUnreadMail = () => mailService.getUnreadCount(teamId, user.id).then(setUnreadMail)
+    refreshUnreadMail()
+    window.addEventListener('mail:updated', refreshUnreadMail)
+    const channel = supabase.channel(`layout-mail:${teamId}:${user.id}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'internal_mail',
+        filter: `team_id=eq.${teamId}`,
+      }, (payload: any) => {
+        const row = payload.new || payload.old
+        if (row?.receiver_id === user.id) refreshUnreadMail()
+      })
+      .subscribe()
+    return () => {
+      window.removeEventListener('mail:updated', refreshUnreadMail)
+      channel.unsubscribe()
+    }
   }, [teamId, user])
 
   async function handleLeave() {
@@ -84,10 +114,14 @@ export default function AppLayout() {
     setLeaving(false)
   }
 
-  function markRead(id: string) {
-    notificationService.markRead(id)
-    setTeamNotifs(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n))
-    setUnreadN(prev => Math.max(0, prev - 1))
+  function markRead(n: any) {
+    notificationService.markRead(n.id)
+    setTeamNotifs(prev => prev.map(x => x.id === n.id ? { ...x, is_read: true } : x))
+    if (!n.is_read) setUnreadN(prev => Math.max(0, prev - 1))
+    if (n.link) {
+      navigate(n.link)
+      setShowNotif(false)
+    }
   }
 
   function markAllTeamRead() {
@@ -475,7 +509,7 @@ export default function AppLayout() {
                         </div>
                       ) : teamNotifs.map((n: any) => (
                         <button key={n.id}
-                          onClick={() => markRead(n.id)}
+                          onClick={() => markRead(n)}
                           className={cn(
                             'w-full text-right px-4 py-3 hover:bg-slate-50 transition-colors border-none cursor-pointer',
                             !n.is_read ? 'bg-brand-50/40' : 'bg-white'

@@ -27,6 +27,10 @@ function relativeDate(iso: string) {
   return d.toLocaleDateString('ar-SA', { day: 'numeric', month: 'short' })
 }
 
+function notifyMailUpdated() {
+  window.dispatchEvent(new CustomEvent('mail:updated'))
+}
+
 export default function MailPage() {
   const { teamId } = useParams()
   const { user } = useAuth()
@@ -98,6 +102,15 @@ export default function MailPage() {
       await mailService.markRead(id)
       setMessages(prev => prev.map(m => m.id === id ? { ...m, is_read: true } : m))
     }
+    if (tab !== 'sent' && user) {
+      await mailService.markThreadRepliesRead(id, user.id)
+      await notificationService.markMailThreadRead(teamId!, user.id, id)
+      setMessages(prev => prev.map(m => m.id === id ? { ...m, has_unread_reply: false } : m))
+      setReplyStubs(prev => prev.map((r: any) =>
+        r.parent_id === id && r.receiver_id === user.id ? { ...r, is_read: true } : r
+      ))
+      notifyMailUpdated()
+    }
 
     // load replies if not loaded
     if (!replies[id]) {
@@ -126,14 +139,16 @@ export default function MailPage() {
       setReplies(prev => ({ ...prev, [parentMsg.id]: [...(prev[parentMsg.id] || []), data] }))
       // Update reply stubs so badge increments immediately
       setReplyStubs(prev => [...prev, { id: data.id, parent_id: parentMsg.id, sender_id: user.id, created_at: data.created_at }])
-      notificationService.create({
+      await notificationService.create({
         user_id: otherId,
         team_id: teamId,
         title: '↩ رد جديد على رسالتك',
         body: `رد على: ${parentMsg.title}`,
         type: 'mail',
         is_read: false,
+        link: `/team/${teamId}/mail?thread=${parentMsg.id}`,
       })
+      notifyMailUpdated()
     }
     setReplyText(''); setSendingReply(false); setReplyingTo(null)
   }
@@ -165,14 +180,16 @@ export default function MailPage() {
       setComposeError(`فشل الإرسال: ${error.message}`)
       setSending(false); return
     }
-    notificationService.create({
+    await notificationService.create({
       user_id: composeForm.receiver_id,
       team_id: teamId,
       title: '📬 رسالة جديدة',
       body: composeForm.title,
       type: 'mail',
       is_read: false,
+      link: `/team/${teamId}/mail?thread=${sent?.id}`,
     })
+    notifyMailUpdated()
     // Optimistically add to sent list if on sent tab, otherwise reload inbox
     if (tab === 'sent' && sent) {
       setMessages(prev => [sent, ...prev])
@@ -243,14 +260,14 @@ export default function MailPage() {
             const isExpanded = expandedId === msg.id
             const isReceived = msg.receiver_id === user?.id
             const other = isReceived ? msg.sender : msg.receiver
-            const unread = isReceived && !msg.is_read
             const msgReplies = replies[msg.id] || []
 
             // Reply stubs fetched separately after loading messages
             const msgReplyStubs = replyStubs.filter((r: any) => r.parent_id === msg.id)
             const replyCount = msgReplyStubs.length
-            // Has a reply from the OTHER party (not me)
-            const hasOtherReply = msgReplyStubs.some((r: any) => r.sender_id !== user?.id)
+            const hasUnreadReply = msg.has_unread_reply || msgReplyStubs.some((r: any) => r.receiver_id === user?.id && !r.is_read)
+            const unread = (isReceived && !msg.is_read) || hasUnreadReply
+            const canReply = msg.sender_id === user?.id || msg.receiver_id === user?.id
 
             return (
               <div key={msg.id} className={`rounded-2xl border transition-all ${isExpanded ? 'border-brand-200 shadow-sm' : 'border-slate-100 bg-white hover:border-slate-200'}`}>
@@ -263,7 +280,7 @@ export default function MailPage() {
                   <div className="flex-shrink-0 w-2 flex justify-center">
                     {unread
                       ? <span className="w-2 h-2 rounded-full bg-brand-500 block"/>
-                      : hasOtherReply && !isExpanded
+                      : hasUnreadReply && !isExpanded
                         ? <span className="w-2 h-2 rounded-full bg-emerald-400 block"/>
                         : null
                     }
@@ -283,7 +300,7 @@ export default function MailPage() {
                       </span>
                       {replyCount > 0 && (
                         <span className={`text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 font-bold
-                          ${hasOtherReply ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-500'}`}>
+                          ${hasUnreadReply ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-500'}`}>
                           <CornerDownLeft size={9}/> {replyCount}
                         </span>
                       )}
@@ -342,8 +359,8 @@ export default function MailPage() {
                       </div>
                     )}
 
-                    {/* Reply box — only for received messages */}
-                    {isReceived && (
+                    {/* Reply box */}
+                    {canReply && (
                       replyingTo === msg.id ? (
                         <div className="mt-3">
                           <textarea
