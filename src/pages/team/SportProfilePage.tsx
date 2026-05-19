@@ -2,12 +2,14 @@ import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
   CheckSquare, DollarSign, Stethoscope, BookOpen,
-  Ruler, Activity, ChevronDown, ChevronUp, Star, Paperclip, Send, X
+  Ruler, Activity, ChevronDown, ChevronUp, Star, Paperclip, Send, X,
+  Trophy, BarChart2, Filter,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import {
   eventService, financeService, medicalService,
-  noteService, measurementService, fitnessService, pointsService, rewardService
+  noteService, measurementService, fitnessService, pointsService, rewardService,
+  matchStatsService, tournamentService, technicalEvalService,
 } from '../../services'
 import { Avatar, Spinner } from '../../components/ui'
 import { formatDate, RIYAL } from '../../utils/helpers'
@@ -16,8 +18,14 @@ import {
   METRIC_KEYS, METRIC_LABELS, METRIC_UNITS,
   getMetricTimeSeries, getBMITimeSeries,
 } from '../../utils/measurementHelpers'
+import {
+  getCurrentSeason, getSeasonOptions, getActiveIndicators,
+  calcStrengthAvg, calcDevAvg, calcOverallAvg, calcImprovementRate,
+  fmtScore, CATEGORY_LABELS, CATEGORY_COLORS, buildIndicatorSparkline,
+  getStatusLabel, getStatusColorClass,
+} from '../../utils/technicalEvalHelpers'
 
-type Tab = 'attendance' | 'finance' | 'medical' | 'notes' | 'measurements' | 'fitness' | 'points'
+type Tab = 'attendance' | 'finance' | 'medical' | 'notes' | 'measurements' | 'fitness' | 'points' | 'matches' | 'evaluations'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const NOTE_COLOR: Record<string, { bg: string; tc: string }> = {
@@ -315,6 +323,46 @@ export default function SportProfilePage() {
   const [sendingNote, setSendingNote]       = useState<string | null>(null)
   const [previewUrl, setPreviewUrl]         = useState<string | null>(null)
 
+  // Match stats (lazy)
+  const [matchStats, setMatchStats]         = useState<{ matches: any[]; lineups: any[]; events: any[] } | null>(null)
+  const [matchStatsLoading, setMatchStatsLoading] = useState(false)
+  const [tournaments, setTournaments]       = useState<any[]>([])
+  const [statsFilterTourn, setStatsFilterTourn] = useState('')
+  const [statsFilterFrom, setStatsFilterFrom]   = useState('')
+  const [statsFilterTo, setStatsFilterTo]       = useState('')
+
+  // Technical evaluations (lazy)
+  const [evalIndicators, setEvalIndicators] = useState<any[]>([])
+  const [evalLoading, setEvalLoading]       = useState(false)
+  const [evalSeason, setEvalSeason]         = useState(getCurrentSeason())
+  const [evalSettings, setEvalSettings]     = useState<any>(null)
+
+  useEffect(() => {
+    if (tab !== 'matches' || !teamId || matchStats || matchStatsLoading) return
+    setMatchStatsLoading(true)
+    Promise.all([
+      matchStatsService.getTeamMatchStats(teamId),
+      tournamentService.getAll(teamId),
+    ]).then(([stats, tourns]) => {
+      setMatchStats(stats)
+      setTournaments(tourns)
+      setMatchStatsLoading(false)
+    })
+  }, [tab, teamId])
+
+  useEffect(() => {
+    if (tab !== 'evaluations' || !teamId || !user) return
+    setEvalLoading(true)
+    Promise.all([
+      technicalEvalService.getSettings(teamId),
+      technicalEvalService.getPlayerIndicators(teamId, user.id, evalSeason),
+    ]).then(([settings, indicators]) => {
+      setEvalSettings(settings)
+      setEvalIndicators(indicators)
+      setEvalLoading(false)
+    })
+  }, [tab, teamId, user, evalSeason])
+
   useEffect(() => {
     if (!teamId || !user) return
     Promise.all([
@@ -416,6 +464,8 @@ export default function SportProfilePage() {
     { key: 'measurements' as Tab, icon: <Ruler size={14}/>,       label: 'القياسات',  count: activeMetrics.length + (hasBMI ? 1 : 0) },
     { key: 'fitness'      as Tab, icon: <Activity size={14}/>,    label: 'اللياقة',   count: Object.keys(byTestKey).length },
     { key: 'points'       as Tab, icon: <Star size={14}/>,        label: 'النقاط',    count: pointsTxs.length },
+    { key: 'matches'      as Tab, icon: <Trophy size={14}/>,      label: 'المباريات', count: undefined },
+    { key: 'evaluations'  as Tab, icon: <BarChart2 size={14}/>,   label: 'التقييمات', count: undefined },
   ]
 
   async function toggleReport(id: string) {
@@ -1016,6 +1066,308 @@ export default function SportProfilePage() {
             </div>
           )}
         </div>
+      )}
+
+      {/* ── MATCHES TAB ── */}
+      {tab === 'matches' && (
+        matchStatsLoading
+          ? <div className="flex justify-center py-10"><Spinner /></div>
+          : !matchStats
+            ? null
+            : (() => {
+                const userId = user!.id
+                const myLineups = matchStats.lineups.filter((l: any) =>
+                  (l.players || []).some((p: any) => p.user_id === userId && p.role !== 'excluded')
+                )
+                const myMatchIds = new Set(myLineups.map((l: any) => l.match_id))
+                let filtMatches = matchStats.matches.filter((m: any) => myMatchIds.has(m.id))
+                if (statsFilterTourn === '__friendly__') filtMatches = filtMatches.filter((m: any) => !m.tournament_id)
+                else if (statsFilterTourn) filtMatches = filtMatches.filter((m: any) => m.tournament_id === statsFilterTourn)
+                if (statsFilterFrom) filtMatches = filtMatches.filter((m: any) => m.match_date >= statsFilterFrom)
+                if (statsFilterTo) filtMatches = filtMatches.filter((m: any) => m.match_date <= statsFilterTo + 'T23:59')
+                const filtMatchIds = new Set(filtMatches.map((m: any) => m.id))
+                const filtLineups = matchStats.lineups.filter((l: any) => filtMatchIds.has(l.match_id))
+                const filtEvents = matchStats.events.filter((e: any) => filtMatchIds.has(e.match_id))
+
+                let played = 0, starter = 0, sub = 0, minutes = 0
+                let goals = 0, assists = 0, yellow = 0, red = 0, cleanSheets = 0
+                for (const lineup of filtLineups) {
+                  const plEntry = (lineup.players || []).find((p: any) => p.user_id === userId)
+                  if (!plEntry || plEntry.role === 'excluded') continue
+                  const mEvts = filtEvents.filter((e: any) => e.match_id === lineup.match_id)
+                  const subOut = mEvts.find((e: any) => e.event_type === 'substitution' && e.player_out_id === userId)
+                  const subIn = mEvts.find((e: any) => e.event_type === 'substitution' && e.player_id === userId)
+                  if (plEntry.role === 'starter') {
+                    starter++; played++
+                    minutes += subOut?.minute || 90
+                  } else if (plEntry.role === 'sub' && subIn) {
+                    sub++; played++
+                    minutes += 90 - (subIn.minute || 0)
+                  }
+                }
+                for (const evt of filtEvents) {
+                  if (evt.event_type === 'goal' && evt.player_id === userId) goals++
+                  else if (evt.event_type === 'assist' && evt.player_id === userId) assists++
+                  else if (evt.event_type === 'yellow_card' && evt.player_id === userId) yellow++
+                  else if (evt.event_type === 'red_card' && evt.player_id === userId) red++
+                  else if (evt.event_type === 'clean_sheet' && evt.player_id === userId) cleanSheets++
+                }
+                const matchList = [...filtMatches]
+                  .sort((a: any, b: any) => new Date(b.match_date).getTime() - new Date(a.match_date).getTime())
+                  .map((m: any) => {
+                    const lineup = filtLineups.find((l: any) => l.match_id === m.id)
+                    const plEntry = (lineup?.players || []).find((p: any) => p.user_id === userId)
+                    const tourney = tournaments.find((t: any) => t.id === m.tournament_id)
+                    const mEvts = filtEvents.filter((e: any) => e.match_id === m.id)
+                    const plGoals = mEvts.filter((e: any) => e.event_type === 'goal' && e.player_id === userId).length
+                    const plAssists = mEvts.filter((e: any) => e.event_type === 'assist' && e.player_id === userId).length
+                    const plYellow = mEvts.filter((e: any) => e.event_type === 'yellow_card' && e.player_id === userId).length
+                    const plRed = mEvts.filter((e: any) => e.event_type === 'red_card' && e.player_id === userId).length
+                    const plCS = mEvts.filter((e: any) => e.event_type === 'clean_sheet' && e.player_id === userId).length
+                    const hasResult = m.goals_for !== null && m.goals_against !== null
+                    const result = hasResult
+                      ? m.goals_for > m.goals_against ? { l: 'فوز', c: 'bg-emerald-100 text-emerald-700' }
+                      : m.goals_for === m.goals_against ? { l: 'تعادل', c: 'bg-amber-100 text-amber-700' }
+                      : { l: 'خسارة', c: 'bg-red-100 text-red-700' } : null
+                    return { ...m, playerRole: plEntry?.role, tourney, plGoals, plAssists, plYellow, plRed, plCS, result, hasResult }
+                  })
+
+                return (
+                  <div className="space-y-3">
+                    {/* Filters */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Filter size={13} className="text-slate-400 flex-shrink-0" />
+                      <select className="form-input text-xs" style={{ maxWidth: 160 }} value={statsFilterTourn} onChange={e => setStatsFilterTourn(e.target.value)}>
+                        <option value="">كل المباريات</option>
+                        <option value="__friendly__">ودية فقط</option>
+                        {tournaments.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                      <input type="date" className="form-input text-xs" style={{ maxWidth: 135 }} value={statsFilterFrom} onChange={e => setStatsFilterFrom(e.target.value)} />
+                      <input type="date" className="form-input text-xs" style={{ maxWidth: 135 }} value={statsFilterTo} onChange={e => setStatsFilterTo(e.target.value)} />
+                      {(statsFilterTourn || statsFilterFrom || statsFilterTo) && (
+                        <button onClick={() => { setStatsFilterTourn(''); setStatsFilterFrom(''); setStatsFilterTo('') }}
+                          className="text-xs text-red-500 hover:underline flex items-center gap-0.5">
+                          <X size={11} /> مسح
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Summary grids */}
+                    <div className="grid grid-cols-4 gap-2">
+                      {([['م', played, 'text-slate-700'], ['أساسي', starter, 'text-blue-600'], ['بديل', sub, 'text-amber-600'], ['دقائق', minutes, 'text-slate-600']] as [string, number, string][]).map(([l, v, c]) => (
+                        <div key={l} className="bg-slate-50 rounded-xl p-2.5 text-center">
+                          <div className={`text-lg font-bold ${c}`}>{v}</div>
+                          <div className="text-[10px] text-slate-400">{l}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-5 gap-2">
+                      {([['⚽', goals, 'text-emerald-600'], ['🎯', assists, 'text-blue-500'], ['🟡', yellow, 'text-yellow-600'], ['🔴', red, 'text-red-600'], ['🥅', cleanSheets, 'text-teal-600']] as [string, number, string][]).map(([l, v, c]) => (
+                        <div key={l} className="bg-slate-50 rounded-xl p-2.5 text-center">
+                          <div className={`text-base font-bold ${c}`}>{v}</div>
+                          <div className="text-[11px] text-slate-400">{l}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Match list */}
+                    {matchList.length === 0
+                      ? <div className="card text-center text-slate-400 py-8 text-sm">لا توجد مباريات بهذا الفلتر</div>
+                      : <div className="space-y-2">
+                          {matchList.map((m: any) => (
+                            <div key={m.id} className="card mb-0">
+                              <div className="flex items-center gap-3">
+                                <div className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center flex-shrink-0 ${m.result?.l === 'فوز' ? 'bg-emerald-50' : m.result?.l === 'خسارة' ? 'bg-red-50' : m.result?.l === 'تعادل' ? 'bg-amber-50' : 'bg-slate-50'}`}>
+                                  {m.hasResult
+                                    ? <><span className="text-base font-bold">{m.goals_for}-{m.goals_against}</span><span className={`text-[10px] px-1.5 py-0.5 rounded-full ${m.result!.c}`}>{m.result!.l}</span></>
+                                    : <span className="text-xl">⚽</span>}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-bold text-sm truncate">ضد {m.opponent || '—'}</div>
+                                  <div className="text-xs text-slate-400 mt-0.5">
+                                    {new Date(m.match_date).toLocaleDateString('ar-SA', { year: 'numeric', month: 'short', day: 'numeric' })}
+                                  </div>
+                                  <div className="flex gap-1.5 mt-1 flex-wrap">
+                                    {m.tourney ? <span className="badge badge-purple text-[10px]">{m.tourney.name}</span> : <span className="badge badge-gray text-[10px]">ودية</span>}
+                                    <span className={`badge text-[10px] ${m.playerRole === 'starter' ? 'badge-blue' : 'bg-amber-100 text-amber-700'}`}>
+                                      {m.playerRole === 'starter' ? 'أساسي' : 'بديل'}
+                                    </span>
+                                    {m.plGoals > 0 && <span className="badge badge-green text-[10px]">⚽ {m.plGoals}</span>}
+                                    {m.plAssists > 0 && <span className="badge badge-blue text-[10px]">🎯 {m.plAssists}</span>}
+                                    {m.plYellow > 0 && <span className="badge bg-yellow-100 text-yellow-700 text-[10px]">🟡</span>}
+                                    {m.plRed > 0 && <span className="badge bg-red-100 text-red-700 text-[10px]">🔴</span>}
+                                    {m.plCS > 0 && <span className="badge bg-teal-100 text-teal-700 text-[10px]">🥅</span>}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                    }
+                  </div>
+                )
+              })()
+      )}
+
+      {/* ── EVALUATIONS TAB ── */}
+      {tab === 'evaluations' && (
+        evalLoading
+          ? <div className="flex justify-center py-10"><Spinner /></div>
+          : (() => {
+              const active = getActiveIndicators(evalIndicators)
+              const strengthAvg = calcStrengthAvg(active)
+              const devAvg = calcDevAvg(active)
+              const minCount = evalSettings?.minimum_indicators_for_overall_score ?? 5
+              const overallAvg = calcOverallAvg(active, minCount)
+              const improvRate = calcImprovementRate(active)
+              const strengths = active.filter((i: any) => i.indicator_type === 'strength')
+              const developments = active.filter((i: any) => i.indicator_type === 'development')
+              const seasonOpts = getSeasonOptions()
+
+              return (
+                <div className="space-y-4">
+                  {/* Season selector */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500">الموسم:</span>
+                    <select className="form-input text-xs" style={{ maxWidth: 160 }} value={evalSeason} onChange={e => setEvalSeason(e.target.value)}>
+                      {seasonOpts.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+
+                  {/* Summary cards */}
+                  {active.length === 0
+                    ? <div className="card text-center py-10">
+                        <BarChart2 size={30} className="mx-auto text-slate-300 mb-2" />
+                        <div className="font-bold text-slate-500 text-sm">لا توجد تقييمات لهذا الموسم</div>
+                        <div className="text-xs text-slate-400 mt-1">يضيف المدرب التقييمات من قسم التقييمات الفنية والتكتيكية</div>
+                      </div>
+                    : <>
+                        <div className="grid grid-cols-2 gap-2">
+                          {([
+                            ['نقاط القوة', strengthAvg !== null ? fmtScore(strengthAvg) : '—', 'text-emerald-600', 'bg-emerald-50'],
+                            ['مؤشرات التطوير', devAvg !== null ? fmtScore(devAvg) : '—', 'text-amber-600', 'bg-amber-50'],
+                            ['المتوسط العام', overallAvg !== null ? fmtScore(overallAvg) : '—', 'text-brand-600', 'bg-brand-50'],
+                            ['معدل التحسن', improvRate !== null ? (improvRate > 0 ? `+${fmtScore(improvRate)}` : fmtScore(improvRate)) : '—', improvRate !== null && improvRate > 0 ? 'text-emerald-600' : 'text-slate-600', 'bg-slate-50'],
+                          ] as [string, string, string, string][]).map(([l, v, tc, bg]) => (
+                            <div key={l} className={`${bg} rounded-xl p-3 text-center`}>
+                              <div className={`text-xl font-extrabold ${tc}`}>{v}</div>
+                              <div className="text-[10px] text-slate-500 mt-0.5">{l}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Strengths */}
+                        {strengths.length > 0 && (
+                          <div>
+                            <div className="text-xs font-extrabold text-slate-400 uppercase tracking-widest px-1 mb-2">نقاط القوة ({strengths.length})</div>
+                            <div className="space-y-2">
+                              {strengths.map((ind: any) => {
+                                const diff = ind.current_score - ind.start_score
+                                const spark = buildIndicatorSparkline(ind)
+                                return (
+                                  <div key={ind.id} className="card mb-0 p-3">
+                                    <div className="flex items-center gap-3">
+                                      <div className={`w-10 h-10 rounded-full border-2 flex items-center justify-center font-extrabold text-sm flex-shrink-0
+                                        ${ind.current_score >= 8 ? 'bg-emerald-100 text-emerald-700 border-emerald-300'
+                                        : ind.current_score >= 6 ? 'bg-blue-100 text-blue-700 border-blue-300'
+                                        : ind.current_score >= 4 ? 'bg-yellow-100 text-yellow-700 border-yellow-300'
+                                        : 'bg-red-50 text-red-600 border-red-200'}`}>
+                                        {ind.current_score}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <div className="font-bold text-sm text-slate-800 truncate">{ind.indicator_name}</div>
+                                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${CATEGORY_COLORS[ind.category as keyof typeof CATEGORY_COLORS] || 'bg-slate-100 text-slate-600'}`}>
+                                            {CATEGORY_LABELS[ind.category as keyof typeof CATEGORY_LABELS] || ind.category}
+                                          </span>
+                                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${getStatusColorClass(diff)}`}>
+                                            {diff > 0 ? `+${diff}` : diff < 0 ? `${diff}` : '='} {getStatusLabel(diff)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      {spark.length >= 2 && (() => {
+                                        const last = spark[spark.length - 1], prev = spark[spark.length - 2]
+                                        const color = last > prev ? '#10b981' : last < prev ? '#ef4444' : '#94a3b8'
+                                        const min = Math.min(...spark), max = Math.max(...spark), range = max - min || 1
+                                        const W = 50, H = 20, pad = 2
+                                        const rtl = [...spark].reverse()
+                                        const pts = rtl.map((v: number, i: number) => {
+                                          const x = pad + (i / (rtl.length - 1)) * (W - pad * 2)
+                                          const y = H - pad - ((v - min) / range) * (H - pad * 2)
+                                          return `${x},${y}`
+                                        }).join(' ')
+                                        return (
+                                          <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="flex-shrink-0">
+                                            <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                                          </svg>
+                                        )
+                                      })()}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Development */}
+                        {developments.length > 0 && (
+                          <div>
+                            <div className="text-xs font-extrabold text-slate-400 uppercase tracking-widest px-1 mb-2">مؤشرات التطوير ({developments.length})</div>
+                            <div className="space-y-2">
+                              {developments.map((ind: any) => {
+                                const diff = ind.current_score - ind.start_score
+                                const spark = buildIndicatorSparkline(ind)
+                                return (
+                                  <div key={ind.id} className="card mb-0 p-3">
+                                    <div className="flex items-center gap-3">
+                                      <div className={`w-10 h-10 rounded-full border-2 flex items-center justify-center font-extrabold text-sm flex-shrink-0
+                                        ${ind.current_score >= 8 ? 'bg-emerald-100 text-emerald-700 border-emerald-300'
+                                        : ind.current_score >= 6 ? 'bg-blue-100 text-blue-700 border-blue-300'
+                                        : ind.current_score >= 4 ? 'bg-yellow-100 text-yellow-700 border-yellow-300'
+                                        : 'bg-red-50 text-red-600 border-red-200'}`}>
+                                        {ind.current_score}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <div className="font-bold text-sm text-slate-800 truncate">{ind.indicator_name}</div>
+                                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${CATEGORY_COLORS[ind.category as keyof typeof CATEGORY_COLORS] || 'bg-slate-100 text-slate-600'}`}>
+                                            {CATEGORY_LABELS[ind.category as keyof typeof CATEGORY_LABELS] || ind.category}
+                                          </span>
+                                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${getStatusColorClass(diff)}`}>
+                                            {diff > 0 ? `+${diff}` : diff < 0 ? `${diff}` : '='} {getStatusLabel(diff)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      {spark.length >= 2 && (() => {
+                                        const last = spark[spark.length - 1], prev = spark[spark.length - 2]
+                                        const color = last > prev ? '#10b981' : last < prev ? '#ef4444' : '#94a3b8'
+                                        const min = Math.min(...spark), max = Math.max(...spark), range = max - min || 1
+                                        const W = 50, H = 20, pad = 2
+                                        const rtl = [...spark].reverse()
+                                        const pts = rtl.map((v: number, i: number) => {
+                                          const x = pad + (i / (rtl.length - 1)) * (W - pad * 2)
+                                          const y = H - pad - ((v - min) / range) * (H - pad * 2)
+                                          return `${x},${y}`
+                                        }).join(' ')
+                                        return (
+                                          <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="flex-shrink-0">
+                                            <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                                          </svg>
+                                        )
+                                      })()}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                  }
+                </div>
+              )
+            })()
       )}
     </div>
   )

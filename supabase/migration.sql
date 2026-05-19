@@ -98,9 +98,9 @@ CREATE TABLE IF NOT EXISTS attendance (
   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
   team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-  status TEXT DEFAULT 'present' CHECK (status IN ('present','absent','uncertain','late')),
+  status TEXT DEFAULT 'present' CHECK (status IN ('present','absent','uncertain','late','excused')),
   late_minutes INTEGER DEFAULT 0,
-  late_excuse TEXT, has_excuse BOOLEAN DEFAULT FALSE,
+  late_excuse TEXT, excuse_reason TEXT, has_excuse BOOLEAN DEFAULT FALSE,
   member_note TEXT, admin_note TEXT,
   marked_by UUID REFERENCES profiles(id),
   created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -163,6 +163,10 @@ CREATE TABLE IF NOT EXISTS leaves (
   reason TEXT NOT NULL, from_date DATE NOT NULL, to_date DATE NOT NULL,
   status TEXT DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','partial')),
   note TEXT, partial_days TEXT[],
+  attachment_url TEXT,
+  appeal_text TEXT,
+  appeal_attachment_url TEXT,
+  appealed_at TIMESTAMPTZ,
   reviewed_by UUID REFERENCES profiles(id),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -437,6 +441,21 @@ DROP POLICY IF EXISTS "leaves_update" ON leaves;
 CREATE POLICY "leaves_select" ON leaves FOR SELECT USING (is_team_member(team_id,auth.uid()));
 CREATE POLICY "leaves_insert" ON leaves FOR INSERT WITH CHECK (is_team_member(team_id,auth.uid()));
 CREATE POLICY "leaves_update" ON leaves FOR UPDATE USING (auth.uid()=user_id OR is_team_admin(team_id,auth.uid()));
+
+ALTER TABLE leaves
+  ADD COLUMN IF NOT EXISTS attachment_url TEXT,
+  ADD COLUMN IF NOT EXISTS appeal_text TEXT,
+  ADD COLUMN IF NOT EXISTS appeal_attachment_url TEXT,
+  ADD COLUMN IF NOT EXISTS appealed_at TIMESTAMPTZ;
+
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS excuse_reason TEXT;
+
+DO $$
+BEGIN
+  ALTER TABLE attendance DROP CONSTRAINT IF EXISTS attendance_status_check;
+  ALTER TABLE attendance ADD CONSTRAINT attendance_status_check
+    CHECK (status IN ('present','absent','uncertain','late','excused'));
+END $$;
 
 DROP POLICY IF EXISTS "notes_select" ON coach_notes;
 DROP POLICY IF EXISTS "notes_insert" ON coach_notes;

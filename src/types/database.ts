@@ -1,5 +1,5 @@
 export type UserRole = 'owner' | 'head_coach' | 'assistant_coach' | 'player' | 'administrator' | 'media' | 'medical' | 'parent' | 'guest'
-export type AttendanceStatus = 'present' | 'absent' | 'uncertain' | 'late'
+export type AttendanceStatus = 'present' | 'absent' | 'uncertain' | 'late' | 'excused'
 export type MatchExcuseType = 'injured' | 'suspended' | 'excluded' | 'other'
 export type MatchEventType = 'goal' | 'assist' | 'yellow_card' | 'red_card' | 'substitution' | 'clean_sheet'
 export type FootballFormation = '4-4-2' | '4-3-3' | '4-2-3-1' | '4-1-4-1' | '4-5-1' | '4-4-1-1' | '4-3-1-2' | '3-5-2' | '3-4-3' | '3-4-2-1' | '5-3-2' | '5-4-1' | '5-2-3'
@@ -101,6 +101,7 @@ export interface Attendance {
   status: AttendanceStatus
   late_minutes?: number
   late_excuse?: string
+  excuse_reason?: string
   has_excuse?: boolean
   member_note?: string
   admin_note?: string
@@ -168,6 +169,10 @@ export interface Leave {
   status: LeaveStatus
   note?: string
   partial_days?: string[]
+  attachment_url?: string
+  appeal_text?: string
+  appeal_attachment_url?: string
+  appealed_at?: string
   reviewed_by?: string
   created_at: string
   profile?: Profile

@@ -7,7 +7,13 @@ import {
   Ruler, Activity, Star, CheckSquare, DollarSign, Stethoscope, BookOpen, BarChart2
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService, matchStatsService, tournamentService } from '../../services'
+import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService, matchStatsService, tournamentService, technicalEvalService } from '../../services'
+import {
+  getCurrentSeason, getSeasonOptions, getActiveIndicators,
+  calcStrengthAvg, calcDevAvg, calcOverallAvg, calcImprovementRate,
+  fmtScore, CATEGORY_LABELS, CATEGORY_COLORS, buildIndicatorSparkline,
+  getStatusLabel, getStatusColorClass,
+} from '../../utils/technicalEvalHelpers'
 import { Spinner, PageHeader, SearchBox, Avatar, Modal, FormField, EmptyState, ProgressBar } from '../../components/ui'
 import { NOTE_TYPES, canManageEvents, canManageTeam, formatDate, RIYAL } from '../../utils/helpers'
 import { getTestDef } from '../../utils/fitnessTestDefinitions'
@@ -380,6 +386,11 @@ export default function PlayersPage() {
   const [statsFilterFrom, setStatsFilterFrom] = useState('')
   const [statsFilterTo, setStatsFilterTo] = useState('')
 
+  // Technical evaluation for player detail
+  const [playerEvalData, setPlayerEvalData] = useState<{ settings: any; indicators: any[] } | null>(null)
+  const [playerEvalLoading, setPlayerEvalLoading] = useState(false)
+  const [playerEvalSeason, setPlayerEvalSeason] = useState(getCurrentSeason())
+
   useEffect(() => {
     if (!teamId || !user) return
     teamService.getMyRole(teamId, user.id).then(r => setMyRole(r || ''))
@@ -431,6 +442,7 @@ export default function PlayersPage() {
     setPlayerAttendance([]); setPlayerMeasurements([])
     setPlayerFitnessResults([]); setPlayerPointsTxs([]); setPlayerRewards([])
     setPlayerMatchStats(null); setStatsFilterTourn(''); setStatsFilterFrom(''); setStatsFilterTo('')
+    setPlayerEvalData(null); setPlayerEvalSeason(getCurrentSeason())
     if (!teamId || !user) return
     setLoadingPlayerData(true)
     const isCoach = canManageEvents(myRole) || canManageTeam(myRole)
@@ -473,6 +485,27 @@ export default function PlayersPage() {
       setPlayerMatchStatsLoading(false)
     })
   }, [detailTab, selPlayer, teamId])
+
+  // Lazy-load technical evaluation data when techeval tab is opened
+  useEffect(() => {
+    if (detailTab !== 'techeval' || !selPlayer || !teamId) return
+    setPlayerEvalLoading(true)
+    Promise.all([
+      technicalEvalService.getSettings(teamId),
+      technicalEvalService.getPlayerIndicators(teamId, selPlayer.user_id, playerEvalSeason),
+    ]).then(([settings, indicators]) => {
+      setPlayerEvalData({ settings, indicators })
+      setPlayerEvalLoading(false)
+    })
+    // Also pre-load match stats if not loaded yet
+    if (!playerMatchStats && !playerMatchStatsLoading) {
+      setPlayerMatchStatsLoading(true)
+      matchStatsService.getTeamMatchStats(teamId).then(data => {
+        setPlayerMatchStats(data)
+        setPlayerMatchStatsLoading(false)
+      })
+    }
+  }, [detailTab, selPlayer, teamId, playerEvalSeason])
 
   async function saveNote() {
     if (!noteForm.content.trim() || !selPlayer || !teamId || !user) return
@@ -710,6 +743,7 @@ export default function PlayersPage() {
       { key: 'attendance',   icon: <CheckSquare size={13}/>, label: 'الحضور',          count: plTotalEvents },
       { key: 'points',       icon: <Star size={13}/>,        label: 'النقاط',          count: playerPointsTxs.length },
       { key: 'matchstats',   icon: <BarChart2 size={13}/>,   label: 'إحصائيات',        count: undefined },
+      { key: 'techeval',     icon: <Star size={13}/>,        label: 'التقييمات الفنية', count: undefined },
     ]
 
     return (
@@ -1450,6 +1484,195 @@ export default function PlayersPage() {
                   })}
                 </div>
               )}
+            </div>
+          )
+        })()}
+
+        {/* ── Technical Evaluation Tab ── */}
+        {detailTab === 'techeval' && (() => {
+          if (playerEvalLoading) return <div className="flex justify-center py-10"><Spinner /></div>
+          if (!playerEvalData) return null
+
+          const active = getActiveIndicators(playerEvalData.indicators)
+          const settings = playerEvalData.settings
+          const minCount = settings?.minimum_indicators_for_overall_score ?? 5
+          const strengthAvg = calcStrengthAvg(active)
+          const devAvg = calcDevAvg(active)
+          const overallAvg = calcOverallAvg(active, minCount)
+          const improvRate = calcImprovementRate(active)
+          const strengths = active.filter((i: any) => i.indicator_type === 'strength')
+          const developments = active.filter((i: any) => i.indicator_type === 'development')
+          const seasonOpts = getSeasonOptions()
+
+          // Quick match stats summary if loaded
+          const userId = selPlayer.user_id
+          let mPlayed = 0, mGoals = 0, mAssists = 0, mMinutes = 0
+          if (playerMatchStats) {
+            for (const lineup of playerMatchStats.lineups) {
+              const plEntry = (lineup.players || []).find((p: any) => p.user_id === userId)
+              if (!plEntry || plEntry.role === 'excluded') continue
+              const mEvts = playerMatchStats.events.filter((e: any) => e.match_id === lineup.match_id)
+              const subOut = mEvts.find((e: any) => e.event_type === 'substitution' && e.player_out_id === userId)
+              const subIn = mEvts.find((e: any) => e.event_type === 'substitution' && e.player_id === userId)
+              if (plEntry.role === 'starter') { mPlayed++; mMinutes += subOut?.minute || 90 }
+              else if (plEntry.role === 'sub' && subIn) { mPlayed++; mMinutes += 90 - (subIn.minute || 0) }
+            }
+            mGoals = playerMatchStats.events.filter((e: any) => e.event_type === 'goal' && e.player_id === userId).length
+            mAssists = playerMatchStats.events.filter((e: any) => e.event_type === 'assist' && e.player_id === userId).length
+          }
+
+          return (
+            <div className="space-y-4">
+              {/* Season + quick match bar */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-slate-500">الموسم:</span>
+                <select className="form-input text-xs" style={{ maxWidth: 150 }} value={playerEvalSeason}
+                  onChange={e => setPlayerEvalSeason(e.target.value)}>
+                  {seasonOpts.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+                {playerMatchStats && (
+                  <div className="flex items-center gap-2 mr-auto">
+                    {([['م', mPlayed, 'text-slate-600'], ['⚽', mGoals, 'text-emerald-600'], ['🎯', mAssists, 'text-blue-500'], ['⏱', mMinutes, 'text-slate-500']] as [string, number, string][]).map(([l, v, c]) => (
+                      <div key={l} className="flex items-center gap-1">
+                        <span className={`text-sm font-bold ${c}`}>{v}</span>
+                        <span className="text-[10px] text-slate-400">{l}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {active.length === 0
+                ? <div className="card text-center py-10">
+                    <BarChart2 size={28} className="mx-auto text-slate-300 mb-2" />
+                    <div className="font-bold text-slate-500 text-sm">لا توجد تقييمات لهذا الموسم</div>
+                  </div>
+                : <>
+                    {/* Summary scores */}
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        ['نقاط القوة', strengthAvg !== null ? fmtScore(strengthAvg) : '—', 'text-emerald-600', 'bg-emerald-50'],
+                        ['مؤشرات التطوير', devAvg !== null ? fmtScore(devAvg) : '—', 'text-amber-600', 'bg-amber-50'],
+                        ['المتوسط العام', overallAvg !== null ? fmtScore(overallAvg) : '—', 'text-brand-600', 'bg-brand-50'],
+                        ['معدل التحسن', improvRate !== null ? (improvRate > 0 ? `+${fmtScore(improvRate)}` : fmtScore(improvRate)) : '—',
+                          improvRate !== null && improvRate > 0 ? 'text-emerald-600' : 'text-slate-500', 'bg-slate-50'],
+                      ] as [string, string, string, string][]).map(([l, v, tc, bg]) => (
+                        <div key={l} className={`${bg} rounded-xl p-3 text-center`}>
+                          <div className={`text-xl font-extrabold ${tc}`}>{v}</div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">{l}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Strengths */}
+                    {strengths.length > 0 && (
+                      <div>
+                        <div className="text-xs font-extrabold text-slate-400 uppercase tracking-widest px-1 mb-2">نقاط القوة ({strengths.length})</div>
+                        <div className="space-y-2">
+                          {strengths.map((ind: any) => {
+                            const diff = ind.current_score - ind.start_score
+                            const spark = buildIndicatorSparkline(ind)
+                            return (
+                              <div key={ind.id} className="card mb-0 p-3">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-10 h-10 rounded-full border-2 flex items-center justify-center font-extrabold text-sm flex-shrink-0
+                                    ${ind.current_score >= 8 ? 'bg-emerald-100 text-emerald-700 border-emerald-300'
+                                    : ind.current_score >= 6 ? 'bg-blue-100 text-blue-700 border-blue-300'
+                                    : ind.current_score >= 4 ? 'bg-yellow-100 text-yellow-700 border-yellow-300'
+                                    : 'bg-red-50 text-red-600 border-red-200'}`}>
+                                    {ind.current_score}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="font-bold text-sm text-slate-800 truncate">{ind.indicator_name}</div>
+                                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${CATEGORY_COLORS[ind.category as keyof typeof CATEGORY_COLORS] || 'bg-slate-100 text-slate-600'}`}>
+                                        {CATEGORY_LABELS[ind.category as keyof typeof CATEGORY_LABELS] || ind.category}
+                                      </span>
+                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${getStatusColorClass(diff)}`}>
+                                        {diff > 0 ? `+${diff}` : diff < 0 ? `${diff}` : '='} {getStatusLabel(diff)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  {spark.length >= 2 && (() => {
+                                    const last = spark[spark.length - 1], prev = spark[spark.length - 2]
+                                    const color = last > prev ? '#10b981' : last < prev ? '#ef4444' : '#94a3b8'
+                                    const min = Math.min(...spark), max = Math.max(...spark), range = max - min || 1
+                                    const W = 50, H = 20, pad = 2
+                                    const rtl = [...spark].reverse()
+                                    const pts = rtl.map((v: number, i: number) => {
+                                      const x = pad + (i / (rtl.length - 1)) * (W - pad * 2)
+                                      const y = H - pad - ((v - min) / range) * (H - pad * 2)
+                                      return `${x},${y}`
+                                    }).join(' ')
+                                    return (
+                                      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="flex-shrink-0">
+                                        <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                                      </svg>
+                                    )
+                                  })()}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Development indicators */}
+                    {developments.length > 0 && (
+                      <div>
+                        <div className="text-xs font-extrabold text-slate-400 uppercase tracking-widest px-1 mb-2">مؤشرات التطوير ({developments.length})</div>
+                        <div className="space-y-2">
+                          {developments.map((ind: any) => {
+                            const diff = ind.current_score - ind.start_score
+                            const spark = buildIndicatorSparkline(ind)
+                            return (
+                              <div key={ind.id} className="card mb-0 p-3">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-10 h-10 rounded-full border-2 flex items-center justify-center font-extrabold text-sm flex-shrink-0
+                                    ${ind.current_score >= 8 ? 'bg-emerald-100 text-emerald-700 border-emerald-300'
+                                    : ind.current_score >= 6 ? 'bg-blue-100 text-blue-700 border-blue-300'
+                                    : ind.current_score >= 4 ? 'bg-yellow-100 text-yellow-700 border-yellow-300'
+                                    : 'bg-red-50 text-red-600 border-red-200'}`}>
+                                    {ind.current_score}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="font-bold text-sm text-slate-800 truncate">{ind.indicator_name}</div>
+                                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${CATEGORY_COLORS[ind.category as keyof typeof CATEGORY_COLORS] || 'bg-slate-100 text-slate-600'}`}>
+                                        {CATEGORY_LABELS[ind.category as keyof typeof CATEGORY_LABELS] || ind.category}
+                                      </span>
+                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${getStatusColorClass(diff)}`}>
+                                        {diff > 0 ? `+${diff}` : diff < 0 ? `${diff}` : '='} {getStatusLabel(diff)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  {spark.length >= 2 && (() => {
+                                    const last = spark[spark.length - 1], prev = spark[spark.length - 2]
+                                    const color = last > prev ? '#10b981' : last < prev ? '#ef4444' : '#94a3b8'
+                                    const min = Math.min(...spark), max = Math.max(...spark), range = max - min || 1
+                                    const W = 50, H = 20, pad = 2
+                                    const rtl = [...spark].reverse()
+                                    const pts = rtl.map((v: number, i: number) => {
+                                      const x = pad + (i / (rtl.length - 1)) * (W - pad * 2)
+                                      const y = H - pad - ((v - min) / range) * (H - pad * 2)
+                                      return `${x},${y}`
+                                    }).join(' ')
+                                    return (
+                                      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="flex-shrink-0">
+                                        <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                                      </svg>
+                                    )
+                                  })()}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </>
+              }
             </div>
           )
         })()}

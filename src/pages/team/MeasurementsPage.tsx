@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
-import { Ruler, Plus, ChevronUp, ChevronDown, X, Dumbbell, CheckCircle, ChevronLeft, ChevronRight, Pencil, Trash2, AlertTriangle } from 'lucide-react'
+import { Ruler, Plus, ChevronUp, ChevronDown, X, Dumbbell, CheckCircle, ChevronLeft, ChevronRight, Pencil, Trash2, AlertTriangle, BarChart2 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { measurementService } from '../../services'
 import FitnessPage from './FitnessPage'
+import TechnicalEvalPage from './TechnicalEvalPage'
 import { Avatar } from '../../components/ui'
 import { canManageEvents } from '../../utils/helpers'
 import {
@@ -1103,7 +1104,7 @@ export default function MeasurementsPage() {
   const { teamId } = useParams<{ teamId: string }>()
   const { user } = useAuth()
   const [myRole, setMyRole] = useState('')
-  const [tab, setTab] = useState<'basic' | 'fitness'>('basic')
+  const [tab, setTab] = useState<'basic' | 'fitness' | 'technical'>('basic')
   const [playerData, setPlayerData] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [showAddModal, setShowAddModal] = useState(false)
@@ -1225,6 +1226,7 @@ export default function MeasurementsPage() {
         {[
           { key: 'basic', label: 'القياسات الأساسية', icon: Ruler },
           { key: 'fitness', label: 'القياسات اللياقية', icon: Dumbbell },
+          { key: 'technical', label: 'التقييمات الفنية والتكتيكية', icon: BarChart2 },
         ].map(({ key, label, icon: Icon }) => (
           <button key={key} onClick={() => setTab(key as any)}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
@@ -1234,6 +1236,9 @@ export default function MeasurementsPage() {
           </button>
         ))}
       </div>
+
+      {/* Technical Evaluations tab */}
+      {tab === 'technical' && <TechnicalEvalPage/>}
 
       {/* Fitness tab */}
       {tab === 'fitness' && <FitnessPage addTrigger={fitnessAddTrigger}/>}

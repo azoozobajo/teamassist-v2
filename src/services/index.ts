@@ -1686,6 +1686,279 @@ export const regulationsService = {
   },
 }
 
+// ── TECHNICAL EVALUATIONS ─────────────────────────────────────────────
+export const technicalEvalService = {
+  async getSettings(teamId: string) {
+    const { data } = await supabase
+      .from('team_evaluation_settings')
+      .select('*')
+      .eq('team_id', teamId)
+      .maybeSingle()
+    if (!data) {
+      return {
+        show_overall_score: true,
+        show_strength_average: true,
+        show_development_average: true,
+        minimum_indicators_for_overall_score: 5,
+        require_note_for_score: true,
+        require_evidence_for_indicator: true,
+        allow_coach_to_hide_overall_score: true,
+      }
+    }
+    return data
+  },
+
+  async saveSettings(teamId: string, settings: any, userId: string) {
+    const { data: existing } = await supabase
+      .from('team_evaluation_settings')
+      .select('id')
+      .eq('team_id', teamId)
+      .maybeSingle()
+    if (existing) {
+      return supabase
+        .from('team_evaluation_settings')
+        .update({ ...settings, updated_by: userId, updated_at: new Date().toISOString() })
+        .eq('team_id', teamId)
+    } else {
+      return supabase
+        .from('team_evaluation_settings')
+        .insert({ team_id: teamId, ...settings, updated_by: userId })
+    }
+  },
+
+  async getPlayersForTeam(teamId: string) {
+    const { data } = await supabase
+      .from('team_members')
+      .select('user_id, role, profile:profiles!user_id(id, full_name, avatar_url, date_of_birth)')
+      .eq('team_id', teamId)
+      .eq('status', 'active')
+      .is('removed_at', null)
+      .eq('role', 'player')
+    return (data ?? []).map((m: any) => ({
+      ...(m.profile as any),
+      role: m.role,
+    }))
+  },
+
+  async getAllTeamIndicatorSummaries(teamId: string, season: string) {
+    const { data } = await supabase
+      .from('player_development_indicators')
+      .select('id, player_id, indicator_type, current_score, start_score, created_at')
+      .eq('team_id', teamId)
+      .eq('season', season)
+      .is('deleted_at', null)
+    return data ?? []
+  },
+
+  async getPlayerIndicators(teamId: string, playerId: string, season: string) {
+    const { data } = await supabase
+      .from('player_development_indicators')
+      .select('*, reviews:player_indicator_reviews(id, review_date, review_type, score, note, evidence, next_action, reviewed_by, created_at, deleted_at, deleted_by, delete_reason)')
+      .eq('team_id', teamId)
+      .eq('player_id', playerId)
+      .eq('season', season)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true })
+    return data ?? []
+  },
+
+  async addIndicator(record: any, userId: string) {
+    const { data, error } = await supabase
+      .from('player_development_indicators')
+      .insert({ ...record, created_by: userId })
+      .select()
+      .single()
+    if (!error && data) {
+      await supabase.from('player_indicator_audit_logs').insert({
+        indicator_id: data.id,
+        team_id: record.team_id,
+        player_id: record.player_id,
+        action: 'create_indicator',
+        new_values: record,
+        changed_by: userId,
+      })
+    }
+    return { data, error }
+  },
+
+  async updateIndicator(id: string, teamId: string, playerId: string, updates: any, reason: string, userId: string) {
+    const { data: old } = await supabase
+      .from('player_development_indicators')
+      .select('*')
+      .eq('id', id)
+      .single()
+    const { data, error } = await supabase
+      .from('player_development_indicators')
+      .update({ ...updates, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single()
+    if (!error) {
+      await supabase.from('player_indicator_audit_logs').insert({
+        indicator_id: id,
+        team_id: teamId,
+        player_id: playerId,
+        action: 'update_indicator',
+        old_values: old,
+        new_values: updates,
+        reason,
+        changed_by: userId,
+      })
+    }
+    return { data, error }
+  },
+
+  async softDeleteIndicator(id: string, teamId: string, playerId: string, reason: string, userId: string) {
+    const { data: old } = await supabase
+      .from('player_development_indicators')
+      .select('*')
+      .eq('id', id)
+      .single()
+    const { error } = await supabase
+      .from('player_development_indicators')
+      .update({ deleted_at: new Date().toISOString(), deleted_by: userId, delete_reason: reason })
+      .eq('id', id)
+    if (!error) {
+      await supabase.from('player_indicator_audit_logs').insert({
+        indicator_id: id,
+        team_id: teamId,
+        player_id: playerId,
+        action: 'delete_indicator',
+        old_values: old,
+        reason,
+        changed_by: userId,
+      })
+    }
+    return { error }
+  },
+
+  async addReview(record: any, userId: string) {
+    const { data, error } = await supabase
+      .from('player_indicator_reviews')
+      .insert({ ...record, reviewed_by: userId })
+      .select()
+      .single()
+    if (!error && data) {
+      await supabase
+        .from('player_development_indicators')
+        .update({ current_score: record.score, updated_at: new Date().toISOString() })
+        .eq('id', record.indicator_id)
+      await supabase.from('player_indicator_audit_logs').insert({
+        indicator_id: record.indicator_id,
+        review_id: data.id,
+        team_id: record.team_id,
+        player_id: record.player_id,
+        action: 'add_review',
+        new_values: record,
+        changed_by: userId,
+      })
+    }
+    return { data, error }
+  },
+
+  async updateReview(reviewId: string, indicatorId: string, teamId: string, playerId: string, updates: any, reason: string, userId: string) {
+    const { data: old } = await supabase
+      .from('player_indicator_reviews')
+      .select('*')
+      .eq('id', reviewId)
+      .single()
+    const { data, error } = await supabase
+      .from('player_indicator_reviews')
+      .update({ ...updates, updated_at: new Date().toISOString() })
+      .eq('id', reviewId)
+      .select()
+      .single()
+    if (!error) {
+      await technicalEvalService.recalculateCurrentScore(indicatorId)
+      await supabase.from('player_indicator_audit_logs').insert({
+        indicator_id: indicatorId,
+        review_id: reviewId,
+        team_id: teamId,
+        player_id: playerId,
+        action: 'update_review',
+        old_values: old,
+        new_values: updates,
+        reason,
+        changed_by: userId,
+      })
+    }
+    return { data, error }
+  },
+
+  async softDeleteReview(reviewId: string, indicatorId: string, teamId: string, playerId: string, reason: string, userId: string) {
+    const { data: old } = await supabase
+      .from('player_indicator_reviews')
+      .select('*')
+      .eq('id', reviewId)
+      .single()
+    const { error } = await supabase
+      .from('player_indicator_reviews')
+      .update({ deleted_at: new Date().toISOString(), deleted_by: userId, delete_reason: reason })
+      .eq('id', reviewId)
+    if (!error) {
+      await technicalEvalService.recalculateCurrentScore(indicatorId)
+      await supabase.from('player_indicator_audit_logs').insert({
+        indicator_id: indicatorId,
+        review_id: reviewId,
+        team_id: teamId,
+        player_id: playerId,
+        action: 'delete_review',
+        old_values: old,
+        reason,
+        changed_by: userId,
+      })
+    }
+    return { error }
+  },
+
+  async getTeamCustomIndicators(teamId: string) {
+    const { data } = await supabase
+      .from('player_development_indicators')
+      .select('indicator_name, category')
+      .eq('team_id', teamId)
+      .eq('custom_indicator', true)
+      .is('deleted_at', null)
+    if (!data) return []
+    const seen = new Set<string>()
+    return (data as any[]).filter(i => {
+      if (seen.has(i.indicator_name)) return false
+      seen.add(i.indicator_name)
+      return true
+    })
+  },
+
+  async getTeamAllIndicatorsForComparison(teamId: string, season: string) {
+    const { data } = await supabase
+      .from('player_development_indicators')
+      .select('id, player_id, indicator_name, indicator_type, category, custom_indicator, start_score, current_score, reviews:player_indicator_reviews(id, score, review_date, created_at, deleted_at)')
+      .eq('team_id', teamId)
+      .eq('season', season)
+      .is('deleted_at', null)
+      .order('indicator_name')
+    return data ?? []
+  },
+
+  async recalculateCurrentScore(indicatorId: string) {
+    const { data: indicator } = await supabase
+      .from('player_development_indicators')
+      .select('start_score')
+      .eq('id', indicatorId)
+      .single()
+    const { data: reviews } = await supabase
+      .from('player_indicator_reviews')
+      .select('score, created_at')
+      .eq('indicator_id', indicatorId)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+    const latestScore = reviews?.[0]?.score ?? indicator?.start_score ?? 1
+    await supabase
+      .from('player_development_indicators')
+      .update({ current_score: latestScore, updated_at: new Date().toISOString() })
+      .eq('id', indicatorId)
+  },
+}
+
 // ── REWARDS ────────────────────────────────────────────────────────────
 export const rewardService = {
   async getAll(teamId: string) {

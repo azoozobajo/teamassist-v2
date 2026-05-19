@@ -5,6 +5,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { matchService, matchStatsService, teamService, tournamentService } from '../../services'
 import { Spinner, PageHeader, Modal, FormField, Tabs, EmptyState, ConfirmDialog } from '../../components/ui'
 import { canManageEvents, formatDate } from '../../utils/helpers'
+import { getPrimaryPosition } from '../../components/sports/PositionBadges'
 
 const HOME_AWAY: Record<string, string> = { home: 'ملعبنا', away: 'ملعب الخصم', neutral: 'ملعب محايد' }
 const LEG_LABEL: Record<string, string> = { home: 'ذهاب', away: 'إياب', none: 'بدون' }
@@ -12,7 +13,7 @@ const STATUS_STYLE: Record<string, string> = { upcoming: 'bg-blue-100 text-blue-
 const STATUS_LABEL: Record<string, string> = { upcoming: 'قادمة', live: '🔴 مباشرة', finished: 'منتهية', cancelled: 'ملغاة' }
 const SYSTEM_LABEL: Record<string, string> = { league: 'دوري', groups: 'مجموعات', cup: 'كأس' }
 
-type SortKey = 'name' | 'matches' | 'starter' | 'sub' | 'minutes' | 'goals' | 'assists' | 'yellow' | 'red' | 'cleanSheets'
+type SortKey = 'name' | 'squad' | 'played' | 'starter' | 'sub' | 'minutes' | 'goals' | 'assists' | 'yellow' | 'red' | 'cleanSheets'
 
 const emptyForm = {
   opponent: '', match_date: '', map_url: '', location: '',
@@ -279,7 +280,8 @@ export default function MatchesPage() {
       if (!playerMap[uid]) {
         const member = members.find(m => m.user_id === uid)
         const name = member?.profile?.full_name || 'لاعب'
-        playerMap[uid] = { id: uid, name, matches: 0, starter: 0, sub: 0, minutes: 0, goals: 0, assists: 0, yellow: 0, red: 0, cleanSheets: 0 }
+        const position = getPrimaryPosition(member) || ''
+        playerMap[uid] = { id: uid, name, position, squad: 0, played: 0, starter: 0, sub: 0, minutes: 0, goals: 0, assists: 0, yellow: 0, red: 0, cleanSheets: 0 }
       }
       return playerMap[uid]
     }
@@ -292,9 +294,10 @@ export default function MatchesPage() {
       for (const p of players) {
         if (!p.user_id || p.role === 'excluded') continue
         const ps = ensure(p.user_id)
-        ps.matches++
+        ps.squad++
         if (p.role === 'starter') {
           ps.starter++
+          ps.played++
           if (subOuts.has(p.user_id)) {
             const subEvt = subIns.find((e: any) => e.player_out_id === p.user_id)
             ps.minutes += subEvt?.minute || 90
@@ -302,9 +305,12 @@ export default function MatchesPage() {
             ps.minutes += 90
           }
         } else if (p.role === 'sub') {
-          ps.sub++
           const subEvt = subIns.find((e: any) => e.player_id === p.user_id)
-          ps.minutes += subEvt ? (90 - (subEvt.minute || 0)) : 0
+          if (subEvt) {
+            ps.sub++
+            ps.played++
+            ps.minutes += 90 - (subEvt.minute || 0)
+          }
         }
       }
     }
@@ -347,7 +353,8 @@ export default function MatchesPage() {
   }
 
   const statCols: [SortKey, string][] = [
-    ['name', 'اللاعب'], ['matches', 'م'], ['starter', 'أساسي'], ['sub', 'بديل'],
+    ['name', 'اللاعب'], ['squad', 'القائمة'], ['played', 'لعب'],
+    ['starter', 'أساسي'], ['sub', 'احتياطي'],
     ['minutes', '⏱'], ['goals', '⚽'],
     ['assists', '👟'], ['yellow', '🟡'], ['red', '🔴'], ['cleanSheets', '🥅']
   ]
@@ -628,8 +635,15 @@ export default function MatchesPage() {
                 <tbody>
                   {sortedStats.map((p, i) => (
                     <tr key={p.id} className={`border-b border-slate-50 ${i % 2 === 1 ? 'bg-slate-50/50' : ''} hover:bg-blue-50/30 transition-colors`}>
-                      <td className="px-2 py-2 font-medium text-right whitespace-nowrap">{p.name}</td>
-                      <td className="px-2 py-2 text-center text-slate-600">{p.matches}</td>
+                      <td className="px-2 py-2 text-right whitespace-nowrap">
+                        <span className="font-medium">{p.name}</span>
+                        {p.position === 'حارس مرمى' && <span className="mr-1" title="حارس مرمى">🧤</span>}
+                        {p.position && (
+                          <div className="text-[10px] text-slate-400 leading-tight mt-0.5">{p.position}</div>
+                        )}
+                      </td>
+                      <td className="px-2 py-2 text-center text-slate-400">{p.squad}</td>
+                      <td className="px-2 py-2 text-center font-semibold text-slate-700">{p.played}</td>
                       <td className="px-2 py-2 text-center text-slate-600">{p.starter}</td>
                       <td className="px-2 py-2 text-center text-slate-600">{p.sub}</td>
                       <td className="px-2 py-2 text-center text-slate-600">{p.minutes}</td>
