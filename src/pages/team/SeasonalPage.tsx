@@ -68,8 +68,10 @@ export default function SeasonalPage() {
       const present = myAtt.filter((a: any) => a.status === 'present').length
       const late = myAtt.filter((a: any) => a.status === 'late').length
       const absent = myAtt.filter((a: any) => a.status === 'absent').length
+      const excused = myAtt.filter((a: any) => a.status === 'excused').length
       const total = eventsInRange.length
-      const attPct = total ? Math.round((present + late) / total * 100) : 0
+      const effectiveTotal = Math.max(total - excused, 0)
+      const attPct = effectiveTotal ? Math.round((present + late) / effectiveTotal * 100) : (total > 0 ? 100 : 0)
 
       // Points
       const myPts = history.filter((p: any) => p.user_id === m.user_id).reduce((s: number, p: any) => s + p.points, 0)

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2, Tag, CalendarDays } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { eventService, teamService, notificationService, calendarMarkerService, matchService } from '../../services'
+import { eventService, teamService, notificationService, calendarMarkerService, matchService, attendanceService } from '../../services'
 import { Spinner, PageHeader, EmptyState, Modal, FormField, Tabs, AttendanceButton } from '../../components/ui'
 import { EVENT_CONFIG, WEEK_DAYS, canManageEvents, formatDate, isEventLocked } from '../../utils/helpers'
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay } from 'date-fns'
@@ -166,9 +166,10 @@ export default function EventsPage() {
     if (!user || !teamId) return
     const prev = detailAtts[eventId] ?? ''
     setDetailAtts(p => ({ ...p, [eventId]: status }))
-    const { error } = await eventService.setAttendance({
-      event_id: eventId, team_id: teamId, user_id: user.id, status
-    })
+    const { error } = await attendanceService.markSelf(
+      teamId, eventId, user.id,
+      status as 'present' | 'late' | 'absent',
+    )
     if (error) setDetailAtts(p => ({ ...p, [eventId]: prev }))
   }
 
@@ -685,6 +686,7 @@ export default function EventsPage() {
                 <AttendanceButton
                   status={detailAtts[e.id] ?? ''}
                   locked={isEventLocked(e.start_datetime)}
+                  hideUncertain
                   onSelect={s => setDetailAtt(e.id, s)}
                 />
               </div>

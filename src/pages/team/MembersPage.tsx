@@ -43,6 +43,12 @@ export default function MembersPage() {
   const [editRole, setEditRole] = useState('')
   const [editPrimaryPosition, setEditPrimaryPosition] = useState('')
   const [editSecondaryPositions, setEditSecondaryPositions] = useState<string[]>([])
+  const [editPreferredFoot, setEditPreferredFoot] = useState('')
+  const [editJerseyNumber, setEditJerseyNumber] = useState('')
+  const [jerseyError, setJerseyError] = useState('')
+  const [editGuardianName, setEditGuardianName] = useState('')
+  const [editGuardianPhone, setEditGuardianPhone] = useState('')
+  const [editHomeAddress, setEditHomeAddress] = useState('')
   const [editLinkedPlayers, setEditLinkedPlayers] = useState<string[]>([]) // for parents
   const [editPerms, setEditPerms] = useState<string[]>([]) // for permissions tab in modal
   const [editSection, setEditSection] = useState<'info' | 'perms'>('info')
@@ -113,6 +119,12 @@ export default function MembersPage() {
     setEditRole(m.role)
     setEditPrimaryPosition(getPrimaryPosition(m))
     setEditSecondaryPositions(getSecondaryPositions(m))
+    setEditPreferredFoot(m.preferred_foot || '')
+    setEditJerseyNumber(m.jersey_number ? String(m.jersey_number) : '')
+    setJerseyError('')
+    setEditGuardianName(m.guardian_name || '')
+    setEditGuardianPhone(m.guardian_phone || '')
+    setEditHomeAddress(m.home_address || '')
     setEditSection('info')
     setEditSaved(false)
     // Linked players (for parents)
@@ -129,12 +141,34 @@ export default function MembersPage() {
   // ── Save edit modal ──
   async function saveEdit() {
     if (!editMember || !teamId || !user) return
+
+    // Jersey uniqueness validation
+    const jerseyNum = editJerseyNumber ? parseInt(editJerseyNumber) : null
+    if (jerseyNum) {
+      const taken = members.find(m => m.id !== editMember.id && m.jersey_number === jerseyNum)
+      if (taken) {
+        setJerseyError(`الرقم ${jerseyNum} محجوز للاعب ${taken.profile?.full_name || ''}`)
+        return
+      }
+    }
+
     setEditSaving(true)
     const tasks: Promise<any>[] = []
-    // Role + position
+    // Role + position + preferred foot + jersey number
     if (editRole !== editMember.role) tasks.push(teamService.updateMemberRole(editMember.id, editRole))
     const cleanSecondary = editSecondaryPositions.filter(p => p && p !== editPrimaryPosition).slice(0, 3)
-    tasks.push(teamService.updateMemberPositions(editMember.id, editPrimaryPosition || null, cleanSecondary))
+    tasks.push(teamService.updateMemberPositions(editMember.id, editPrimaryPosition || null, cleanSecondary, {
+      preferred_foot: editPreferredFoot || null,
+      jersey_number: jerseyNum,
+    }))
+    // Admin-only contact info (player role only)
+    if (editRole === 'player') {
+      tasks.push(teamService.updateMemberContactInfo(editMember.id, {
+        guardian_name: editGuardianName || null,
+        guardian_phone: editGuardianPhone || null,
+        home_address: editHomeAddress || null,
+      }))
+    }
     // Linked players for parents
     if (editRole === 'parent') {
       const existingDM = (allPerms[editMember.user_id] || []).filter(p => p.startsWith('parent_dm:'))
@@ -164,6 +198,11 @@ export default function MembersPage() {
       primary_position: editPrimaryPosition || null,
       secondary_positions: cleanSecondary,
       position_label: editPrimaryPosition || null,
+      preferred_foot: editPreferredFoot || null,
+      jersey_number: jerseyNum,
+      guardian_name: editGuardianName || null,
+      guardian_phone: editGuardianPhone || null,
+      home_address: editHomeAddress || null,
     } : x))
     setEditSaving(false); setEditSaved(true)
     setTimeout(() => { setEditMember(null); setEditSaved(false) }, 800)
@@ -643,10 +682,77 @@ export default function MembersPage() {
                           )
                         })}
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-2">
-                        المركز الأساسي يظهر كشارة أكبر، والمراكز الثانوية تظهر كشارات بلون مختلف بجواره.
-                      </p>
                     </FormField>
+
+                    <FormField label="القدم المفضلة">
+                      <div className="flex gap-2">
+                        {[{ val: 'يمين', label: 'اليمنى' }, { val: 'يسار', label: 'اليسرى' }].map(({ val, label }) => (
+                          <button key={val} type="button"
+                            onClick={() => { setEditPreferredFoot(prev => prev === val ? '' : val); setEditSaved(false) }}
+                            className={`flex-1 p-2 rounded-xl border text-xs font-bold transition-all ${
+                              editPreferredFoot === val
+                                ? 'bg-sky-500 text-white border-sky-500'
+                                : 'border-slate-200 hover:bg-slate-50'
+                            }`}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </FormField>
+
+                    <FormField label="رقم القميص">
+                      <input type="number" min="1" max="99"
+                        value={editJerseyNumber}
+                        onChange={e => { setEditJerseyNumber(e.target.value); setJerseyError(''); setEditSaved(false) }}
+                        className={`form-input ${jerseyError ? 'border-red-400 focus:border-red-400' : ''}`}
+                        placeholder="رقم القميص (1–99)"
+                      />
+                      {jerseyError && <p className="text-red-500 text-[11px] mt-1">{jerseyError}</p>}
+                    </FormField>
+
+                    {canManageTeam(myRole) && (
+                      <div className="border-t border-slate-100 pt-3 mt-1 space-y-3">
+                        <div className="text-xs font-bold text-slate-500 flex items-center gap-1.5">
+                          <Shield size={11}/> معلومات خاصة — مرئية للإدارة فقط
+                        </div>
+
+                        {/* Read-only: from player's own profile */}
+                        {(editMember?.profile?.phone || editMember?.profile?.email) && (
+                          <div className="bg-slate-50 rounded-xl p-3 space-y-1.5">
+                            <div className="text-[10px] font-bold text-slate-400 mb-1">بيانات اتصال اللاعب (يدخلها بنفسه)</div>
+                            {editMember.profile.phone && (
+                              <div className="flex items-center gap-2 text-xs text-slate-600">
+                                <span className="text-slate-400">جوال:</span>
+                                <span className="font-bold" dir="ltr">{editMember.profile.phone}</span>
+                              </div>
+                            )}
+                            {editMember.profile.email && (
+                              <div className="flex items-center gap-2 text-xs text-slate-600">
+                                <span className="text-slate-400">إيميل:</span>
+                                <span className="font-bold" dir="ltr">{editMember.profile.email}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Editable: admin-only fields */}
+                        <FormField label="اسم ولي الأمر">
+                          <input type="text" value={editGuardianName}
+                            onChange={e => { setEditGuardianName(e.target.value); setEditSaved(false) }}
+                            className="form-input" placeholder="الاسم الكامل"/>
+                        </FormField>
+                        <FormField label="جوال ولي الأمر">
+                          <input type="tel" value={editGuardianPhone}
+                            onChange={e => { setEditGuardianPhone(e.target.value); setEditSaved(false) }}
+                            className="form-input" placeholder="05XXXXXXXX"/>
+                        </FormField>
+                        <FormField label="عنوان السكن">
+                          <input type="text" value={editHomeAddress}
+                            onChange={e => { setEditHomeAddress(e.target.value); setEditSaved(false) }}
+                            className="form-input" placeholder="المدينة، الحي، الشارع"/>
+                        </FormField>
+                      </div>
+                    )}
                   </>
                 )}
 

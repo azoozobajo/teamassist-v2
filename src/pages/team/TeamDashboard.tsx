@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, eventService, leaveService, monthlyStarService, permissionService } from '../../services'
+import { teamService, eventService, leaveService, monthlyStarService, permissionService, attendanceService } from '../../services'
 import { Spinner, AttendanceButton, Modal, FormField } from '../../components/ui'
 import { formatDate, EVENT_CONFIG, canManageTeam, canManageEvents, isEventLocked, ROLE_LABELS } from '../../utils/helpers'
 import { Copy, CheckCircle, Users, Calendar, Umbrella, ChevronLeft, ChevronRight, TrendingUp, Swords, Star, ClipboardList } from 'lucide-react'
@@ -78,25 +78,18 @@ export default function TeamDashboard() {
       const myWeekEvs = (we as any[]).filter(isVisible)
 
       // Auto-set attendance only for user's 7-day events
+      // بناء map الحضور من السجلات الموجودة فقط — بدون تسجيل تلقائي
       const attMap: Record<string, string> = {}
       ;(myAttRecords as any[]).forEach((a: any) => { attMap[a.event_id] = a.status })
-
-      const noAtt = myWeekEvs.filter((ev: any) => !attMap[ev.id])
-      if (noAtt.length > 0) {
-        noAtt.forEach((ev: any) => { attMap[ev.id] = 'present' })
-        noAtt.forEach((ev: any) => {
-          eventService.setAttendance({ event_id: ev.id, team_id: teamId, user_id: user!.id, status: 'present' })
-        })
-      }
       setWeekAtts(attMap)
 
       if (myWeekEvs.length) {
         setNextEvent(myWeekEvs[0])
         eventService.getAttendance(myWeekEvs[0].id).then(att => {
           setAttStats({
-            present:   att.filter((a: any) => a.status === 'present').length,
+            present:   att.filter((a: any) => a.status === 'present' || a.status === 'late').length,
             absent:    att.filter((a: any) => a.status === 'absent').length,
-            uncertain: att.filter((a: any) => a.status === 'uncertain').length,
+            uncertain: att.filter((a: any) => a.status === 'excused').length, // نعيد استخدام الحقل لـ "بعذر"
             late:      att.filter((a: any) => a.status === 'late').length,
             total:     att.length,
           })
@@ -137,9 +130,10 @@ export default function TeamDashboard() {
     if (!user || !teamId) return
     const prev = weekAtts[eventId] ?? ''
     setWeekAtts(p => ({ ...p, [eventId]: status }))
-    const { error } = await eventService.setAttendance({
-      event_id: eventId, team_id: teamId, user_id: user.id, status
-    })
+    const { error } = await attendanceService.markSelf(
+      teamId, eventId, user.id,
+      status as 'present' | 'late' | 'absent',
+    )
     if (error) setWeekAtts(p => ({ ...p, [eventId]: prev }))
   }
 
@@ -420,10 +414,10 @@ export default function TeamDashboard() {
               {isFirstEv && attStats.total > 0 && (
                 <div className="grid grid-cols-4 gap-2 mb-3">
                   {[
-                    { label: 'غائب',      val: attStats.absent,    bg: 'bg-red-50',     color: 'text-red-500',     border: 'border-red-100'     },
-                    { label: 'غير متأكد', val: attStats.uncertain, bg: 'bg-amber-50',   color: 'text-amber-600',   border: 'border-amber-100'   },
-                    { label: 'متأخر',     val: attStats.late,      bg: 'bg-orange-50',  color: 'text-orange-500',  border: 'border-orange-100'  },
-                    { label: 'حاضر',      val: attStats.present,   bg: 'bg-emerald-50', color: 'text-emerald-600', border: 'border-emerald-100' },
+                    { label: 'حاضر',    val: attStats.present,   bg: 'bg-emerald-50', color: 'text-emerald-600', border: 'border-emerald-100' },
+                    { label: 'متأخر',   val: attStats.late,      bg: 'bg-orange-50',  color: 'text-orange-500',  border: 'border-orange-100'  },
+                    { label: 'بعذر',    val: attStats.uncertain, bg: 'bg-blue-50',    color: 'text-blue-600',    border: 'border-blue-100'    },
+                    { label: 'غائب',    val: attStats.absent,    bg: 'bg-red-50',     color: 'text-red-500',     border: 'border-red-100'     },
                   ].map(s => (
                     <div key={s.label} className={`${s.bg} border ${s.border} rounded-2xl p-2.5 text-center`}>
                       <div className={`text-xl font-extrabold leading-none ${s.color}`}>{s.val}</div>
@@ -439,6 +433,7 @@ export default function TeamDashboard() {
                 <AttendanceButton
                   status={weekAtts[curEv.id] ?? ''}
                   locked={curLocked}
+                  hideUncertain
                   onSelect={s => setAttendance(curEv.id, s)}
                 />
               </div>

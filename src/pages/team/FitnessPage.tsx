@@ -1021,9 +1021,7 @@ export default function FitnessPage({ addTrigger }: { addTrigger?: number }) {
     try {
       const { teamService } = await import('../../services')
       const members = await teamService.getMembers(teamId)
-      const relevant = members.filter((m: any) =>
-        ['player', 'head_coach', 'assistant_coach', 'medical'].includes(m.role)
-      )
+      const relevant = members.filter((m: any) => m.role === 'player')
       const playerIds = relevant.map((m: any) => m.user_id)
       let allResults: any[] = []
       if (playerIds.length > 0) {

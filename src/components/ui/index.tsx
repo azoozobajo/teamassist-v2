@@ -276,8 +276,8 @@ export function ConfirmDialog({ open, title, message, onConfirm, onCancel, dange
 }
 
 // ── AttendanceButton ───────────────────────────────────────────────────
-export function AttendanceButton({ status, onSelect, locked, compact, includeExcused }: {
-  status: string; onSelect: (s: string) => void; locked?: boolean; compact?: boolean; includeExcused?: boolean
+export function AttendanceButton({ status, onSelect, locked, compact, includeExcused, hideUncertain }: {
+  status: string; onSelect: (s: string) => void; locked?: boolean; compact?: boolean; includeExcused?: boolean; hideUncertain?: boolean
 }) {
   const baseOptions = [
     {
@@ -318,7 +318,8 @@ export function AttendanceButton({ status, onSelect, locked, compact, includeExc
     idleCls:   'bg-white border-2 border-slate-300 text-slate-600 hover:bg-slate-50',
   }
 
-  const options = includeExcused ? [...baseOptions, excusedOption] : baseOptions
+  const filteredBase = hideUncertain ? baseOptions.filter(o => o.key !== 'uncertain') : baseOptions
+  const options = includeExcused ? [...filteredBase, excusedOption] : filteredBase
 
   if (compact) {
     return (

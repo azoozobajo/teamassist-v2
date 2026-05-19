@@ -1,10 +1,11 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowRight, Edit2, Trash2, Save, Calendar, MapPin, Users } from 'lucide-react'
+import { ArrowRight, Edit2, Trash2, Save, Calendar, MapPin, Users, ChevronDown } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { matchService, matchLineupService, matchEventsService, matchNotesService, medicalService, teamService, eventService, tournamentService } from '../../services'
+import { matchService, matchLineupService, matchEventsService, matchNotesService, medicalService, teamService, eventService, tournamentService, leaveService, adminDecisionService, matchStatsService, attendanceService, notificationService } from '../../services'
 import { Spinner, FormField, Tabs, ConfirmDialog } from '../../components/ui'
 import { canManageEvents, formatDate } from '../../utils/helpers'
+import { getPrimaryPosition, getSecondaryPositions } from '../../components/sports/PositionBadges'
 import type { FootballFormation, LineupPlayer, MatchEventType } from '../../types/database'
 
 // ── Formation definitions ──────────────────────────────────────────────
@@ -100,6 +101,14 @@ const FORMATIONS: Record<FootballFormation, PitchPos[]> = {
 
 const ALL_FORMATIONS = Object.keys(FORMATIONS) as FootballFormation[]
 
+function getPositionGroup(pos: string): string {
+  if (!pos) return 'أخرى'
+  if (pos === 'حارس مرمى') return 'حارس'
+  if (['ظهير أيمن', 'ظهير أيسر', 'قلب دفاع', 'ليبرو'].includes(pos)) return 'دفاع'
+  if (['محور دفاعي', 'محور', 'وسط أيمن', 'وسط أيسر', 'وسط هجومي', 'صانع لعب'].includes(pos)) return 'وسط'
+  return 'هجوم'
+}
+
 const EVENT_TYPE_CONFIG: Record<MatchEventType, { label: string; icon: string; color: string }> = {
   goal:         { label: 'هدف',          icon: '⚽', color: 'text-emerald-600' },
   assist:       { label: 'صناعة',        icon: '🎯', color: 'text-blue-600' },
@@ -133,6 +142,48 @@ export default function MatchDetailPage() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('lineup')
 
+  // Player roster scroll indicator
+  const rosterListRef = useRef<HTMLDivElement>(null)
+  const [rosterHasMore, setRosterHasMore] = useState(false)
+  const pitchCardRef = useRef<HTMLDivElement>(null)
+  const [pitchHeight, setPitchHeight] = useState(0)
+
+  function checkRosterScroll() {
+    const el = rosterListRef.current
+    if (!el) return
+    setRosterHasMore(el.scrollTop + el.clientHeight < el.scrollHeight - 8)
+  }
+
+  function scrollRosterDown() {
+    rosterListRef.current?.scrollBy({ top: 120, behavior: 'smooth' })
+  }
+
+  useEffect(() => {
+    setTimeout(checkRosterScroll, 80)
+  }, [members.length, tab])
+
+  // Measure pitch height after data loads and lineup tab is visible
+  useLayoutEffect(() => {
+    if (loading || tab !== 'lineup') return
+    const el = pitchCardRef.current
+    if (!el) return
+    const h = el.getBoundingClientRect().height
+    if (h > 0) setPitchHeight(h)
+  }, [loading, tab])
+
+  // Keep in sync on window/container resize
+  useEffect(() => {
+    if (loading || tab !== 'lineup') return
+    const el = pitchCardRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      setPitchHeight(el.getBoundingClientRect().height)
+      setTimeout(checkRosterScroll, 50)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [loading, tab])
+
   // Lineup state
   const [formation, setFormation] = useState<FootballFormation>('4-4-2')
   const [lineupPlayers, setLineupPlayers] = useState<LineupPlayer[]>([])
@@ -143,6 +194,9 @@ export default function MatchDetailPage() {
   const [matchEvents, setMatchEvents] = useState<any[]>([])
   const [eventForm, setEventForm] = useState({ event_type: 'goal' as MatchEventType, player_id: '', player_out_id: '', assist_player_id: '', minute: '' })
   const [injuredPlayerIds, setInjuredPlayerIds] = useState<Set<string>>(new Set())
+  const [injuredDetails, setInjuredDetails] = useState<Record<string, any>>({})
+  const [playerStatsMap, setPlayerStatsMap] = useState<Record<string, { goals: number; assists: number; yellow: number; red: number; appearances: number }>>({})
+  const [unavailableIds, setUnavailableIds] = useState<Set<string>>(new Set())
   const [savingEvent, setSavingEvent] = useState(false)
   const [confirmDeleteEvent, setConfirmDeleteEvent] = useState<any>(null)
   const [editingEventId, setEditingEventId] = useState<string | null>(null)
@@ -219,6 +273,54 @@ export default function MatchDetailPage() {
     )
     setInjuredPlayerIds(injured)
 
+    // Injury details map for panel display
+    const injDetails: Record<string, any> = {}
+    for (const r of reports) {
+      if (r.status === 'active' || r.status === 'monitoring') {
+        injDetails[r.player_id] = r
+      }
+    }
+    setInjuredDetails(injDetails)
+
+    // Player stats from non-friendly (tournament) matches
+    const { matches: allMatches, lineups: allLineups, events: allEvents } = await matchStatsService.getTeamMatchStats(teamId)
+    const nonFriendlyIds = new Set(
+      allMatches.filter((mx: any) => mx.id !== matchId && mx.tournament_id).map((mx: any) => mx.id)
+    )
+    const stats: Record<string, { goals: number; assists: number; yellow: number; red: number; appearances: number }> = {}
+    const ensureStats = (uid: string) => { if (!stats[uid]) stats[uid] = { goals: 0, assists: 0, yellow: 0, red: 0, appearances: 0 } }
+    for (const ev of allEvents) {
+      if (!nonFriendlyIds.has(ev.match_id) || !ev.player_id) continue
+      ensureStats(ev.player_id)
+      if (ev.event_type === 'goal') stats[ev.player_id].goals++
+      else if (ev.event_type === 'assist') stats[ev.player_id].assists++
+      else if (ev.event_type === 'yellow_card') stats[ev.player_id].yellow++
+      else if (ev.event_type === 'red_card') stats[ev.player_id].red++
+    }
+    for (const lineup of allLineups) {
+      if (!nonFriendlyIds.has(lineup.match_id)) continue
+      for (const p of (lineup.players || [])) {
+        if (p.role === 'starter' || p.role === 'sub') { ensureStats(p.user_id); stats[p.user_id].appearances++ }
+      }
+    }
+    setPlayerStatsMap(stats)
+
+    // Leaves + admin decisions covering match date → unavailable players
+    const matchDateStr = m?.match_date?.slice(0, 10) || ''
+    if (matchDateStr) {
+      const [leaves, decisions] = await Promise.all([leaveService.getAll(teamId), adminDecisionService.getAll(teamId)])
+      const unavailable = new Set<string>()
+      for (const leave of leaves) {
+        if (leave.status === 'approved' && leave.from_date <= matchDateStr && leave.to_date >= matchDateStr) unavailable.add(leave.user_id)
+      }
+      for (const dec of decisions) {
+        if (dec.from_date <= matchDateStr && dec.to_date >= matchDateStr) {
+          for (const uid of (dec.target_user_ids || [])) unavailable.add(uid)
+        }
+      }
+      setUnavailableIds(unavailable)
+    }
+
     setLoading(false)
   }, [teamId, matchId, user])
 
@@ -252,11 +354,23 @@ export default function MatchDetailPage() {
     setLineupPlayers(prev => prev.filter(p => p.user_id !== userId))
   }
 
+  function updateExclusionReason(userId: string, reason: string) {
+    setLineupPlayers(prev => prev.map(p => p.user_id === userId ? { ...p, exclusion_reason: reason } : p))
+  }
+
   async function saveLineup() {
     if (!matchId || !teamId || !user) return
     setSavingLineup(true)
     const playersWithCaptain = lineupPlayers.map(p => ({ ...p, is_captain: p.user_id === captainId && p.role === 'starter' }))
     await matchLineupService.save(matchId, teamId, formation, playersWithCaptain, user.id)
+    // تطبيق التشكيلة على سجلات الحضور: starter/sub = مستدعى، excluded = لا يُحتسب
+    const linkedEventId = match?.event_id || matchId
+    await attendanceService.applyMatchLineup(
+      linkedEventId,
+      teamId,
+      playersWithCaptain.map((p: any) => ({ user_id: p.user_id, role: p.role })),
+      user.id,
+    )
     setSavingLineup(false)
   }
 
@@ -280,7 +394,7 @@ export default function MatchDetailPage() {
       await matchEventsService.remove(editingEventId)
       setEditingEventId(null)
     }
-    await matchEventsService.add({
+    const { data: addedEvent } = await matchEventsService.add({
       match_id: matchId, team_id: teamId,
       event_type: eventForm.event_type,
       player_id: eventForm.player_id || null,
@@ -302,6 +416,21 @@ export default function MatchDetailPage() {
     setMatchEvents(events)
     if (['yellow_card', 'red_card'].includes(eventForm.event_type)) {
       await matchService.syncCardCounts(matchId)
+      if (eventForm.player_id && match?.tournament_id) {
+        let cardType: 'yellow' | 'double_yellow' | 'direct_red' = 'yellow'
+        if (eventForm.event_type === 'red_card') {
+          const hasYellowInMatch = events.some(
+            (e: any) => e.player_id === eventForm.player_id && e.event_type === 'yellow_card'
+          )
+          cardType = hasYellowInMatch ? 'double_yellow' : 'direct_red'
+        }
+        await attendanceService.processCardEvent({
+          teamId: teamId!, playerId: eventForm.player_id,
+          tournamentId: match.tournament_id,
+          cardType, matchEventId: addedEvent?.id || '',
+          createdBy: user?.id,
+        })
+      }
     }
     setEventForm({ event_type: 'goal', player_id: '', player_out_id: '', assist_player_id: '', minute: '' })
     setSavingEvent(false)
@@ -330,7 +459,7 @@ export default function MatchDetailPage() {
 
   // ── Score helpers ────────────────────────────────────────────────────
   async function saveScore() {
-    if (!matchId) return
+    if (!matchId || !teamId) return
     setSavingScore(true)
     const gf = scoreFor !== '' ? parseInt(scoreFor) : null
     const ga = scoreAgainst !== '' ? parseInt(scoreAgainst) : null
@@ -338,6 +467,18 @@ export default function MatchDetailPage() {
     if (gf !== null && ga !== null) status = 'finished'
     await matchService.update(matchId, { goals_for: gf, goals_against: ga, status })
     setMatch((m: any) => ({ ...m, goals_for: gf, goals_against: ga, status }))
+    // إذا انتهت المباراة بدون تشكيلة → سجّل الكل غائب وأبلغ المدير
+    if (status === 'finished' && lineupPlayers.length === 0) {
+      const unlined = await attendanceService.markUnlinedMatchesAbsent(teamId, user?.id)
+      if (unlined.length > 0) {
+        await notificationService.createForTeam(
+          teamId,
+          'تنبيه: مباريات منتهية بدون تشكيلة',
+          `تم تسجيل الغياب لـ ${unlined.length} مباراة لم تُسجَّل لها تشكيلة`,
+          'leave', user?.id,
+        )
+      }
+    }
     setEditScore(false)
     setSavingScore(false)
   }
@@ -550,7 +691,7 @@ export default function MatchDetailPage() {
 
       {/* ── LINEUP TAB ─────────────────────────────────────────────────── */}
       {tab === 'lineup' && (
-        <div className="mt-3 space-y-4">
+        <div className="mt-3 space-y-3">
           {/* Formation selector */}
           <div className="card">
             <div className="flex items-center gap-3">
@@ -565,80 +706,179 @@ export default function MatchDetailPage() {
             </div>
           </div>
 
-          {/* Pitch - landscape image background */}
-          <div className="card p-2 overflow-hidden">
-            <div className="relative mx-auto rounded-xl overflow-hidden"
-              style={{
-                backgroundImage: 'url(/images/pitch.jpg)',
-                backgroundSize: '100% 100%',
-                backgroundPosition: 'center',
-                paddingBottom: '64.3%'
-              }}>
-              {/* Player circles – landscape transform: lx = 100-portrait_y, ly = portrait_x */}
-              {positions.map((pos, idx) => {
-                const lx = 100 - pos.y
-                const ly = pos.x
-                const isGK = pos.label === 'ح'
-                const assigned = lineupPlayers.find(p => p.position_index === idx && p.role === 'starter')
-                const jersey = assigned?.jersey_number
-                const memberData = assigned ? members.find(m => m.user_id === assigned.user_id) : null
-                const isCaptain = assigned?.user_id === captainId && !!captainId
-                const isInjured = assigned ? injuredPlayerIds.has(assigned.user_id) : false
-                const avatarUrl = memberData?.profile?.avatar_url
-                const displayText = assigned
-                  ? (jersey ? String(jersey) : (memberData?.profile?.full_name?.[0] || pos.label))
-                  : pos.label
-                const circleBase = isGK && assigned ? '#92400e' : '#1e40af'
-                return (
-                  <div key={idx} className="absolute" style={{ left: `${lx}%`, top: `${ly}%`, transform: 'translate(-50%,-50%)' }}>
-                    <div className="relative">
-                      {canManage ? (
-                        <div className="relative w-10 h-10">
-                          <select
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 rounded-full"
-                            value={assigned?.user_id || ''}
-                            onChange={e => assignPlayerToPosition(idx, e.target.value)}>
-                            <option value="">— {pos.label} —</option>
-                            {playerMembers.map(m => <option key={m.id} value={m.user_id}>{m.profile?.full_name}{m.jersey_number ? ` #${m.jersey_number}` : ''}</option>)}
-                          </select>
-                          <div className={`w-10 h-10 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold border-2 shadow-md pointer-events-none select-none ${isGK && assigned ? 'border-yellow-300/80' : 'border-white/70'}`}
-                            style={{ background: assigned ? circleBase : 'rgba(0,0,0,0.45)' }}>
-                            {assigned && avatarUrl
-                              ? <img src={avatarUrl} className="w-full h-full object-cover" alt="" />
-                              : <span className="text-white text-xs font-bold">{displayText}</span>}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className={`w-10 h-10 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold border-2 shadow-md ${isGK && assigned ? 'border-yellow-300/80' : 'border-white/70'}`}
-                          style={{ background: assigned ? circleBase : 'rgba(0,0,0,0.45)' }}>
-                          {assigned && avatarUrl
-                            ? <img src={avatarUrl} className="w-full h-full object-cover" alt="" />
-                            : <span className="text-white text-xs font-bold">{jersey ?? pos.label}</span>}
-                        </div>
-                      )}
-                      {isGK && assigned && (
-                        <span className="absolute -top-1.5 -right-1.5 text-[9px] leading-none pointer-events-none">🧤</span>
-                      )}
-                      {isCaptain && (
-                        <span className="absolute -top-1.5 -left-1.5 bg-yellow-400 text-yellow-900 text-[8px] font-extrabold rounded-full w-3.5 h-3.5 flex items-center justify-center leading-none pointer-events-none">C</span>
-                      )}
-                      {isInjured && (
-                        <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-red-500 border border-white pointer-events-none animate-pulse" title="مصاب" />
-                      )}
-                    </div>
-                    {assigned && memberData && (
-                      <div className="absolute top-full left-1/2 -translate-x-1/2 whitespace-nowrap text-white text-[9px] font-semibold text-center mt-0.5 drop-shadow"
-                        style={{ textShadow: '0 1px 3px rgba(0,0,0,0.8)', maxWidth: 52 }}>
-                        {(memberData.profile?.full_name || '').split(' ').slice(0, 2).join(' ')}
+          {/* Pitch + Player Panel side by side */}
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-start">
+            {/* RIGHT in RTL: Player Roster Panel */}
+            <div className="w-full sm:w-56 sm:flex-shrink-0 flex flex-col order-first sm:order-none"
+              style={pitchHeight ? { height: pitchHeight } : undefined}>
+              <div className="card p-2 flex flex-col flex-1 overflow-hidden">
+                <div className="text-[10px] font-bold text-slate-400 mb-1.5 px-0.5">لاعبو الفريق</div>
+                <div className="relative flex-1 min-h-0 flex flex-col">
+                <div
+                  ref={rosterListRef}
+                  className="flex-1 min-h-0 overflow-y-auto"
+                  onScroll={checkRosterScroll}
+                  style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                  {(['حارس', 'دفاع', 'وسط', 'هجوم', 'أخرى'] as const).map(group => {
+                    const groupPlayers = playerMembers.filter(m => getPositionGroup(getPrimaryPosition(m)) === group)
+                    if (!groupPlayers.length) return null
+                    return (
+                      <div key={group} className="mb-2">
+                        <div className="text-[9px] font-bold text-slate-400 tracking-wide mb-1 px-0.5 border-b border-slate-100 pb-0.5">{group}</div>
+                        {groupPlayers.map(mem => {
+                          const inLineup = lineupPlayers.find(p => p.user_id === mem.user_id)
+                          const pStats = playerStatsMap[mem.user_id]
+                          const isInjured = injuredPlayerIds.has(mem.user_id)
+                          const injDetail = injuredDetails[mem.user_id]
+                          const isUnavailable = unavailableIds.has(mem.user_id)
+                          const primaryPos = getPrimaryPosition(mem)
+                          const secondaryPos = getSecondaryPositions(mem)
+                          return (
+                            <div key={mem.id} className={`flex items-start gap-1.5 p-1.5 rounded-lg mb-1 ${inLineup ? 'bg-blue-50 border border-blue-100' : 'hover:bg-slate-50'}`}>
+                              <div className="w-7 h-7 rounded-full overflow-hidden flex-shrink-0 bg-slate-100 border border-slate-200">
+                                {mem.profile?.avatar_url
+                                  ? <img src={mem.profile.avatar_url} className="w-full h-full object-cover" alt="" />
+                                  : <div className="w-full h-full flex items-center justify-center font-bold text-slate-400 text-[9px]">{(mem.profile?.full_name || '?')[0]}</div>}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  <span className="font-semibold text-slate-700 text-[10px] leading-tight">{mem.profile?.full_name}</span>
+                                  {inLineup && (
+                                    <>
+                                      <span className="text-emerald-500 font-bold text-[11px]">✓</span>
+                                      {canManage && (
+                                        <button
+                                          onClick={() => removeFromLineup(mem.user_id)}
+                                          className="text-red-400 hover:text-red-600 text-[11px] font-bold leading-none"
+                                          title="حذف من التشكيلة">✕</button>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                                {primaryPos && <div className="text-[9px] text-brand-600 font-bold mt-0.5">{primaryPos}</div>}
+                                {secondaryPos.length > 0 && (
+                                  <div className="text-[8px] text-amber-500 truncate">{secondaryPos.slice(0, 2).join(' · ')}</div>
+                                )}
+                                {pStats && pStats.appearances > 0 && (
+                                  <div className="flex gap-1 mt-0.5 flex-wrap">
+                                    <span className="text-[8px] text-slate-400" title="مباريات">🏟️{pStats.appearances}</span>
+                                    {pStats.goals > 0 && <span className="text-[8px] text-slate-400" title="أهداف">⚽{pStats.goals}</span>}
+                                    {pStats.assists > 0 && <span className="text-[8px] text-slate-400" title="تمريرات">🎯{pStats.assists}</span>}
+                                    {pStats.yellow > 0 && <span className="text-[8px] text-slate-400">🟡{pStats.yellow}</span>}
+                                    {pStats.red > 0 && <span className="text-[8px] text-slate-400">🔴{pStats.red}</span>}
+                                  </div>
+                                )}
+                                {isInjured && <div className="text-[8px] text-red-500 mt-0.5">🩹 {injDetail?.recovery_status || 'مصاب'}</div>}
+                                {isUnavailable && !isInjured && <div className="text-[8px] text-amber-500 mt-0.5">⚠️ غير متاح</div>}
+                              </div>
+                            </div>
+                          )
+                        })}
                       </div>
-                    )}
-                  </div>
-                )
-              })}
+                    )
+                  })}
+                </div>
+                {/* Scroll-down arrow */}
+                {rosterHasMore && (
+                  <button
+                    onClick={scrollRosterDown}
+                    onMouseEnter={() => checkRosterScroll()}
+                    className="absolute bottom-0 inset-x-0 flex flex-col items-center pb-0.5 pointer-events-auto z-10"
+                    style={{ background: 'linear-gradient(to bottom, transparent 0%, white 55%)' }}>
+                    <ChevronDown size={18} className="text-slate-400 animate-bounce mt-3"/>
+                  </button>
+                )}
+                </div>
+              </div>
             </div>
+
+            {/* LEFT in RTL: Pitch */}
+            <div ref={pitchCardRef} className="flex-1 min-w-0">
+              <div className="card p-2 overflow-hidden">
+                <div className="relative mx-auto rounded-xl overflow-hidden"
+                  style={{
+                    backgroundImage: 'url(/images/pitch.jpg)',
+                    backgroundSize: '100% 100%',
+                    backgroundPosition: 'center',
+                    paddingBottom: '64.3%'
+                  }}>
+                  {positions.map((pos, idx) => {
+                    const lx = 100 - pos.y
+                    const ly = pos.x
+                    const isGK = pos.label === 'ح'
+                    const assigned = lineupPlayers.find(p => p.position_index === idx && p.role === 'starter')
+                    const jersey = assigned?.jersey_number
+                    const memberData = assigned ? members.find(m => m.user_id === assigned.user_id) : null
+                    const isCaptain = assigned?.user_id === captainId && !!captainId
+                    const isInjured = assigned ? injuredPlayerIds.has(assigned.user_id) : false
+                    const avatarUrl = memberData?.profile?.avatar_url
+                    const displayText = assigned
+                      ? (jersey ? String(jersey) : (memberData?.profile?.full_name?.[0] || pos.label))
+                      : pos.label
+                    const circleBase = isGK && assigned ? '#92400e' : '#1e40af'
+                    const availableForPos = playerMembers.filter(m => {
+                      const existing = lineupPlayers.find(p => p.user_id === m.user_id)
+                      return !existing || existing.position_index === idx
+                    })
+                    return (
+                      <div key={idx} className="absolute" style={{ left: `${lx}%`, top: `${ly}%`, transform: 'translate(-50%,-50%)' }}>
+                        <div className="relative">
+                          {canManage ? (
+                            <div className="relative w-10 h-10">
+                              <select
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 rounded-full"
+                                value={assigned?.user_id || ''}
+                                onChange={e => assignPlayerToPosition(idx, e.target.value)}>
+                                <option value="">— {pos.label} —</option>
+                                {availableForPos.map(m => (
+                                  <option key={m.id} value={m.user_id}>
+                                    {m.profile?.full_name}
+                                    {getPrimaryPosition(m) ? ` · ${getPrimaryPosition(m)}` : ''}
+                                    {m.jersey_number ? ` #${m.jersey_number}` : ''}
+                                  </option>
+                                ))}
+                              </select>
+                              <div className={`w-10 h-10 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold border-2 shadow-md pointer-events-none select-none ${isGK && assigned ? 'border-yellow-300/80' : 'border-white/70'}`}
+                                style={{ background: assigned ? circleBase : 'rgba(0,0,0,0.45)' }}>
+                                {assigned && avatarUrl
+                                  ? <img src={avatarUrl} className="w-full h-full object-cover" alt="" />
+                                  : <span className="text-white text-xs font-bold">{displayText}</span>}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className={`w-10 h-10 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold border-2 shadow-md ${isGK && assigned ? 'border-yellow-300/80' : 'border-white/70'}`}
+                              style={{ background: assigned ? circleBase : 'rgba(0,0,0,0.45)' }}>
+                              {assigned && avatarUrl
+                                ? <img src={avatarUrl} className="w-full h-full object-cover" alt="" />
+                                : <span className="text-white text-xs font-bold">{jersey ?? pos.label}</span>}
+                            </div>
+                          )}
+                          {isGK && assigned && (
+                            <span className="absolute -top-1.5 -right-1.5 text-[9px] leading-none pointer-events-none">🧤</span>
+                          )}
+                          {isCaptain && (
+                            <span className="absolute -top-1.5 -left-1.5 bg-yellow-400 text-yellow-900 text-[8px] font-extrabold rounded-full w-3.5 h-3.5 flex items-center justify-center leading-none pointer-events-none">C</span>
+                          )}
+                          {isInjured && (
+                            <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-red-500 border border-white pointer-events-none animate-pulse" title="مصاب" />
+                          )}
+                        </div>
+                        {assigned && memberData && (
+                          <div className="absolute top-full left-1/2 -translate-x-1/2 whitespace-nowrap text-white text-[9px] font-semibold text-center mt-0.5 drop-shadow"
+                            style={{ textShadow: '0 1px 3px rgba(0,0,0,0.8)', maxWidth: 52 }}>
+                            {(memberData.profile?.full_name || '').split(' ').slice(0, 2).join(' ')}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+
           </div>
 
-          {/* Players lists */}
+          {/* Players management lists */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {/* Starters */}
             <div className="card">
@@ -647,7 +887,6 @@ export default function MatchDetailPage() {
                 {starters.map(p => {
                   const mem = members.find(m => m.user_id === p.user_id)
                   const isCap = p.user_id === captainId
-                  // Check if this player is in GK position (label 'ح')
                   const gkPos = positions.find((pos, idx) => pos.label === 'ح' && lineupPlayers.some(lp => lp.position_index === idx && lp.user_id === p.user_id))
                   const isGK = !!gkPos
                   return (
@@ -673,6 +912,7 @@ export default function MatchDetailPage() {
                 {starters.length === 0 && <div className="text-xs text-slate-400">لا يوجد</div>}
               </div>
             </div>
+
             {/* Substitutes */}
             <div className="card">
               <div className="text-xs font-bold text-slate-500 mb-2">احتياط ({subs.length})</div>
@@ -692,22 +932,41 @@ export default function MatchDetailPage() {
                 <select className="form-input text-xs py-1" onChange={e => { addPlayerToRole(e.target.value, 'sub'); e.target.value = '' }}>
                   <option value="">+ إضافة احتياط</option>
                   {playerMembers.filter(m => !lineupPlayers.find(p => p.user_id === m.user_id)).map(m => (
-                    <option key={m.id} value={m.user_id}>{m.profile?.full_name}{m.jersey_number ? ` (${m.jersey_number})` : ''}</option>
+                    <option key={m.id} value={m.user_id}>
+                      {m.profile?.full_name}
+                      {getPrimaryPosition(m) ? ` · ${getPrimaryPosition(m)}` : ''}
+                      {m.jersey_number ? ` (${m.jersey_number})` : ''}
+                    </option>
                   ))}
                 </select>
               )}
             </div>
+
             {/* Excluded */}
             <div className="card">
               <div className="text-xs font-bold text-slate-500 mb-2">مستبعدون ({excluded.length})</div>
-              <div className="space-y-1 mb-2">
+              <div className="space-y-1.5 mb-2">
                 {excluded.map(p => {
                   const mem = members.find(m => m.user_id === p.user_id)
                   return (
-                    <div key={p.user_id} className="flex items-center gap-2 text-xs">
-                      <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center font-bold text-[10px]">{p.jersey_number || '?'}</span>
-                      <span className="flex-1 truncate text-slate-500 line-through">{mem?.profile?.full_name}</span>
-                      {canManage && <button onClick={() => removeFromLineup(p.user_id)} className="text-red-400 hover:text-red-600 text-base leading-none">×</button>}
+                    <div key={p.user_id} className="space-y-1">
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center font-bold text-[10px]">{p.jersey_number || '?'}</span>
+                        <span className="flex-1 truncate text-slate-500 line-through">{mem?.profile?.full_name}</span>
+                        {canManage && <button onClick={() => removeFromLineup(p.user_id)} className="text-red-400 hover:text-red-600 text-base leading-none">×</button>}
+                      </div>
+                      {canManage && (
+                        <input
+                          type="text"
+                          className="form-input text-[10px] py-0.5 w-full"
+                          placeholder="سبب الاستبعاد (اختياري)"
+                          value={p.exclusion_reason || ''}
+                          onChange={e => updateExclusionReason(p.user_id, e.target.value)}
+                        />
+                      )}
+                      {!canManage && p.exclusion_reason && (
+                        <div className="text-[10px] text-slate-400 px-1 italic">{p.exclusion_reason}</div>
+                      )}
                     </div>
                   )
                 })}
@@ -716,7 +975,11 @@ export default function MatchDetailPage() {
                 <select className="form-input text-xs py-1" onChange={e => { addPlayerToRole(e.target.value, 'excluded'); e.target.value = '' }}>
                   <option value="">+ إضافة مستبعد</option>
                   {playerMembers.filter(m => !lineupPlayers.find(p => p.user_id === m.user_id)).map(m => (
-                    <option key={m.id} value={m.user_id}>{m.profile?.full_name}{m.jersey_number ? ` (${m.jersey_number})` : ''}</option>
+                    <option key={m.id} value={m.user_id}>
+                      {m.profile?.full_name}
+                      {getPrimaryPosition(m) ? ` · ${getPrimaryPosition(m)}` : ''}
+                      {m.jersey_number ? ` (${m.jersey_number})` : ''}
+                    </option>
                   ))}
                 </select>
               )}

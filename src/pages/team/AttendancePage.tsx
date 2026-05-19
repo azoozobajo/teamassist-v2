@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { ChevronDown, ChevronUp, Lock, Search, X } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { eventService, teamService, pointsService } from '../../services'
+import { eventService, teamService, pointsService, attendanceService } from '../../services'
 import { Spinner, PageHeader, AttendanceButton, Modal, FormField, Avatar } from '../../components/ui'
 import { EVENT_CONFIG, formatDate, canManageEvents, isEventLocked } from '../../utils/helpers'
 import { supabase } from '../../lib/supabase'
@@ -47,7 +47,7 @@ const REPORT_EVENT_TYPES = [
   { key: 'other', label: 'أخرى' },
 ]
 
-type ReportSortKey = 'name' | 'events' | 'present' | 'late' | 'avgLate' | 'absent'
+type ReportSortKey = 'name' | 'events' | 'present' | 'late' | 'avgLate' | 'absent' | 'excused' | 'generalRate' | 'effectiveRate'
 type SortDir = 'asc' | 'desc'
 
 // ── Streak helpers ─────────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ export default function AttendancePage() {
   async function fetchAttendanceRecords(tid: string) {
     const { data } = await supabase
       .from('attendance')
-      .select('event_id, user_id, status, late_minutes')
+      .select('event_id, user_id, status, late_minutes, absence_type, locked_by_source, source_type')
       .eq('team_id', tid)
     return data ?? []
   }
@@ -213,6 +213,9 @@ export default function AttendancePage() {
           user_id: r.user_id,
           status: r.status,
           late_minutes: r.late_minutes,
+          absence_type: r.absence_type,
+          locked_by_source: r.locked_by_source,
+          source_type: r.source_type,
         })),
       ]
     })
@@ -225,16 +228,28 @@ export default function AttendancePage() {
   }
 
   async function setStatus(userId: string, status: string, extra?: any) {
-    if (!modalEv || !teamId) return
+    if (!modalEv || !teamId || !user) return
 
-    const prevStatus = modalAtt.find(a => a.user_id === userId)?.status
+    const prevRecord = modalAtt.find(a => a.user_id === userId)
+    const prevStatus = prevRecord?.status
     const wasPresent = prevStatus === 'present' || prevStatus === 'late'
     const isNowPresent = status === 'present' || status === 'late'
 
-    await eventService.setAttendance({
-      event_id: modalEv.id, team_id: teamId, user_id: userId,
-      status, ...extra, updated_at: new Date().toISOString()
-    })
+    // تحقق: هل يمكن للمدرب تغيير هذا السجل؟
+    if (prevRecord) {
+      const check = attendanceService.canCoachOverride(prevRecord)
+      if (!check.allowed && status === 'absent') {
+        alert(`لا يمكن التغيير إلى غائب بدون عذر — ${check.reason}`)
+        return
+      }
+    }
+
+    await attendanceService.markByCoach(
+      teamId, modalEv.id, userId,
+      status as 'present' | 'late' | 'absent' | 'excused',
+      user.id,
+      extra,
+    )
 
     // ── Auto-points ──
     if (isNowPresent && !wasPresent) {
@@ -342,23 +357,30 @@ export default function AttendancePage() {
         let present = 0
         let late = 0
         let absent = 0
+        let excused = 0
         let lateTotal = 0
 
         reportEvents.forEach(e => {
           const eligible = getEligibleMembers(e).some(em => em.user_id === m.user_id)
           if (!eligible) return
 
-          eventCount += 1
           const record = attMap.get(`${e.id}:${m.user_id}`)
-          if (!record) return
+          eventCount += 1
 
-          if (record.status === 'present' || record.status === 'late') present += 1
-          if (record.status === 'late') {
-            late += 1
+          if (!record) { absent++; return }
+
+          if (record.status === 'present') present++
+          else if (record.status === 'late') {
+            present++; late++
             lateTotal += Number(record.late_minutes) || 0
           }
-          if (record.status === 'absent') absent += 1
+          else if (record.status === 'excused') excused++
+          else { absent++ } // absent + uncertain القديم
         })
+
+        const denominator    = eventCount - excused
+        const generalRate    = eventCount > 0 ? Math.round((present / eventCount) * 100) : 0
+        const effectiveRate  = denominator > 0 ? Math.round((present / denominator) * 100) : 0
 
         return {
           userId: m.user_id,
@@ -369,12 +391,15 @@ export default function AttendancePage() {
           late,
           avgLate: late > 0 ? Math.round(lateTotal / late) : 0,
           absent,
+          excused,
+          generalRate,
+          effectiveRate,
         }
       })
 
     return rows.sort((a, b) => {
-      const aVal = a[reportSortKey]
-      const bVal = b[reportSortKey]
+      const aVal = (a as any)[reportSortKey]
+      const bVal = (b as any)[reportSortKey]
       const result = typeof aVal === 'string'
         ? aVal.localeCompare(String(bVal), 'ar')
         : Number(aVal) - Number(bVal)
@@ -425,9 +450,17 @@ export default function AttendancePage() {
   const mNotRec    = eligibleMembers.filter(m => !modalAtt.find(a => a.user_id === m.user_id))
   const mLists: Record<string, any[]> = { present: mPresent, late: mLate, excused: mExcused, uncertain: mUncertain, absent: mAbsent }
 
+  const EXCUSE_SOURCE_LABEL: Record<string, string> = {
+    leave: 'إجازة معتمدة', admin_leave: 'إجازة إدارية',
+    absence: 'قرار إداري', medical: 'إصابة',
+    tournament_suspension: 'إيقاف بطولة',
+  }
+
   function MemberRow({ a, m }: { a?: any; m?: any }) {
-    const profile = a?.profile || m?.profile
-    const userId  = a?.user_id  || m?.user_id
+    const profile   = a?.profile || m?.profile
+    const userId    = a?.user_id  || m?.user_id
+    const isLocked  = a?.locked_by_source && a?.status === 'excused'
+    const lockLabel = isLocked ? (EXCUSE_SOURCE_LABEL[a.source_type] || 'عذر رسمي') : null
     return (
       <div className="flex items-center gap-2 bg-white rounded-xl p-2 border border-slate-50">
         <Avatar name={profile?.full_name || '?'} src={profile?.avatar_url} size="sm"/>
@@ -438,17 +471,29 @@ export default function AttendancePage() {
               {a.late_minutes} دقيقة {a.has_excuse ? '(بعذر)' : ''}
             </div>
           )}
-          {a?.status === 'excused' && a?.excuse_reason && (
+          {isLocked && (
+            <div className="text-xs text-blue-600 font-bold">🔒 غائب بعذر: {lockLabel}</div>
+          )}
+          {!isLocked && a?.status === 'excused' && a?.excuse_reason && (
             <div className="text-xs text-slate-500">📋 {a.excuse_reason}</div>
           )}
         </div>
         {isCoach && (
-          <AttendanceButton status={a?.status || 'present'} locked={false} compact includeExcused
+          <AttendanceButton
+            status={a?.status || 'present'}
+            locked={false}
+            compact
+            includeExcused={!isLocked}
             onSelect={s => {
-              if (s === 'late')    setShowLate({ user_id: userId, profile })
+              if (isLocked && s === 'absent') {
+                alert(`لا يمكن التغيير — ${lockLabel}`)
+                return
+              }
+              if (s === 'late')         setShowLate({ user_id: userId, profile })
               else if (s === 'excused') setShowExcused({ user_id: userId, profile })
-              else setStatus(userId, s)
-            }}/>
+              else                      setStatus(userId, s)
+            }}
+          />
         )}
       </div>
     )
@@ -547,19 +592,22 @@ export default function AttendancePage() {
             </span>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-sm">
+            <table className="w-full min-w-[1000px] text-sm">
               <thead className="bg-slate-50 border-b border-slate-100">
                 <tr>
                   <ReportHeader sortKey="name">اسم اللاعب</ReportHeader>
-                  <ReportHeader sortKey="events">عدد المواعيد</ReportHeader>
-                  <ReportHeader sortKey="present">كم حضر</ReportHeader>
+                  <ReportHeader sortKey="events">المواعيد</ReportHeader>
+                  <ReportHeader sortKey="present">حضر</ReportHeader>
                   <ReportHeader sortKey="late">تأخر</ReportHeader>
                   <ReportHeader sortKey="avgLate">متوسط التأخير</ReportHeader>
-                  <ReportHeader sortKey="absent">الغياب</ReportHeader>
+                  <ReportHeader sortKey="absent">غياب بدون عذر</ReportHeader>
+                  <ReportHeader sortKey="excused">غياب بعذر</ReportHeader>
+                  <ReportHeader sortKey="generalRate">النسبة العامة</ReportHeader>
+                  <ReportHeader sortKey="effectiveRate">النسبة الفعلية</ReportHeader>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {reportRows.map(row => (
+                {(reportRows as any[]).map(row => (
                   <tr key={row.userId} className="hover:bg-slate-50/70 transition-colors">
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-2">
@@ -570,13 +618,28 @@ export default function AttendancePage() {
                     <td className="px-3 py-3 font-black text-slate-700">{row.events}</td>
                     <td className="px-3 py-3 font-black text-emerald-700">{row.present}</td>
                     <td className="px-3 py-3 font-black text-orange-700">{row.late}</td>
-                    <td className="px-3 py-3 font-black text-slate-700">{row.avgLate} د</td>
+                    <td className="px-3 py-3 font-black text-slate-600">{row.avgLate} د</td>
                     <td className="px-3 py-3 font-black text-red-600">{row.absent}</td>
+                    <td className="px-3 py-3 font-black text-blue-600">{row.excused}</td>
+                    <td className="px-3 py-3">
+                      <span className={`font-black text-sm px-2 py-0.5 rounded-lg ${
+                        row.generalRate >= 80 ? 'bg-emerald-100 text-emerald-700'
+                        : row.generalRate >= 60 ? 'bg-amber-100 text-amber-700'
+                        : 'bg-red-100 text-red-700'
+                      }`}>{row.generalRate}%</span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className={`font-black text-sm px-2 py-0.5 rounded-lg ${
+                        row.effectiveRate >= 80 ? 'bg-emerald-100 text-emerald-700'
+                        : row.effectiveRate >= 60 ? 'bg-amber-100 text-amber-700'
+                        : 'bg-red-100 text-red-700'
+                      }`}>{row.effectiveRate}%</span>
+                    </td>
                   </tr>
                 ))}
                 {reportRows.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-3 py-10 text-center text-sm font-bold text-slate-400">
+                    <td colSpan={9} className="px-3 py-10 text-center text-sm font-bold text-slate-400">
                       لا يوجد لاعبون لعرضهم
                     </td>
                   </tr>

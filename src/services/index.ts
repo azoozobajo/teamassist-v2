@@ -1,6 +1,88 @@
 import { supabase } from '../lib/supabase'
 import { addDays, format, parseISO, getDay, eachDayOfInterval } from 'date-fns'
 
+const ADMIN_DECISION_LABELS: Record<string, string> = {
+  suspension: 'إيقاف',
+  national_team: 'استدعاء للمنتخب',
+  injury: 'إصابة',
+  penalty: 'عقوبة',
+  rest: 'راحة',
+  emergency: 'طارئ',
+  other: 'أخرى',
+}
+
+const ATTENDANCE_ROLE_GROUPS: Record<string, string[]> = {
+  'اللاعبون فقط': ['player'],
+  'المدربون فقط': ['head_coach', 'assistant_coach'],
+  'اللاعبون والمدربون': ['player', 'head_coach', 'assistant_coach'],
+  'الإداريون فقط': ['administrator', 'owner'],
+}
+
+function getEligibleIdsForEvent(event: any, members: any[]) {
+  if (event.att_member_ids?.length > 0) return event.att_member_ids as string[]
+  if (event.event_type === 'match' || event.event_type === 'training') {
+    return members.filter(m => m.role === 'player').map(m => m.user_id)
+  }
+  const roles = ATTENDANCE_ROLE_GROUPS[event.att_group]
+  if (roles) return members.filter(m => roles.includes(m.role)).map(m => m.user_id)
+  return members.map(m => m.user_id)
+}
+
+async function applyAdminDecisionsToEvents(teamId: string, events: any[], markedBy?: string) {
+  if (!events.length) return
+  const eventDays = events.map(e => e.start_datetime?.slice(0, 10)).filter(Boolean)
+  if (!eventDays.length) return
+  const from = eventDays.reduce((a, b) => a < b ? a : b)
+  const to = eventDays.reduce((a, b) => a > b ? a : b)
+
+  const { data: decisions, error } = await supabase.from('admin_decisions')
+    .select('*')
+    .eq('team_id', teamId)
+    .eq('is_active', true)
+    .lte('from_date', to)
+    .gte('to_date', from)
+  if (error || !decisions?.length) return
+
+  const { data: members } = await supabase.from('team_members')
+    .select('user_id, role')
+    .eq('team_id', teamId)
+    .eq('status', 'active')
+    .is('removed_at', null)
+  const activeMembers = members ?? []
+  const records: any[] = []
+
+  for (const event of events) {
+    const day = event.start_datetime?.slice(0, 10)
+    if (!day) continue
+    const eligibleIds = new Set(getEligibleIdsForEvent(event, activeMembers))
+
+    for (const decision of decisions) {
+      if (day < decision.from_date || day > decision.to_date) continue
+      const targetIds = decision.target_type === 'all'
+        ? activeMembers.filter(m => m.role === 'player').map(m => m.user_id)
+        : (decision.target_user_ids ?? [])
+      for (const userId of targetIds) {
+        if (!eligibleIds.has(userId)) continue
+        records.push({
+          event_id: event.id,
+          team_id: teamId,
+          user_id: userId,
+          status: 'excused',
+          has_excuse: true,
+          excuse_reason: ADMIN_DECISION_LABELS[decision.decision_type] || 'أخرى',
+          admin_note: `قرار إداري - ${ADMIN_DECISION_LABELS[decision.decision_type] || 'أخرى'}: ${decision.title}`,
+          marked_by: markedBy || decision.created_by || null,
+          updated_at: new Date().toISOString(),
+        })
+      }
+    }
+  }
+
+  if (records.length) {
+    await supabase.from('attendance').upsert(records, { onConflict: 'event_id,user_id' })
+  }
+}
+
 // ── TEAMS ─────────────────────────────────────────────────────────────
 export const teamService = {
   async getMyTeams(userId: string) {
@@ -70,12 +152,34 @@ export const teamService = {
   async updateMemberRole(memberId: string, role: string) {
     return supabase.from('team_members').update({ role }).eq('id', memberId)
   },
-  async updateMemberPositions(memberId: string, primaryPosition: string | null, secondaryPositions: string[]) {
+  async updateMemberPositions(memberId: string, primaryPosition: string | null, secondaryPositions: string[], extra?: {
+    preferred_foot?: string | null
+    jersey_number?: number | null
+  }) {
     return supabase.from('team_members').update({
       primary_position: primaryPosition || null,
       secondary_positions: secondaryPositions.slice(0, 3),
       position_label: primaryPosition || null,
+      ...extra,
     }).eq('id', memberId)
+  },
+  async updateMemberContactInfo(memberId: string, data: {
+    guardian_name?: string | null
+    guardian_phone?: string | null
+    home_address?: string | null
+  }) {
+    return supabase.from('team_members').update(data).eq('id', memberId)
+  },
+  async updateMemberPreferredFoot(teamId: string, userId: string, foot: string | null) {
+    return supabase.from('team_members')
+      .update({ preferred_foot: foot })
+      .eq('team_id', teamId).eq('user_id', userId)
+  },
+  async getMemberByUser(teamId: string, userId: string) {
+    const { data } = await supabase.from('team_members')
+      .select('*')
+      .eq('team_id', teamId).eq('user_id', userId).eq('status', 'active').single()
+    return data ?? null
   },
   async removeMember(memberId: string) {
     return supabase.from('team_members')
@@ -191,7 +295,11 @@ export const eventService = {
   },
   async createEvent(data: any) {
     const isLocked = new Date(data.start_datetime) <= new Date()
-    return supabase.from('events').insert({ ...data, is_locked: isLocked }).select().single()
+    const result = await supabase.from('events').insert({ ...data, is_locked: isLocked }).select().single()
+    if (result.data?.id && data.team_id) {
+      await applyAdminDecisionsToEvents(data.team_id, [result.data], data.created_by)
+    }
+    return result
   },
   async getEventsForMember(teamId: string, userId: string) {
     // Events where member is specifically included OR att_member_ids is null (everyone)
@@ -225,11 +333,22 @@ export const eventService = {
         created_by: userId,
         is_locked: new Date(`${format(d, 'yyyy-MM-dd')}T${groupData.start_time}`) <= new Date()
       }))
-    const { error } = await supabase.from('events').insert(events)
-    return { error, count: events.length }
+    const { data: createdEvents, error } = await supabase.from('events').insert(events).select()
+    if (!error && createdEvents?.length) {
+      await applyAdminDecisionsToEvents(teamId, createdEvents, userId)
+    }
+    return { error, count: createdEvents?.length ?? events.length }
   },
   async updateEvent(id: string, data: any) {
-    return supabase.from('events').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id)
+    const result = await supabase.from('events')
+      .update({ ...data, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single()
+    if (result.data?.team_id) {
+      await applyAdminDecisionsToEvents(result.data.team_id, [result.data], data.created_by)
+    }
+    return result
   },
   async updateRecurringEvents(groupId: string, data: any, scope: 'all' | 'future', fromDate?: string) {
     let query = supabase.from('events').update({ ...data, updated_at: new Date().toISOString() })
@@ -237,7 +356,12 @@ export const eventService = {
     if (scope === 'future' && fromDate) {
       query = query.gte('start_datetime', fromDate)
     }
-    return query
+    const result = await query.select()
+    const updatedEvents = result.data ?? []
+    if (updatedEvents.length) {
+      await applyAdminDecisionsToEvents(updatedEvents[0].team_id, updatedEvents, data.created_by)
+    }
+    return result
   },
   async deleteEvent(id: string) {
     return supabase.from('events').delete().eq('id', id)
@@ -327,6 +451,548 @@ export const eventService = {
     }))
     return supabase.from('events').upsert(updates)
   }
+}
+
+// ── ATTENDANCE SERVICE (النظام الموحد) ───────────────────────────────────
+
+const ATTENDANCE_ROLE_GROUPS_NEW: Record<string, string[]> = {
+  'اللاعبون فقط':        ['player'],
+  'المدربون فقط':        ['head_coach', 'assistant_coach'],
+  'اللاعبون والمدربون': ['player', 'head_coach', 'assistant_coach'],
+  'الإداريون فقط':      ['administrator', 'owner'],
+}
+
+function getEligibleIdsNew(event: any, members: any[]): string[] {
+  if (event.att_member_ids?.length > 0) return event.att_member_ids as string[]
+  if (event.event_type === 'match' || event.event_type === 'training')
+    return members.filter(m => m.role === 'player').map(m => m.user_id)
+  const roles = ATTENDANCE_ROLE_GROUPS_NEW[event.att_group]
+  if (roles) return members.filter(m => roles.includes(m.role)).map(m => m.user_id)
+  return members.map(m => m.user_id)
+}
+
+export const attendanceService = {
+
+  // ── تحقق: هل يمكن للمدرب تغيير هذا السجل؟ ──────────────────────────
+  canCoachOverride(record: any): { allowed: boolean; reason?: string } {
+    if (!record) return { allowed: true }
+    if (record.locked_by_source && record.status === 'excused') {
+      const labels: Record<string, string> = {
+        leave: 'إجازة معتمدة', admin_leave: 'إجازة إدارية',
+        absence: 'قرار إداري', medical: 'إصابة',
+        tournament_suspension: 'إيقاف بطولة',
+      }
+      const label = labels[record.source_type] || 'عذر رسمي'
+      return { allowed: false, reason: label }
+    }
+    return { allowed: true }
+  },
+
+  // ── اللاعب يسجّل نفسه ─────────────────────────────────────────────
+  async markSelf(
+    teamId: string, eventId: string, userId: string,
+    status: 'present' | 'late' | 'absent',
+    extra?: { late_minutes?: number; member_note?: string }
+  ) {
+    const record: any = {
+      event_id: eventId, team_id: teamId, user_id: userId,
+      status,
+      source_type: 'player_self',
+      is_coach_confirmed: false,
+      marked_by: userId,
+      updated_at: new Date().toISOString(),
+      ...(extra ?? {}),
+    }
+    if (status === 'absent') {
+      record.absence_type = 'unexcused'
+    }
+    if (status !== 'late') {
+      record.late_minutes = 0
+    }
+    return supabase.from('attendance')
+      .upsert(record, { onConflict: 'event_id,user_id' })
+  },
+
+  // ── المدرب يسجّل أو يؤكد ─────────────────────────────────────────
+  async markByCoach(
+    teamId: string, eventId: string, userId: string,
+    status: 'present' | 'late' | 'absent' | 'excused',
+    coachId: string,
+    extra?: { late_minutes?: number; late_excuse?: string; has_excuse?: boolean; excuse_reason?: string; admin_note?: string }
+  ) {
+    // تحقق من سجل موجود: هل محمي بمصدر رسمي؟
+    const { data: existing } = await supabase.from('attendance')
+      .select('locked_by_source, status, source_type')
+      .eq('event_id', eventId).eq('user_id', userId).maybeSingle()
+
+    if (existing) {
+      const check = attendanceService.canCoachOverride(existing)
+      // المدرب لا يستطيع تحويل عذر رسمي إلى غائب بدون عذر
+      if (!check.allowed && status === 'absent') {
+        return { error: `لا يمكن التغيير: ${check.reason}` }
+      }
+    }
+
+    const record: any = {
+      event_id: eventId, team_id: teamId, user_id: userId,
+      status,
+      source_type: 'manual',
+      is_coach_confirmed: true,
+      confirmed_by: coachId,
+      marked_by: coachId,
+      updated_at: new Date().toISOString(),
+      ...(extra ?? {}),
+    }
+    if (status === 'absent') {
+      record.absence_type = 'unexcused'
+      record.locked_by_source = false
+    }
+    if (status === 'present' || status === 'late') {
+      record.absence_type = null
+    }
+    if (status !== 'late') {
+      record.late_minutes = 0
+    }
+    return supabase.from('attendance')
+      .upsert(record, { onConflict: 'event_id,user_id' })
+  },
+
+  // ── تطبيق غياب بعذر من مصدر رسمي ────────────────────────────────
+  async applyExcusedAbsence(params: {
+    teamId: string
+    userIds: string[]
+    fromDate: string
+    toDate: string
+    eventTypes?: string[]         // null = كل الأنواع
+    specificEventIds?: string[]   // لو حدد أحداث بعينها
+    absenceType: string
+    sourceType: string
+    sourceId: string
+    reason?: string
+    markedBy?: string
+  }) {
+    const {
+      teamId, userIds, fromDate, toDate,
+      eventTypes, specificEventIds,
+      absenceType, sourceType, sourceId,
+      reason, markedBy,
+    } = params
+
+    // جلب الأحداث المؤهلة
+    let events: any[] = []
+    if (specificEventIds?.length) {
+      const { data } = await supabase.from('events')
+        .select('id, event_type, start_datetime, att_member_ids, att_group')
+        .in('id', specificEventIds)
+      events = data ?? []
+    } else {
+      const { data } = await supabase.from('events')
+        .select('id, event_type, start_datetime, att_member_ids, att_group')
+        .eq('team_id', teamId)
+        .gte('start_datetime', `${fromDate}T00:00:00`)
+        .lte('start_datetime', `${toDate}T23:59:59`)
+      events = (data ?? []).filter((e: any) => {
+        if (!eventTypes || eventTypes.includes('all')) return true
+        return eventTypes.includes(e.event_type)
+      })
+    }
+
+    if (!events.length) return { count: 0 }
+
+    const records: any[] = []
+    for (const event of events) {
+      for (const userId of userIds) {
+        records.push({
+          event_id: event.id,
+          team_id: teamId,
+          user_id: userId,
+          status: 'excused',
+          absence_type: absenceType,
+          source_type: sourceType,
+          source_id: sourceId,
+          locked_by_source: true,
+          is_coach_confirmed: false,
+          excuse_reason: reason || null,
+          admin_note: reason || null,
+          marked_by: markedBy || null,
+          updated_at: new Date().toISOString(),
+        })
+      }
+    }
+
+    if (!records.length) return { count: 0 }
+    const { error } = await supabase.from('attendance')
+      .upsert(records, { onConflict: 'event_id,user_id' })
+    return { count: records.length, error }
+  },
+
+  // ── حذف غياب بعذر عند إلغاء المصدر ──────────────────────────────
+  async removeExcusedBySource(sourceType: string, sourceId: string) {
+    return supabase.from('attendance')
+      .delete()
+      .eq('source_type', sourceType)
+      .eq('source_id', sourceId)
+  },
+
+  // ── تطبيق تشكيلة المباراة على سجلات الحضور ───────────────────────
+  async applyMatchLineup(
+    matchEventId: string,
+    teamId: string,
+    lineup: Array<{ user_id: string; role: 'starter' | 'sub' | 'excluded' }>,
+    markedBy?: string
+  ) {
+    // 1. جلب كل اللاعبين النشطين
+    const { data: members } = await supabase.from('team_members')
+      .select('user_id').eq('team_id', teamId).eq('status', 'active')
+      .eq('role', 'player').is('removed_at', null)
+    const allPlayerIds = (members ?? []).map((m: any) => m.user_id)
+
+    const calledUpIds = new Set(
+      lineup.filter(p => p.role === 'starter' || p.role === 'sub').map(p => p.user_id)
+    )
+    const excludedIds = new Set(
+      lineup.filter(p => p.role === 'excluded').map(p => p.user_id)
+    )
+
+    const records: any[] = []
+
+    for (const playerId of allPlayerIds) {
+      if (calledUpIds.has(playerId)) {
+        // مستدعى → يُحتسب موعداً، نضع حالة مبدئية = absent حتى يسجّل المدرب
+        // لكن لا نتجاوز سجلاً موجوداً من المدرب
+        const { data: existing } = await supabase.from('attendance')
+          .select('id, is_coach_confirmed').eq('event_id', matchEventId)
+          .eq('user_id', playerId).maybeSingle()
+        if (!existing) {
+          records.push({
+            event_id: matchEventId, team_id: teamId, user_id: playerId,
+            status: 'absent', absence_type: 'unexcused',
+            source_type: 'match', is_coach_confirmed: false,
+            marked_by: markedBy || null,
+            updated_at: new Date().toISOString(),
+          })
+        }
+      } else if (excludedIds.has(playerId)) {
+        // مستبعد → لا موعد، نحذف أي سجل قديم غير مؤكد
+        await supabase.from('attendance')
+          .delete()
+          .eq('event_id', matchEventId).eq('user_id', playerId)
+          .eq('is_coach_confirmed', false)
+      } else {
+        // غير موجود في القائمة = غير مستدعى → نفس المستبعد
+        await supabase.from('attendance')
+          .delete()
+          .eq('event_id', matchEventId).eq('user_id', playerId)
+          .eq('is_coach_confirmed', false)
+      }
+    }
+
+    if (records.length) {
+      await supabase.from('attendance')
+        .upsert(records, { onConflict: 'event_id,user_id' })
+    }
+    return { calledUp: calledUpIds.size, excluded: excludedIds.size }
+  },
+
+  // ── مباريات بدون تشكيلة انتهت → تسجيل غياب وإنشاء إشعار ─────────
+  async markUnlinedMatchesAbsent(teamId: string, markedBy?: string) {
+    const now = new Date().toISOString()
+    // جلب المباريات المنتهية من جدول events بـ event_type = 'match'
+    const { data: matches } = await supabase.from('events')
+      .select('id, start_datetime, title, team_id')
+      .eq('team_id', teamId).eq('event_type', 'match')
+      .lt('start_datetime', now)
+    if (!matches?.length) return []
+
+    // جلب المباريات التي لها تشكيلة مسجّلة
+    const { data: lineups } = await supabase.from('match_lineups')
+      .select('match_id').eq('team_id', teamId)
+    const withLineup = new Set((lineups ?? []).map((l: any) => l.match_id))
+
+    const unlined = matches.filter((m: any) => !withLineup.has(m.id))
+    if (!unlined.length) return []
+
+    // جلب اللاعبين النشطين
+    const { data: members } = await supabase.from('team_members')
+      .select('user_id').eq('team_id', teamId).eq('status', 'active')
+      .eq('role', 'player').is('removed_at', null)
+    const playerIds = (members ?? []).map((m: any) => m.user_id)
+
+    const records: any[] = []
+    for (const match of unlined) {
+      for (const pid of playerIds) {
+        const { data: ex } = await supabase.from('attendance')
+          .select('id').eq('event_id', match.id).eq('user_id', pid).maybeSingle()
+        if (!ex) {
+          records.push({
+            event_id: match.id, team_id: teamId, user_id: pid,
+            status: 'absent', absence_type: 'unexcused',
+            source_type: 'match', is_coach_confirmed: false,
+            admin_note: 'لم تُسجَّل تشكيلة المباراة',
+            marked_by: markedBy || null,
+            updated_at: new Date().toISOString(),
+          })
+        }
+      }
+    }
+
+    if (records.length) {
+      await supabase.from('attendance')
+        .upsert(records, { onConflict: 'event_id,user_id' })
+    }
+    return unlined.map((m: any) => ({ id: m.id, title: m.title }))
+  },
+
+  // ── إحصاء حضور لاعب واحد ────────────────────────────────────────
+  async getPlayerStats(
+    teamId: string, userId: string,
+    filters?: { fromDate?: string; toDate?: string; eventTypes?: string[] }
+  ) {
+    // 1. جلب كل مواعيد الفريق
+    let evQuery = supabase.from('events')
+      .select('id, event_type, start_datetime, att_member_ids, att_group')
+      .eq('team_id', teamId).order('start_datetime', { ascending: true })
+    if (filters?.fromDate) evQuery = evQuery.gte('start_datetime', `${filters.fromDate}T00:00:00`)
+    if (filters?.toDate)   evQuery = evQuery.lte('start_datetime', `${filters.toDate}T23:59:59`)
+    const { data: events } = await evQuery
+
+    // 2. جلب تشكيلات المباريات لهذا اللاعب
+    const { data: lineupRecords } = await supabase.from('match_lineups')
+      .select('match_id, players').eq('team_id', teamId)
+
+    const matchLineupMap = new Map<string, string>()
+    ;(lineupRecords ?? []).forEach((lr: any) => {
+      const found = (lr.players ?? []).find((p: any) => p.user_id === userId)
+      if (found) matchLineupMap.set(lr.match_id, found.role)
+    })
+
+    // 3. جلب أعضاء الفريق لتحديد الأهلية
+    const { data: members } = await supabase.from('team_members')
+      .select('user_id, role').eq('team_id', teamId)
+      .eq('status', 'active').is('removed_at', null)
+    const memberObj = (members ?? []).find((m: any) => m.user_id === userId)
+
+    // 4. تحديد المواعيد التي تخص اللاعب
+    const eligibleEventIds: string[] = []
+    for (const event of (events ?? [])) {
+      if (filters?.eventTypes?.length && !filters.eventTypes.includes(event.event_type)) continue
+      if (event.event_type === 'match') {
+        const lineupRole = matchLineupMap.get(event.id)
+        if (lineupRole === 'starter' || lineupRole === 'sub') {
+          eligibleEventIds.push(event.id)
+        }
+        // excluded أو غير موجود في القائمة = لا يُحتسب
+      } else {
+        const eligibleIds = getEligibleIdsNew(event, members ?? [])
+        if (eligibleIds.includes(userId)) eligibleEventIds.push(event.id)
+      }
+    }
+
+    // 5. جلب سجلات الحضور
+    const { data: attRecords } = await supabase.from('attendance')
+      .select('event_id, status, absence_type, late_minutes')
+      .eq('team_id', teamId).eq('user_id', userId)
+      .in('event_id', eligibleEventIds.length ? eligibleEventIds : ['__none__'])
+
+    const attMap = new Map<string, any>()
+    ;(attRecords ?? []).forEach((r: any) => attMap.set(r.event_id, r))
+
+    // 6. حساب الإحصاء
+    let present = 0, late = 0, absent = 0
+    let lateMinutesTotal = 0
+    const excused = { total: 0, leave: 0, injury: 0, nationalTeam: 0, adminSuspension: 0, emergency: 0, academic: 0, family: 0, cards: 0, other: 0 }
+
+    for (const eventId of eligibleEventIds) {
+      const r = attMap.get(eventId)
+      if (!r) { absent++; continue }
+
+      if (r.status === 'present') { present++ }
+      else if (r.status === 'late') {
+        late++; present++
+        lateMinutesTotal += Number(r.late_minutes) || 0
+      }
+      else if (r.status === 'excused') {
+        excused.total++
+        const t = r.absence_type
+        if (t === 'leave' || t === 'admin_leave') excused.leave++
+        else if (t === 'injury')            excused.injury++
+        else if (t === 'national_team')     excused.nationalTeam++
+        else if (t === 'admin_suspension')  excused.adminSuspension++
+        else if (t === 'emergency')         excused.emergency++
+        else if (t === 'academic')          excused.academic++
+        else if (t === 'family')            excused.family++
+        else if (t === 'cards')             excused.cards++
+        else                                excused.other++
+      }
+      else { // absent or uncertain (قديم)
+        absent++
+      }
+    }
+
+    const totalEvents = eligibleEventIds.length
+    const generalRate  = totalEvents > 0 ? Math.round((present / totalEvents) * 100) : 0
+    const denominator  = totalEvents - excused.total
+    const effectiveRate = denominator > 0 ? Math.round((present / denominator) * 100) : 0
+
+    return {
+      userId, totalEvents, present, late,
+      absent: absent,
+      excused,
+      lateMinutesTotal,
+      lateAvgMinutes: late > 0 ? Math.round(lateMinutesTotal / late) : 0,
+      generalRate,
+      effectiveRate,
+      streak: 0, // احسبه من الخارج لو احتجت
+    }
+  },
+
+  // ── إحصاء كل أعضاء الفريق (للتقارير) ────────────────────────────
+  async getTeamStats(
+    teamId: string,
+    filters?: { fromDate?: string; toDate?: string; eventTypes?: string[] }
+  ) {
+    const { data: members } = await supabase.from('team_members')
+      .select('user_id, role, profile:profiles!user_id(id, full_name, avatar_url)')
+      .eq('team_id', teamId).eq('status', 'active').is('removed_at', null)
+
+    const results = await Promise.all(
+      (members ?? []).map(async (m: any) => {
+        const stats = await attendanceService.getPlayerStats(teamId, m.user_id, filters)
+        return { ...stats, name: m.profile?.full_name || '', avatarUrl: m.profile?.avatar_url, role: m.role }
+      })
+    )
+    return results
+  },
+
+  // ── البطولات: جلب قوانين إيقاف ───────────────────────────────────
+  async getTournamentRules(tournamentId: string, teamId: string) {
+    const { data } = await supabase.from('tournament_rules')
+      .select('*').eq('tournament_id', tournamentId).eq('team_id', teamId).maybeSingle()
+    return data
+  },
+
+  async saveTournamentRules(rules: {
+    tournamentId: string; teamId: string; createdBy: string
+    yellowCardsLimit: number; yellowSuspensionMatches: number
+    doubleYellowSuspension: number; directRedSuspension: number
+  }) {
+    const payload = {
+      tournament_id: rules.tournamentId, team_id: rules.teamId,
+      yellow_cards_limit: rules.yellowCardsLimit,
+      yellow_suspension_matches: rules.yellowSuspensionMatches,
+      double_yellow_suspension: rules.doubleYellowSuspension,
+      direct_red_suspension: rules.directRedSuspension,
+      created_by: rules.createdBy,
+    }
+    return supabase.from('tournament_rules')
+      .upsert(payload, { onConflict: 'tournament_id,team_id' }).select().single()
+  },
+
+  // ── البطولات: إنشاء إيقاف وتطبيقه ───────────────────────────────
+  async createSuspension(params: {
+    tournamentId?: string; teamId: string; playerId: string
+    reason: string; suspensionType: 'matches' | 'dates'
+    matchesCount?: number; fromDate?: string; toDate?: string
+    notes?: string; createdBy?: string
+  }) {
+    const { data: susp, error } = await supabase.from('tournament_suspensions')
+      .insert({
+        tournament_id: params.tournamentId || null,
+        team_id: params.teamId, player_id: params.playerId,
+        reason: params.reason, suspension_type: params.suspensionType,
+        matches_count: params.matchesCount || null,
+        from_date: params.fromDate || null, to_date: params.toDate || null,
+        is_completed: false, notes: params.notes || null,
+        created_by: params.createdBy || null,
+      }).select().single()
+    if (error || !susp) return { error }
+
+    // طبّق على attendance
+    if (params.suspensionType === 'dates' && params.fromDate && params.toDate) {
+      await attendanceService.applyExcusedAbsence({
+        teamId: params.teamId, userIds: [params.playerId],
+        fromDate: params.fromDate, toDate: params.toDate,
+        eventTypes: ['match'],
+        absenceType: 'cards', sourceType: 'tournament_suspension',
+        sourceId: susp.id, reason: params.notes,
+        markedBy: params.createdBy,
+      })
+    }
+    // إذا كان بالمباريات (matches): يُطبَّق لاحقاً عند تأكيد كل مباراة
+
+    return { data: susp }
+  },
+
+  // ── البطولات: حساب البطاقات وإنشاء إيقاف تلقائي ─────────────────
+  async processCardEvent(params: {
+    teamId: string; playerId: string; tournamentId: string
+    cardType: 'yellow' | 'double_yellow' | 'direct_red'
+    matchEventId: string; createdBy?: string
+  }) {
+    const { teamId, playerId, tournamentId, cardType, createdBy } = params
+
+    const rules = await attendanceService.getTournamentRules(tournamentId, teamId)
+    if (!rules) return null
+
+    if (cardType === 'double_yellow') {
+      return attendanceService.createSuspension({
+        tournamentId, teamId, playerId,
+        reason: 'double_yellow',
+        suspensionType: 'matches',
+        matchesCount: rules.double_yellow_suspension,
+        notes: 'إيقاف تلقائي - بطاقتان صفراوان في نفس المباراة',
+        createdBy,
+      })
+    }
+
+    if (cardType === 'direct_red') {
+      return attendanceService.createSuspension({
+        tournamentId, teamId, playerId,
+        reason: 'direct_red',
+        suspensionType: 'matches',
+        matchesCount: rules.direct_red_suspension,
+        notes: 'إيقاف تلقائي - كرت أحمر مباشر',
+        createdBy,
+      })
+    }
+
+    if (cardType === 'yellow') {
+      // عدّ الصفراء في مباريات هذه البطولة تحديداً
+      const { data: yellowEvents } = await supabase.from('match_events')
+        .select('id, match_id').eq('team_id', teamId)
+        .eq('player_id', playerId).eq('event_type', 'yellow_card')
+      const matchIds = (yellowEvents ?? []).map((e: any) => e.match_id)
+      if (!matchIds.length) return null
+      // تحقق أن المباريات تنتمي لنفس البطولة (via matches.tournament_id)
+      const { data: tournamentMatchData } = await supabase.from('matches')
+        .select('id').eq('tournament_id', tournamentId).in('id', matchIds)
+      const yellowsInTournament = (tournamentMatchData ?? []).length
+
+      if (yellowsInTournament > 0 && yellowsInTournament % rules.yellow_cards_limit === 0) {
+        return attendanceService.createSuspension({
+          tournamentId, teamId, playerId,
+          reason: 'yellow_accumulation',
+          suspensionType: 'matches',
+          matchesCount: rules.yellow_suspension_matches,
+          notes: `إيقاف تلقائي - ${yellowsInTournament} بطاقات صفراء في البطولة`,
+          createdBy,
+        })
+      }
+    }
+
+    return null
+  },
+
+  // ── جلب إيقافات اللاعب النشطة ────────────────────────────────────
+  async getActiveSuspensions(teamId: string, playerId?: string) {
+    let q = supabase.from('tournament_suspensions')
+      .select('*, profile:profiles!player_id(id, full_name, avatar_url)')
+      .eq('team_id', teamId).eq('is_completed', false)
+      .order('created_at', { ascending: false })
+    if (playerId) q = q.eq('player_id', playerId)
+    const { data } = await q
+    return data ?? []
+  },
 }
 
 // ── CALENDAR MARKERS ──────────────────────────────────────────────────
@@ -478,6 +1144,60 @@ export const leaveService = {
   async update(id: string, data: any) {
     return supabase.from('leaves').update(data).eq('id', id)
   }
+}
+
+// ── ADMIN DECISIONS ───────────────────────────────────────────────────
+export const adminDecisionService = {
+  async getAll(teamId: string) {
+    const { data, error } = await supabase.from('admin_decisions')
+      .select('*, creator:profiles!created_by(id, full_name, avatar_url)')
+      .eq('team_id', teamId)
+      .order('created_at', { ascending: false })
+    if (error) { console.error('[adminDecisionService.getAll]', error); return [] }
+    return data ?? []
+  },
+  async create(data: any) {
+    const result = await supabase.from('admin_decisions').insert(data).select().single()
+    if (result.data) {
+      const { data: events } = await supabase.from('events').select('*')
+        .eq('team_id', data.team_id)
+        .gte('start_datetime', `${data.from_date}T00:00:00`)
+        .lte('start_datetime', `${data.to_date}T23:59:59`)
+      await applyAdminDecisionsToEvents(data.team_id, events ?? [], data.created_by)
+    }
+    return result
+  },
+  async applyToEvents(teamId: string, events: any[], markedBy?: string) {
+    return applyAdminDecisionsToEvents(teamId, events, markedBy)
+  }
+}
+
+// ── ABSENCES ──────────────────────────────────────────────────────────
+export const absenceService = {
+  async getAll(teamId: string) {
+    const { data, error } = await supabase.from('absences').select('*')
+      .eq('team_id', teamId).order('created_at', { ascending: false })
+    if (error) { console.error('[absenceService.getAll]', error); return [] }
+    if (!data?.length) return []
+    const userIds   = [...new Set(data.map((a: any) => a.user_id))]
+    const recIds    = [...new Set(data.map((a: any) => a.recorded_by).filter(Boolean))]
+    const allIds    = [...new Set([...userIds, ...recIds])]
+    const { data: profs } = await supabase.from('profiles')
+      .select('id, full_name, avatar_url').in('id', allIds)
+    const pm: Record<string, any> = {}
+    ;(profs ?? []).forEach((p: any) => { pm[p.id] = p })
+    return data.map((a: any) => ({
+      ...a,
+      profile:  pm[a.user_id]    ?? null,
+      recorder: pm[a.recorded_by] ?? null,
+    }))
+  },
+  async create(payload: any) {
+    return supabase.from('absences').insert([payload]).select().single()
+  },
+  async remove(id: string) {
+    return supabase.from('absences').delete().eq('id', id)
+  },
 }
 
 // ── COACH NOTES ───────────────────────────────────────────────────────

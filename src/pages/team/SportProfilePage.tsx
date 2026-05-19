@@ -9,7 +9,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import {
   eventService, financeService, medicalService,
   noteService, measurementService, fitnessService, pointsService, rewardService,
-  matchStatsService, tournamentService, technicalEvalService,
+  matchStatsService, tournamentService, technicalEvalService, teamService,
 } from '../../services'
 import { Avatar, Spinner } from '../../components/ui'
 import { formatDate, RIYAL } from '../../utils/helpers'
@@ -393,8 +393,8 @@ export default function SportProfilePage() {
   const excusedCount  = attendance.filter(a => a.status === 'excused').length
   const totalEvents   = attendance.length
   const effectiveDenom = totalEvents - excusedCount
-  const attPct        = totalEvents > 0 ? Math.round(presentCount / totalEvents * 100) : 0
-  const effectiveAttPct = effectiveDenom > 0 ? Math.round(presentCount / effectiveDenom * 100) : (totalEvents > 0 ? 100 : 0)
+  const attPct        = effectiveDenom > 0 ? Math.round(presentCount / effectiveDenom * 100) : (totalEvents > 0 ? 100 : 0)
+  const effectiveAttPct = attPct
 
   const totalRequired = finance.obligations.reduce((s, o) => s + o.amount, 0)
   const totalPaid     = finance.obligations.reduce((s, o) => {
@@ -617,11 +617,11 @@ export default function SportProfilePage() {
             <h3 className="font-bold text-sm">سجل الحضور والغياب</h3>
             <div className="flex flex-col items-end gap-1">
               <span className={`badge text-xs font-bold ${attPct >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                {presentCount}/{totalEvents} · إجمالي {attPct}%
+                {presentCount}/{effectiveDenom} · فعلي {attPct}%
               </span>
               {excusedCount > 0 && (
                 <span className={`badge text-xs font-bold ${effectiveAttPct >= 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
-                  فعلي {effectiveAttPct}% <span className="font-normal opacity-70">(بعذر: {excusedCount})</span>
+                  لا تحتسب الأعذار في النسبة <span className="font-normal opacity-70">(بعذر: {excusedCount})</span>
                 </span>
               )}
             </div>

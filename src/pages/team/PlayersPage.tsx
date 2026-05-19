@@ -2,12 +2,12 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Plus, Trophy, ChevronDown, ChevronUp, Send, ExternalLink,
-  Paperclip, List, LayoutGrid, ArrowUpDown, ChevronRight,
+  Paperclip, ArrowUpDown, ChevronRight,
   X, AlertCircle, Image, FileText,
   Ruler, Activity, Star, CheckSquare, DollarSign, Stethoscope, BookOpen, BarChart2
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService, matchStatsService, tournamentService, technicalEvalService } from '../../services'
+import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService, matchStatsService, tournamentService, technicalEvalService, leaveService, adminDecisionService } from '../../services'
 import {
   getCurrentSeason, getSeasonOptions, getActiveIndicators,
   calcStrengthAvg, calcDevAvg, calcOverallAvg, calcImprovementRate,
@@ -264,12 +264,15 @@ const REPORT_TYPES = [
 type SortKey = 'join_asc' | 'join_desc' | 'age_asc' | 'age_desc' | 'att_asc' | 'att_desc' | 'inj_asc' | 'inj_desc'
 
 interface PlayerStat {
-  attendancePct: number    // overall (excused counts as absent)
-  effectiveAttPct: number  // effective (excused events removed from denominator)
+  attendancePct: number
+  effectiveAttPct: number
+  generalAttPct: number
   excusedCount: number
   totalEvents: number
   injuryCount: number
   points: number
+  matchesPlayed: number
+  isAvailable: boolean
 }
 
 function calcAge(dob: string | undefined): number | null {
@@ -325,8 +328,7 @@ export default function PlayersPage() {
   const [playerStats, setPlayerStats] = useState<Record<string, PlayerStat>>({})
   const [loadingStats, setLoadingStats] = useState(false)
 
-  // View & sort
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
+  // Sort
   const [sortKey, setSortKey] = useState<SortKey>('join_desc')
   const [showSort, setShowSort] = useState(false)
 
@@ -411,24 +413,75 @@ export default function PlayersPage() {
   async function loadAllStats(players: any[]) {
     if (!teamId) return
     setLoadingStats(true)
+
+    const today = new Date().toISOString().slice(0, 10)
+
+    // Team-level data (single fetches)
+    const [{ lineups }, allMedical, allLeaves, allDecisions] = await Promise.all([
+      matchStatsService.getTeamMatchStats(teamId),
+      medicalService.getReports(teamId),
+      leaveService.getAll(teamId),
+      adminDecisionService.getAll(teamId),
+    ])
+
+    // Matches played count per player (starter or sub = actually played)
+    const matchCountMap: Record<string, number> = {}
+    for (const lineup of (lineups as any[])) {
+      for (const p of (lineup.players || [])) {
+        if (p.role === 'starter' || p.role === 'sub') {
+          matchCountMap[p.user_id] = (matchCountMap[p.user_id] || 0) + 1
+        }
+      }
+    }
+
+    // Medical reports grouped by player
+    const medicalByPlayer: Record<string, any[]> = {}
+    for (const r of (allMedical as any[])) {
+      if (!medicalByPlayer[r.player_id]) medicalByPlayer[r.player_id] = []
+      medicalByPlayer[r.player_id].push(r)
+    }
+
+    // Active injury player IDs
+    const activeInjuryIds = new Set(
+      (allMedical as any[]).filter(r => r.status === 'active' || r.status === 'monitoring').map(r => r.player_id)
+    )
+
+    // Leave-unavailable today
+    const leaveUnavailable = new Set(
+      (allLeaves as any[]).filter(l => l.status === 'approved' && l.from_date <= today && l.to_date >= today).map(l => l.user_id)
+    )
+
+    // Admin decision unavailable today
+    const decisionUnavailable = new Set<string>()
+    for (const dec of (allDecisions as any[])) {
+      if (dec.from_date <= today && dec.to_date >= today) {
+        for (const uid of (dec.target_user_ids || [])) decisionUnavailable.add(uid)
+      }
+    }
+
     const statsMap: Record<string, PlayerStat> = {}
     await Promise.all(players.map(async (m: any) => {
-      const [att, medical, pts] = await Promise.all([
+      const [att, pts] = await Promise.all([
         eventService.getMyAttendance(teamId!, m.user_id),
-        medicalService.getPlayerReports(teamId!, m.user_id),
         pointsService.getUserPointsTotal ? pointsService.getUserPointsTotal(teamId!, m.user_id) : Promise.resolve(0)
       ])
       const present = att.filter((a: any) => a.status === 'present' || a.status === 'late').length
       const excused = att.filter((a: any) => a.status === 'excused').length
       const total = att.length
       const effectiveDenom = total - excused
+      const effectiveAttPct = effectiveDenom > 0 ? Math.round(present / effectiveDenom * 100) : (total > 0 ? 100 : 0)
+      const generalAttPct = total > 0 ? Math.round(present / total * 100) : 0
+      const playerMedical = medicalByPlayer[m.user_id] || []
       statsMap[m.user_id] = {
-        attendancePct: total > 0 ? Math.round(present / total * 100) : 0,
-        effectiveAttPct: effectiveDenom > 0 ? Math.round(present / effectiveDenom * 100) : (total > 0 ? 100 : 0),
+        attendancePct: effectiveAttPct,
+        effectiveAttPct,
+        generalAttPct,
         excusedCount: excused,
         totalEvents: total,
-        injuryCount: medical.filter((r: any) => r.report_type === 'injury').length,
-        points: pts as number || 0
+        injuryCount: playerMedical.filter((r: any) => r.report_type === 'injury').length,
+        points: pts as number || 0,
+        matchesPlayed: matchCountMap[m.user_id] || 0,
+        isAvailable: !activeInjuryIds.has(m.user_id) && !leaveUnavailable.has(m.user_id) && !decisionUnavailable.has(m.user_id),
       }
     }))
     setPlayerStats(statsMap)
@@ -678,8 +731,8 @@ export default function PlayersPage() {
     const plExcusedCount  = playerAttendance.filter(a => a.status === 'excused').length
     const plTotalEvents   = playerAttendance.length
     const plEffDenom      = plTotalEvents - plExcusedCount
-    const plAttPct        = plTotalEvents > 0 ? Math.round(plPresentCount / plTotalEvents * 100) : 0
-    const plEffAttPct     = plEffDenom > 0 ? Math.round(plPresentCount / plEffDenom * 100) : (plTotalEvents > 0 ? 100 : 0)
+    const plAttPct        = plEffDenom > 0 ? Math.round(plPresentCount / plEffDenom * 100) : (plTotalEvents > 0 ? 100 : 0)
+    const plEffAttPct     = plAttPct
 
     // ── Measurements computed ──
     const plMetricSeries: Record<string, Array<{ date: string; value: number }>> = {}
@@ -1208,12 +1261,12 @@ export default function PlayersPage() {
               <div className="flex flex-col items-end gap-1">
                 {plTotalEvents > 0 && (
                   <span className={`badge text-xs font-bold ${plAttPct >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                    {plPresentCount}/{plTotalEvents} · إجمالي {plAttPct}%
+                    {plPresentCount}/{plEffDenom} · فعلي {plAttPct}%
                   </span>
                 )}
                 {plExcusedCount > 0 && (
                   <span className={`badge text-xs font-bold ${plEffAttPct >= 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
-                    فعلي {plEffAttPct}% <span className="font-normal opacity-70">(بعذر: {plExcusedCount})</span>
+                    لا تحتسب الأعذار في النسبة <span className="font-normal opacity-70">(بعذر: {plExcusedCount})</span>
                   </span>
                 )}
               </div>
@@ -1969,11 +2022,6 @@ export default function PlayersPage() {
                 </>
               )}
             </div>
-            {/* View toggle */}
-            <button onClick={() => setViewMode(v => v === 'grid' ? 'list' : 'grid')}
-              className="btn btn-ghost btn-sm">
-              {viewMode === 'grid' ? <List size={15}/> : <LayoutGrid size={15}/>}
-            </button>
           </div>
         }/>
 
@@ -1987,126 +2035,163 @@ export default function PlayersPage() {
 
       {loading ? <div className="flex justify-center py-10"><Spinner/></div>
         : sorted.length === 0 ? <div className="card"><EmptyState icon={<Trophy size={24}/>} title="لا يوجد لاعبون"/></div>
-        : viewMode === 'list'
-          // ── Numbered list view ──
-          ? (
-            <div className="card p-0 overflow-hidden">
-              {sorted.map((m, i) => {
-                const stat = playerStats[m.user_id]
-                const age = calcAge(m.profile?.date_of_birth)
-                const unread = unreadNotes[m.user_id] || 0
-                const activeInj = stat?.injuryCount ?? 0
+        : (() => {
+            const POSITION_GROUPS = [
+              { label: 'حراس المرمى', positions: ['حارس مرمى'] },
+              { label: 'المدافعون', positions: ['ظهير أيمن', 'ظهير أيسر', 'قلب دفاع', 'ليبرو'] },
+              { label: 'خط الوسط', positions: ['محور دفاعي', 'محور', 'وسط أيمن', 'وسط أيسر', 'وسط هجومي', 'صانع لعب', 'جناح أيمن', 'جناح أيسر'] },
+              { label: 'المهاجمون', positions: ['مهاجم ثاني', 'مهاجم', 'رأس حربة'] },
+            ]
+            const knownPositions = POSITION_GROUPS.flatMap(g => g.positions)
 
-                return (
-                  <button key={m.id}
-                    onClick={() => openPlayer(m)}
-                    className="w-full flex items-center gap-3 px-4 py-3 border-b border-slate-50 last:border-0 hover:bg-slate-50 transition-colors text-right border-none bg-transparent cursor-pointer">
-                    {/* Rank */}
-                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-extrabold flex-shrink-0 ${
-                      i === 0 ? 'bg-yellow-100 text-yellow-700'
-                      : i === 1 ? 'bg-slate-100 text-slate-600'
-                      : i === 2 ? 'bg-orange-100 text-orange-600'
-                      : 'bg-slate-50 text-slate-400'
-                    }`}>{i + 1}</div>
-
-                    <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="sm" badge={unread}/>
-
-                    <div className="flex-1 min-w-0 text-right">
-                      <div className="font-bold text-sm truncate">{m.profile?.full_name}</div>
-                      <div className="flex items-center gap-2 flex-wrap mt-0.5">
-                        <PositionBadges member={m} compact />
-                        {age !== null && <span className="text-xs text-slate-400">{age} سنة</span>}
-                        <span className="text-xs text-slate-400">{new Date(m.joined_at).toLocaleDateString('ar-SA')}</span>
-                      </div>
-                    </div>
-
-                    {/* Stats chips */}
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      {stat ? (
-                        <>
-                          <div className="flex flex-col items-end gap-0.5">
-                            <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${stat.attendancePct >= 70 ? 'bg-emerald-50 text-emerald-700' : stat.attendancePct >= 40 ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-600'}`}>
-                              {stat.attendancePct}%
-                            </span>
-                            {stat.excusedCount > 0 && (
-                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg ${stat.effectiveAttPct >= 70 ? 'bg-emerald-50 text-emerald-600' : stat.effectiveAttPct >= 40 ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-500'}`}>
-                                {stat.effectiveAttPct}% ف
-                              </span>
-                            )}
-                          </div>
-                          {stat.points > 0 && (
-                            <span className="text-xs font-bold px-2 py-0.5 rounded-lg bg-yellow-50 text-yellow-700">
-                              {stat.points}⭐
-                            </span>
-                          )}
-                          {activeInj > 0 && (
-                            <span className="text-xs font-bold px-2 py-0.5 rounded-lg bg-red-50 text-red-600">
-                              🤕{activeInj}
-                            </span>
-                          )}
-                        </>
-                      ) : loadingStats ? (
-                        <Spinner size="sm"/>
-                      ) : null}
-                      <ChevronRight size={14} className="text-slate-300 flex-shrink-0"/>
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-          )
-          // ── Grid view ──
-          : (
-            <div className="grid md:grid-cols-2 gap-3">
-              {sorted.map(m => {
-                const stat = playerStats[m.user_id]
-                const age = calcAge(m.profile?.date_of_birth)
-                const unread = unreadNotes[m.user_id] || 0
-
-                return (
-                  <div key={m.id} className="card-hover mb-0" onClick={() => openPlayer(m)}>
-                    <div className="flex items-center gap-3 mb-3">
-                      <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md" badge={unread}/>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-bold text-sm truncate">{m.profile?.full_name}</div>
-                        <div className="mt-1"><PositionBadges member={m} compact /></div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          {age !== null && <span className="text-xs text-slate-400">{age} سنة</span>}
-                          <span className="text-xs text-slate-400">انضم {new Date(m.joined_at).toLocaleDateString('ar-SA')}</span>
-                        </div>
-                      </div>
-                      <div className="text-xs text-slate-400">←</div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      <div className={`rounded-xl p-2 text-center ${!stat || stat.attendancePct === 0 ? 'bg-slate-50' : stat.attendancePct >= 70 ? 'bg-emerald-50' : 'bg-amber-50'}`}>
-                        <div className={`text-sm font-bold ${!stat ? 'text-slate-400' : stat.attendancePct >= 70 ? 'text-emerald-700' : 'text-amber-700'}`}>
-                          {stat ? `${stat.attendancePct}%` : loadingStats ? '…' : '—'}
-                        </div>
-                        <div className="text-xs text-slate-400">إجمالي</div>
-                        {stat && stat.excusedCount > 0 && (
-                          <div className={`text-[10px] font-bold mt-0.5 ${stat.effectiveAttPct >= 70 ? 'text-emerald-600' : 'text-amber-600'}`}>
-                            {stat.effectiveAttPct}% فعلي
-                          </div>
+            const renderRow = (m: any) => {
+              const stat = playerStats[m.user_id]
+              const dob = m.profile?.date_of_birth
+              const age = dob ? calcAge(dob) : null
+              const primary = m.primary_position || m.position_label || ''
+              const rawSec = m.secondary_positions ?? []
+              const secondary: string[] = (Array.isArray(rawSec) ? rawSec : typeof rawSec === 'string' ? rawSec.replace(/^\{|\}$/g, '').split(',').map((p: string) => p.trim()).filter(Boolean) : []).filter((p: string) => p && p !== primary).slice(0, 3)
+              return (
+                <tr key={m.id} className="hover:bg-slate-50/70 transition-colors cursor-pointer" onClick={() => openPlayer(m)}>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <div className="relative flex-shrink-0">
+                        <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="sm" badge={unreadNotes[m.user_id] || 0}/>
+                        {stat && (
+                          <span className={`absolute -bottom-0.5 -left-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${stat.isAvailable ? 'bg-emerald-500' : 'bg-red-500'}`}/>
                         )}
                       </div>
-                      <div className="bg-yellow-50 rounded-xl p-2 text-center">
-                        <div className="text-sm font-bold text-yellow-600">
-                          {stat ? stat.points : loadingStats ? '…' : '—'}
-                        </div>
-                        <div className="text-xs text-slate-400">نقاط</div>
-                      </div>
-                      <div className={`rounded-xl p-2 text-center ${stat?.injuryCount ? 'bg-red-50' : 'bg-slate-50'}`}>
-                        <div className={`text-sm font-bold ${stat?.injuryCount ? 'text-red-600' : 'text-slate-600'}`}>
-                          {stat ? stat.injuryCount : loadingStats ? '…' : '—'}
-                        </div>
-                        <div className="text-xs text-slate-400">إصابات</div>
+                      <div className="min-w-0">
+                        <div className="font-bold text-sm text-slate-800 truncate max-w-[120px]">{m.profile?.full_name || 'مجهول'}</div>
+                        {m.jersey_number && <div className="text-[10px] text-slate-400">#{m.jersey_number}</div>}
                       </div>
                     </div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
+                  </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    {dob ? (
+                      <div>
+                        <div className="text-xs text-slate-600">{new Date(dob).toLocaleDateString('ar-SA', { year:'numeric', month:'short', day:'numeric' })}</div>
+                        {age !== null && <div className="text-[10px] text-slate-400">{age} سنة</div>}
+                      </div>
+                    ) : <span className="text-slate-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {m.preferred_foot
+                      ? <span className="inline-block text-[11px] px-2 py-0.5 rounded-lg bg-sky-50 text-sky-700 border border-sky-200 font-semibold">{m.preferred_foot}</span>
+                      : <span className="text-slate-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="space-y-0.5">
+                      {primary && <div><span className="inline-block text-[11px] px-2 py-0.5 rounded-lg bg-brand-500 text-white font-bold">{primary}</span></div>}
+                      {secondary.length > 0 && (
+                        <div className="flex flex-wrap gap-0.5">
+                          {secondary.map(pos => (
+                            <span key={pos} className="inline-block text-[10px] px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 font-semibold">{pos}</span>
+                          ))}
+                        </div>
+                      )}
+                      {!primary && secondary.length === 0 && <span className="text-slate-300 text-xs">—</span>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-center">
+                    {stat ? (
+                      <span className={`text-xs font-bold ${stat.generalAttPct >= 80 ? 'text-emerald-600' : stat.generalAttPct >= 60 ? 'text-amber-600' : 'text-red-500'}`}>
+                        {stat.generalAttPct}%
+                      </span>
+                    ) : loadingStats ? <Spinner size="sm"/> : <span className="text-slate-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-center">
+                    {stat ? (
+                      <span className={`text-xs font-bold ${stat.effectiveAttPct >= 80 ? 'text-emerald-600' : stat.effectiveAttPct >= 60 ? 'text-amber-600' : 'text-red-500'}`}>
+                        {stat.effectiveAttPct}%
+                      </span>
+                    ) : loadingStats ? <Spinner size="sm"/> : <span className="text-slate-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-center">
+                    {stat ? (
+                      <span className={`text-xs font-bold ${stat.matchesPlayed > 0 ? 'text-slate-700' : 'text-slate-300'}`}>
+                        {stat.matchesPlayed || '—'}
+                      </span>
+                    ) : loadingStats ? <Spinner size="sm"/> : <span className="text-slate-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-center">
+                    {stat ? (
+                      <span className={`text-xs font-bold ${stat.injuryCount > 0 ? 'text-red-500' : 'text-slate-300'}`}>
+                        {stat.injuryCount || '—'}
+                      </span>
+                    ) : loadingStats ? <Spinner size="sm"/> : <span className="text-slate-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-center">
+                    {stat ? (
+                      <span className={`text-xs font-bold ${stat.points > 0 ? 'text-brand-600' : stat.points < 0 ? 'text-red-500' : 'text-slate-400'}`}>
+                        {stat.points !== 0 ? stat.points : '—'}
+                      </span>
+                    ) : <span className="text-slate-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                    <button onClick={() => openPlayer(m)}
+                      title="ملف اللاعب"
+                      className="p-1.5 text-slate-300 hover:text-brand-600 hover:bg-brand-50 rounded-lg transition-colors">
+                      <ExternalLink size={13}/>
+                    </button>
+                  </td>
+                </tr>
+              )
+            }
+
+            return (
+              <div className="card p-0 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm" dir="rtl">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-100">
+                        <th className="text-right px-4 py-2.5 text-xs font-bold text-slate-500">اللاعب</th>
+                        <th className="text-right px-3 py-2.5 text-xs font-bold text-slate-500 whitespace-nowrap">الميلاد</th>
+                        <th className="text-right px-3 py-2.5 text-xs font-bold text-slate-500 whitespace-nowrap">القدم</th>
+                        <th className="text-right px-3 py-2.5 text-xs font-bold text-slate-500">المركز</th>
+                        <th className="text-center px-3 py-2.5 text-xs font-bold text-slate-500 whitespace-nowrap">ح. عام</th>
+                        <th className="text-center px-3 py-2.5 text-xs font-bold text-slate-500 whitespace-nowrap">ح. فعلي</th>
+                        <th className="text-center px-3 py-2.5 text-xs font-bold text-slate-500 whitespace-nowrap">مباريات</th>
+                        <th className="text-center px-3 py-2.5 text-xs font-bold text-slate-500 whitespace-nowrap">إصابات</th>
+                        <th className="text-center px-3 py-2.5 text-xs font-bold text-slate-500">النقاط</th>
+                        <th className="px-3 py-2.5 w-8"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {POSITION_GROUPS.map(group => {
+                        const groupPlayers = sorted.filter(m => group.positions.includes(m.primary_position || m.position_label || ''))
+                        if (groupPlayers.length === 0) return null
+                        return (
+                          <React.Fragment key={group.label}>
+                            <tr>
+                              <td colSpan={10} className="px-4 py-1.5 text-[11px] font-extrabold text-slate-400 bg-slate-50/80 border-b border-slate-100 uppercase tracking-wide">
+                                {group.label}
+                              </td>
+                            </tr>
+                            {groupPlayers.map(renderRow)}
+                          </React.Fragment>
+                        )
+                      })}
+                      {(() => {
+                        const ungrouped = sorted.filter(m => !knownPositions.includes(m.primary_position || m.position_label || ''))
+                        if (ungrouped.length === 0) return null
+                        return (
+                          <React.Fragment key="ungrouped">
+                            <tr>
+                              <td colSpan={10} className="px-4 py-1.5 text-[11px] font-extrabold text-slate-400 bg-slate-50/80 border-b border-slate-100 uppercase tracking-wide">
+                                أخرى
+                              </td>
+                            </tr>
+                            {ungrouped.map(renderRow)}
+                          </React.Fragment>
+                        )
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          })()}
     </div>
   )
 }

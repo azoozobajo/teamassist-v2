@@ -10,6 +10,7 @@ export default function ProfilePage() {
     last_name:    profile?.last_name    || '',
     father_name:  profile?.father_name  || '',
     phone:        profile?.phone        || '',
+    email:        profile?.email        || user?.email || '',
     date_of_birth:profile?.date_of_birth|| '',
     gender:       profile?.gender       || '',
     avatar_url:   profile?.avatar_url   || '',
@@ -104,7 +105,11 @@ export default function ProfilePage() {
           </FormField>
 
           <FormField label="رقم الجوال">
-            <input className="form-input" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="05xxxxxxxx" />
+            <input className="form-input" type="tel" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="05xxxxxxxx" />
+          </FormField>
+
+          <FormField label="البريد الإلكتروني">
+            <input className="form-input" type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="example@email.com" />
           </FormField>
 
           <div className="grid grid-cols-2 gap-3">

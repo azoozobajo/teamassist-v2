@@ -56,15 +56,17 @@ export default function DashboardPage() {
 
         // Per-team attendance stats (uses joined event type)
         const myAtt = await eventService.getMyAttendance(t.id, user.id)
-        let mT = 0, mP = 0, trT = 0, trP = 0
+        let mT = 0, mP = 0, mE = 0, trT = 0, trP = 0, trE = 0
         myAtt.forEach((a: any) => {
           const isPresent = a.status === 'present' || a.status === 'late'
-          if (a.event?.event_type === 'match')     { mT++; if (isPresent) mP++ }
-          else if (a.event?.event_type === 'training') { trT++; if (isPresent) trP++ }
+          const isExcused = a.status === 'excused'
+          if (a.event?.event_type === 'match')     { mT++; if (isPresent) mP++; if (isExcused) mE++ }
+          else if (a.event?.event_type === 'training') { trT++; if (isPresent) trP++; if (isExcused) trE++ }
         })
         perTeam.push({
           teamId: t.id, teamName: t.name, myRole: t.myRole, logo_url: t.logo_url,
-          matchTotal: mT, matchPresent: mP, trainingTotal: trT, trainingPresent: trP, archived: false
+          matchTotal: mT, matchPresent: mP, matchExcused: mE,
+          trainingTotal: trT, trainingPresent: trP, trainingExcused: trE, archived: false
         })
 
         try {
@@ -82,16 +84,18 @@ export default function DashboardPage() {
         for (const t of archivedTs) {
           try {
             const myAtt = await eventService.getMyAttendance(t.id, user.id)
-            let mT = 0, mP = 0, trT = 0, trP = 0
+            let mT = 0, mP = 0, mE = 0, trT = 0, trP = 0, trE = 0
             myAtt.forEach((a: any) => {
               const isPresent = a.status === 'present' || a.status === 'late'
-              if (a.event?.event_type === 'match')     { mT++; if (isPresent) mP++ }
-              else if (a.event?.event_type === 'training') { trT++; if (isPresent) trP++ }
+              const isExcused = a.status === 'excused'
+              if (a.event?.event_type === 'match')     { mT++; if (isPresent) mP++; if (isExcused) mE++ }
+              else if (a.event?.event_type === 'training') { trT++; if (isPresent) trP++; if (isExcused) trE++ }
             })
             if (mT > 0 || trT > 0)
               perTeam.push({
                 teamId: t.id, teamName: t.name, myRole: t.myRole, logo_url: t.logo_url,
-                matchTotal: mT, matchPresent: mP, trainingTotal: trT, trainingPresent: trP, archived: true
+                matchTotal: mT, matchPresent: mP, matchExcused: mE,
+                trainingTotal: trT, trainingPresent: trP, trainingExcused: trE, archived: true
               })
           } catch {}
         }
@@ -165,13 +169,18 @@ export default function DashboardPage() {
   const derivedStats = useMemo(() => {
     const playerTeams = statsPerTeam.filter(s => s.myRole === 'player')
     const rel = selStatTeam ? playerTeams.filter(s => s.teamId === selStatTeam) : playerTeams
-    const mT = rel.reduce((s, r) => s + r.matchTotal, 0)
-    const mP = rel.reduce((s, r) => s + r.matchPresent, 0)
+    const mT  = rel.reduce((s, r) => s + r.matchTotal, 0)
+    const mP  = rel.reduce((s, r) => s + r.matchPresent, 0)
+    const mE  = rel.reduce((s, r) => s + (r.matchExcused || 0), 0)
     const trT = rel.reduce((s, r) => s + r.trainingTotal, 0)
     const trP = rel.reduce((s, r) => s + r.trainingPresent, 0)
+    const trE = rel.reduce((s, r) => s + (r.trainingExcused || 0), 0)
+    const mDenom  = mT  - mE
+    const trDenom = trT - trE
     return {
-      matchAttPct: mT ? Math.round(mP / mT * 100) : 0,
-      trainingAttPct: trT ? Math.round(trP / trT * 100) : 0,
+      matchAttPct:    mDenom  > 0 ? Math.round(mP  / mDenom  * 100) : (mT  > 0 ? 100 : 0),
+      trainingAttPct: trDenom > 0 ? Math.round(trP / trDenom * 100) : (trT > 0 ? 100 : 0),
+      matchExcused: mE, trainingExcused: trE,
       matchTotal: mT, trainingTotal: trT,
       playerTeams
     }
@@ -426,7 +435,10 @@ export default function DashboardPage() {
               </div>
               <div className="stat-value text-blue-600">{derivedStats.matchAttPct}%</div>
               <div className="stat-label">حضور المباريات</div>
-              <div className="text-[11px] text-slate-400 mt-1">{derivedStats.matchTotal} مباراة</div>
+              <div className="text-[11px] text-slate-400 mt-1">
+                {derivedStats.matchTotal} مباراة
+                {derivedStats.matchExcused > 0 && <span className="mr-1 text-slate-300">· {derivedStats.matchExcused} بعذر</span>}
+              </div>
               <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                 <div className="h-full bg-blue-500 rounded-full transition-all duration-500"
                   style={{ width: `${derivedStats.matchAttPct}%` }} />
@@ -438,7 +450,10 @@ export default function DashboardPage() {
               </div>
               <div className="stat-value text-brand-600">{derivedStats.trainingAttPct}%</div>
               <div className="stat-label">حضور التدريبات</div>
-              <div className="text-[11px] text-slate-400 mt-1">{derivedStats.trainingTotal} تدريب</div>
+              <div className="text-[11px] text-slate-400 mt-1">
+                {derivedStats.trainingTotal} تدريب
+                {derivedStats.trainingExcused > 0 && <span className="mr-1 text-slate-300">· {derivedStats.trainingExcused} بعذر</span>}
+              </div>
               <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                 <div className="h-full bg-emerald-500 rounded-full transition-all duration-500"
                   style={{ width: `${derivedStats.trainingAttPct}%` }} />

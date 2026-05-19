@@ -1,8 +1,8 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Plus, Trophy, Calendar, MapPin, Filter, ChevronRight, X, ChevronUp, ChevronDown, Edit2, Trash2 } from 'lucide-react'
+import { Plus, Trophy, Calendar, MapPin, Filter, ChevronRight, X, ChevronUp, ChevronDown, Edit2, Trash2, Settings } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { matchService, matchStatsService, teamService, tournamentService } from '../../services'
+import { matchService, matchStatsService, teamService, tournamentService, attendanceService } from '../../services'
 import { Spinner, PageHeader, Modal, FormField, Tabs, EmptyState, ConfirmDialog } from '../../components/ui'
 import { canManageEvents, formatDate } from '../../utils/helpers'
 import { getPrimaryPosition } from '../../components/sports/PositionBadges'
@@ -62,6 +62,11 @@ export default function MatchesPage() {
   const [dateChangeReason, setDateChangeReason] = useState('')
   const [deleteError, setDeleteError] = useState('')
 
+  const [showRulesModal, setShowRulesModal] = useState<any>(null)
+  const [rulesForm, setRulesForm] = useState({ yellow_cards_limit: 5, yellow_suspension_matches: 1, double_yellow_suspension: 1, direct_red_suspension: 3 })
+  const [loadingRules, setLoadingRules] = useState(false)
+  const [savingRules, setSavingRules] = useState(false)
+
   const set = (k: string, v: any) => setForm((p: any) => ({ ...p, [k]: v }))
   const setTourn = (k: string, v: any) => setTournForm((p: any) => ({ ...p, [k]: v }))
 
@@ -91,6 +96,39 @@ export default function MatchesPage() {
     const data = await matchStatsService.getTeamMatchStats(teamId)
     setStatsData(data)
   }
+
+  async function openRulesModal(tournament: any) {
+    if (!teamId) return
+    setShowRulesModal(tournament)
+    setLoadingRules(true)
+    const existing = await attendanceService.getTournamentRules(tournament.id, teamId)
+    if (existing) {
+      setRulesForm({
+        yellow_cards_limit: existing.yellow_cards_limit ?? 5,
+        yellow_suspension_matches: existing.yellow_suspension_matches ?? 1,
+        double_yellow_suspension: existing.double_yellow_suspension ?? 1,
+        direct_red_suspension: existing.direct_red_suspension ?? 3,
+      })
+    } else {
+      setRulesForm({ yellow_cards_limit: 5, yellow_suspension_matches: 1, double_yellow_suspension: 1, direct_red_suspension: 3 })
+    }
+    setLoadingRules(false)
+  }
+
+  async function saveRules() {
+    if (!teamId || !user || !showRulesModal) return
+    setSavingRules(true)
+    await attendanceService.saveTournamentRules({
+      tournamentId: showRulesModal.id, teamId, createdBy: user.id,
+      yellowCardsLimit: rulesForm.yellow_cards_limit,
+      yellowSuspensionMatches: rulesForm.yellow_suspension_matches,
+      doubleYellowSuspension: rulesForm.double_yellow_suspension,
+      directRedSuspension: rulesForm.direct_red_suspension,
+    })
+    setSavingRules(false)
+    setShowRulesModal(null)
+  }
+
 
   useEffect(() => {
     if (mainTab === 'stats' && !statsData) loadStats()
@@ -585,9 +623,16 @@ export default function MatchesPage() {
                         <span className={`badge ${t.status === 'active' ? 'badge-blue' : 'badge-gray'}`}>{t.status === 'active' ? 'جارية' : 'منتهية'}</span>
                       </div>
                     </div>
-                    <button onClick={() => { setFilterTourn(t.id); setMainTab('matches') }} className="btn btn-ghost btn-sm text-xs">
-                      عرض المباريات
-                    </button>
+                    <div className="flex flex-col gap-1">
+                      <button onClick={() => { setFilterTourn(t.id); setMainTab('matches') }} className="btn btn-ghost btn-sm text-xs">
+                        عرض المباريات
+                      </button>
+                      {canManage && (
+                        <button onClick={() => openRulesModal(t)} className="btn btn-ghost btn-sm text-xs text-slate-400 hover:text-brand-600">
+                          <Settings size={11}/> قوانين الإيقاف
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               )
@@ -943,6 +988,52 @@ export default function MatchesPage() {
             )}
           </div>
         </div>
+      </Modal>
+
+      {/* ── Tournament Rules Modal ── */}
+      <Modal open={!!showRulesModal} onClose={() => setShowRulesModal(null)}
+        title={`قوانين الإيقاف — ${showRulesModal?.name || ''}`}>
+        {loadingRules
+          ? <div className="flex justify-center py-6"><Spinner /></div>
+          : (
+            <>
+              <div className="bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 mb-4 text-xs text-amber-700">
+                هذه الإعدادات تحدد متى يتوقف اللاعب تلقائياً عند تراكم البطاقات في هذه البطولة.
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <FormField label="حد البطاقات الصفراء للإيقاف">
+                  <input type="number" min={1} max={20} className="form-input"
+                    value={rulesForm.yellow_cards_limit}
+                    onChange={e => setRulesForm(p => ({ ...p, yellow_cards_limit: parseInt(e.target.value) || 1 }))}/>
+                  <p className="text-[11px] text-slate-400 mt-1">عدد الصفراء التي تؤدي للإيقاف</p>
+                </FormField>
+                <FormField label="مباريات الإيقاف (صفراء متراكمة)">
+                  <input type="number" min={1} max={10} className="form-input"
+                    value={rulesForm.yellow_suspension_matches}
+                    onChange={e => setRulesForm(p => ({ ...p, yellow_suspension_matches: parseInt(e.target.value) || 1 }))}/>
+                  <p className="text-[11px] text-slate-400 mt-1">عدد المباريات الموقوف عنها</p>
+                </FormField>
+                <FormField label="إيقاف بطاقتان صفراوان (نفس مباراة)">
+                  <input type="number" min={1} max={10} className="form-input"
+                    value={rulesForm.double_yellow_suspension}
+                    onChange={e => setRulesForm(p => ({ ...p, double_yellow_suspension: parseInt(e.target.value) || 1 }))}/>
+                  <p className="text-[11px] text-slate-400 mt-1">عدد المباريات الموقوف عنها</p>
+                </FormField>
+                <FormField label="إيقاف الكرت الأحمر المباشر">
+                  <input type="number" min={1} max={10} className="form-input"
+                    value={rulesForm.direct_red_suspension}
+                    onChange={e => setRulesForm(p => ({ ...p, direct_red_suspension: parseInt(e.target.value) || 1 }))}/>
+                  <p className="text-[11px] text-slate-400 mt-1">عدد المباريات الموقوف عنها</p>
+                </FormField>
+              </div>
+              <div className="flex gap-2 justify-end mt-4">
+                <button className="btn btn-ghost" onClick={() => setShowRulesModal(null)}>إلغاء</button>
+                <button className="btn btn-primary" onClick={saveRules} disabled={savingRules}>
+                  {savingRules ? <Spinner size="sm" /> : 'حفظ القوانين'}
+                </button>
+              </div>
+            </>
+          )}
       </Modal>
     </div>
   )

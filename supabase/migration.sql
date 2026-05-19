@@ -160,7 +160,10 @@ CREATE TABLE IF NOT EXISTS leaves (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-  reason TEXT NOT NULL, from_date DATE NOT NULL, to_date DATE NOT NULL,
+  reason TEXT NOT NULL,
+  leave_type TEXT DEFAULT 'other'
+    CHECK (leave_type IN ('suspension','national_team','injury','penalty','rest','emergency','other')),
+  from_date DATE NOT NULL, to_date DATE NOT NULL,
   status TEXT DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','partial')),
   note TEXT, partial_days TEXT[],
   attachment_url TEXT,
@@ -168,6 +171,24 @@ CREATE TABLE IF NOT EXISTS leaves (
   appeal_attachment_url TEXT,
   appealed_at TIMESTAMPTZ,
   reviewed_by UUID REFERENCES profiles(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ADMIN DECISIONS
+CREATE TABLE IF NOT EXISTS admin_decisions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  decision_type TEXT NOT NULL DEFAULT 'other'
+    CHECK (decision_type IN ('suspension','national_team','injury','penalty','rest','emergency','other')),
+  target_type TEXT NOT NULL DEFAULT 'specific'
+    CHECK (target_type IN ('all','specific')),
+  target_user_ids UUID[] DEFAULT '{}',
+  notes TEXT,
+  from_date DATE NOT NULL,
+  to_date DATE NOT NULL,
+  created_by UUID REFERENCES profiles(id),
+  is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -290,6 +311,8 @@ CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_team ON chat_messages(team_id);
 CREATE INDEX IF NOT EXISTS idx_notes_player ON coach_notes(player_id);
 CREATE INDEX IF NOT EXISTS idx_leaves_team ON leaves(team_id);
+CREATE INDEX IF NOT EXISTS idx_admin_decisions_team ON admin_decisions(team_id);
+CREATE INDEX IF NOT EXISTS idx_admin_decisions_dates ON admin_decisions(team_id, from_date, to_date);
 CREATE INDEX IF NOT EXISTS idx_join_req ON join_requests(team_id);
 
 -- UPDATED_AT trigger
@@ -329,6 +352,7 @@ ALTER TABLE poll_votes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE financial_obligations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE leaves ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE coach_notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE injuries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE points_transactions ENABLE ROW LEVEL SECURITY;
@@ -442,11 +466,29 @@ CREATE POLICY "leaves_select" ON leaves FOR SELECT USING (is_team_member(team_id
 CREATE POLICY "leaves_insert" ON leaves FOR INSERT WITH CHECK (is_team_member(team_id,auth.uid()));
 CREATE POLICY "leaves_update" ON leaves FOR UPDATE USING (auth.uid()=user_id OR is_team_admin(team_id,auth.uid()));
 
+DROP POLICY IF EXISTS "admin_decisions_select" ON admin_decisions;
+DROP POLICY IF EXISTS "admin_decisions_insert" ON admin_decisions;
+DROP POLICY IF EXISTS "admin_decisions_update" ON admin_decisions;
+CREATE POLICY "admin_decisions_select" ON admin_decisions FOR SELECT USING (is_team_member(team_id,auth.uid()));
+CREATE POLICY "admin_decisions_insert" ON admin_decisions FOR INSERT WITH CHECK (is_team_admin(team_id,auth.uid()));
+CREATE POLICY "admin_decisions_update" ON admin_decisions FOR UPDATE USING (is_team_admin(team_id,auth.uid()));
+
 ALTER TABLE leaves
+  ADD COLUMN IF NOT EXISTS leave_type TEXT DEFAULT 'other',
   ADD COLUMN IF NOT EXISTS attachment_url TEXT,
   ADD COLUMN IF NOT EXISTS appeal_text TEXT,
   ADD COLUMN IF NOT EXISTS appeal_attachment_url TEXT,
   ADD COLUMN IF NOT EXISTS appealed_at TIMESTAMPTZ;
+
+DO $$
+BEGIN
+  ALTER TABLE leaves DROP CONSTRAINT IF EXISTS leaves_leave_type_check;
+  ALTER TABLE leaves ADD CONSTRAINT leaves_leave_type_check
+    CHECK (leave_type IN ('suspension','national_team','injury','penalty','rest','emergency','other'));
+  ALTER TABLE admin_decisions DROP CONSTRAINT IF EXISTS admin_decisions_decision_type_check;
+  ALTER TABLE admin_decisions ADD CONSTRAINT admin_decisions_decision_type_check
+    CHECK (decision_type IN ('suspension','national_team','injury','penalty','rest','emergency','other'));
+END $$;
 
 ALTER TABLE attendance ADD COLUMN IF NOT EXISTS excuse_reason TEXT;
 

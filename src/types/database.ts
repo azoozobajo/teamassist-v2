@@ -5,11 +5,18 @@ export type MatchEventType = 'goal' | 'assist' | 'yellow_card' | 'red_card' | 's
 export type FootballFormation = '4-4-2' | '4-3-3' | '4-2-3-1' | '4-1-4-1' | '4-5-1' | '4-4-1-1' | '4-3-1-2' | '3-5-2' | '3-4-3' | '3-4-2-1' | '5-3-2' | '5-4-1' | '5-2-3'
 export type EventType = 'training' | 'match' | 'meeting' | 'camp' | 'other' | 'assessment'
 export type LeaveStatus = 'pending' | 'approved' | 'rejected' | 'partial'
+export type AdminDecisionType = 'suspension' | 'national_team' | 'injury' | 'penalty' | 'rest' | 'emergency' | 'other'
+export type AdminDecisionTargetType = 'all' | 'specific'
 export type NoteType = 'مدح' | 'توجيه' | 'تحذير' | 'تطوير'
 export type PointCategory = 'مكافأة' | 'تطور' | 'تعاون' | 'مبادرة' | 'أداء' | 'نتائج'
 export type ReportTag = 'إصابة' | 'مشكلة' | 'مكافأة' | 'موقف' | 'إنجاز' | 'تغيير' | 'ملاحظة' | 'طارئ'
 export type InviteStatus = 'pending' | 'accepted' | 'rejected'
 export type JoinRequestStatus = 'pending' | 'approved' | 'rejected'
+export type AbsenceType = 'unexcused' | 'leave' | 'national_team' | 'admin_suspension' | 'emergency' | 'academic' | 'family' | 'injury' | 'cards' | 'other'
+export type AbsenceApplyTo = 'match_only' | 'training_only' | 'meeting_only' | 'all' | 'match_training' | 'training_meeting' | 'match_training_meeting' | 'specific'
+export type AttendanceSourceType = 'manual' | 'player_self' | 'leave' | 'admin_leave' | 'absence' | 'medical' | 'tournament_suspension'
+export type SuspensionReason = 'yellow_accumulation' | 'double_yellow' | 'direct_red' | 'custom'
+export type SuspensionType = 'matches' | 'dates'
 
 export interface Profile {
   id: string
@@ -54,6 +61,13 @@ export interface TeamMember {
   joined_at: string
   removed_at?: string
   jersey_number?: number
+  primary_position?: string
+  secondary_positions?: string[] | string
+  position_label?: string
+  preferred_foot?: string | null
+  guardian_name?: string | null
+  guardian_phone?: string | null
+  home_address?: string | null
   profile?: Profile
 }
 
@@ -107,6 +121,13 @@ export interface Attendance {
   admin_note?: string
   marked_by?: string
   locked?: boolean
+  // حقول النظام الموحد الجديدة
+  absence_type?: AbsenceType
+  source_type?: AttendanceSourceType
+  source_id?: string
+  is_coach_confirmed?: boolean
+  confirmed_by?: string
+  locked_by_source?: boolean
   created_at: string
   updated_at: string
   profile?: Profile
@@ -164,6 +185,7 @@ export interface Leave {
   team_id: string
   user_id: string
   reason: string
+  leave_type?: AdminDecisionType
   from_date: string
   to_date: string
   status: LeaveStatus
@@ -176,6 +198,22 @@ export interface Leave {
   reviewed_by?: string
   created_at: string
   profile?: Profile
+}
+
+export interface AdminDecision {
+  id: string
+  team_id: string
+  title: string
+  decision_type: AdminDecisionType
+  target_type: AdminDecisionTargetType
+  target_user_ids: string[]
+  notes?: string
+  from_date: string
+  to_date: string
+  created_by?: string
+  is_active: boolean
+  created_at: string
+  creator?: Profile
 }
 
 export interface CoachNote {
@@ -228,6 +266,61 @@ export interface Competition {
   is_active: boolean
   created_at: string
   winner?: Profile
+}
+
+export interface TournamentRules {
+  id: string
+  tournament_id: string
+  team_id: string
+  yellow_cards_limit: number
+  yellow_suspension_matches: number
+  double_yellow_suspension: number
+  direct_red_suspension: number
+  created_by?: string
+  created_at: string
+}
+
+export interface TournamentSuspension {
+  id: string
+  tournament_id?: string
+  team_id: string
+  player_id: string
+  reason: SuspensionReason
+  suspension_type: SuspensionType
+  matches_count?: number
+  matches_served: number
+  from_date?: string
+  to_date?: string
+  is_completed: boolean
+  notes?: string
+  created_by?: string
+  created_at: string
+  profile?: Profile
+}
+
+export interface PlayerAttendanceStats {
+  userId: string
+  totalEvents: number
+  present: number
+  late: number
+  absent: number
+  excused: {
+    total: number
+    leave: number
+    injury: number
+    nationalTeam: number
+    adminSuspension: number
+    emergency: number
+    academic: number
+    family: number
+    cards: number
+    other: number
+  }
+  lateMinutesTotal: number
+  lateAvgMinutes: number
+  generalRate: number
+  effectiveRate: number
+  streak: number
 }
 
 export interface DirectMessage {
@@ -299,6 +392,24 @@ export interface JoinRequest {
   team?: Team
 }
 
+export interface Absence {
+  id: string
+  team_id: string
+  user_id: string
+  absence_type: AbsenceType
+  from_date: string
+  to_date: string
+  reason?: string
+  notes?: string
+  attachment_url?: string
+  apply_to: AbsenceApplyTo
+  specific_event_ids?: string[]
+  recorded_by?: string
+  created_at: string
+  profile?: Profile
+  recorder?: Profile
+}
+
 export interface FixedExpenseItem {
   id: string
   team_id: string
@@ -335,6 +446,8 @@ export interface LineupPlayer {
   user_id: string
   jersey_number: number
   role: 'starter' | 'sub' | 'excluded'
+  is_captain?: boolean
+  exclusion_reason?: string
 }
 
 export interface MatchLineup {

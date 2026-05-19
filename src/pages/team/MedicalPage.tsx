@@ -5,7 +5,7 @@ import {
   Send, AlertCircle, X, FileText, Image, Filter
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { medicalService, teamService, permissionService } from '../../services'
+import { medicalService, teamService, permissionService, attendanceService } from '../../services'
 import { Spinner, PageHeader, Modal, FormField, EmptyState, Tabs } from '../../components/ui'
 import { canManageTeam, hasPermission } from '../../utils/helpers'
 
@@ -157,7 +157,7 @@ export default function MedicalPage() {
     }
 
     const targetPlayer = isAdminUser || isDoctor ? (form.player_id || user.id) : user.id
-    await medicalService.createReport({
+    const { data: newReport } = await medicalService.createReport({
       team_id: teamId, player_id: targetPlayer,
       title: form.title, report_type: form.report_type,
       description: form.description || null,
@@ -165,6 +165,20 @@ export default function MedicalPage() {
       status: form.status, attachment_url,
       submitted_by: user.id
     })
+    // إذا كانت إصابة نشطة → طبّق غياب بعذر على المواعيد القادمة
+    if (newReport && form.report_type === 'injury' && form.status === 'active' && form.injury_date) {
+      const today = new Date().toISOString().slice(0, 10)
+      const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      await attendanceService.applyExcusedAbsence({
+        teamId, userIds: [targetPlayer],
+        fromDate: form.injury_date > today ? form.injury_date : today,
+        toDate: endDate,
+        absenceType: 'injury', sourceType: 'medical',
+        sourceId: newReport.id,
+        reason: form.title || 'إصابة',
+        markedBy: user.id,
+      })
+    }
     await load()
     setShowAdd(false)
     setForm({ title: '', report_type: 'injury', description: '', injury_date: '', status: 'active', player_id: '' })
@@ -208,8 +222,13 @@ export default function MedicalPage() {
   async function updateStatus(reportId: string, status: string) {
     setUpdatingStatus(reportId)
     const patch: any = { status }
-    if (status === 'recovered') patch.recovery_date = new Date().toISOString().slice(0, 10)
+    const recoveryDate = new Date().toISOString().slice(0, 10)
+    if (status === 'recovered') patch.recovery_date = recoveryDate
     await medicalService.updateReport(reportId, patch)
+    // إذا تعافى: احذف سجلات الغياب المستقبلية المرتبطة بهذه الإصابة
+    if (status === 'recovered') {
+      await attendanceService.removeExcusedBySource('medical', reportId)
+    }
     setReports(prev => prev.map(r => r.id === reportId ? { ...r, ...patch } : r))
     setUpdatingStatus(null)
   }
