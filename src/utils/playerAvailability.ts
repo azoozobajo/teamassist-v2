@@ -5,6 +5,7 @@ export function getPlayerAvailability(params: {
   medicalReports?: any[]
   suspensions?: any[]
   adminDecisions?: any[]
+  leaves?: any[]
   today?: string
 }): PlayerAvailability {
   const {
@@ -12,6 +13,7 @@ export function getPlayerAvailability(params: {
     medicalReports = [],
     suspensions = [],
     adminDecisions = [],
+    leaves = [],
     today = new Date().toISOString().slice(0, 10),
   } = params
 
@@ -22,6 +24,14 @@ export function getPlayerAvailability(params: {
   )
 
   if (isInjured) return 'injured'
+
+  const hasActiveLeave = leaves.some(l => {
+    if (!['approved', 'partial'].includes(l.status)) return false
+    if (l.status === 'partial' && Array.isArray(l.partial_days) && l.partial_days.length > 0) {
+      return l.partial_days.includes(today)
+    }
+    return l.from_date <= today && l.to_date >= today
+  })
 
   const isSuspended = suspensions.some(s => {
     if (s.is_completed) return false
@@ -36,7 +46,7 @@ export function getPlayerAvailability(params: {
     return true
   })
 
-  return isSuspended ? 'suspended' : 'ready'
+  return isSuspended || hasActiveLeave ? 'suspended' : 'ready'
 }
 
 export function buildAvailabilityMap(params: {
@@ -45,9 +55,10 @@ export function buildAvailabilityMap(params: {
   medicalReports?: any[]
   suspensions?: any[]
   adminDecisions?: any[]
+  leaves?: any[]
   today?: string
 }) {
-  const { playerIds, medicalCases = [], medicalReports = [], suspensions = [], adminDecisions = [], today } = params
+  const { playerIds, medicalCases = [], medicalReports = [], suspensions = [], adminDecisions = [], leaves = [], today } = params
   const map: Record<string, PlayerAvailability> = {}
   for (const playerId of playerIds) {
     map[playerId] = getPlayerAvailability({
@@ -57,6 +68,7 @@ export function buildAvailabilityMap(params: {
       adminDecisions: adminDecisions.filter(d =>
         d.target_type === 'all' || (d.target_user_ids || []).includes(playerId)
       ),
+      leaves: leaves.filter(l => l.user_id === playerId),
       today,
     })
   }

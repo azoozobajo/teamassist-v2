@@ -10,7 +10,7 @@ import {
   eventService, financeService, medicalService, attendanceService,
   noteService, measurementService, fitnessService, pointsService, rewardService,
   matchStatsService, tournamentService, technicalEvalService, teamService,
-  adminDecisionService,
+  adminDecisionService, leaveService,
 } from '../../services'
 import { Avatar, Spinner } from '../../components/ui'
 import { formatDate, RIYAL } from '../../utils/helpers'
@@ -316,6 +316,7 @@ export default function SportProfilePage() {
   const [medicalCases, setMedicalCases]     = useState<any[]>([])
   const [activeSuspensions, setActiveSuspensions] = useState<any[]>([])
   const [adminDecisions, setAdminDecisions] = useState<any[]>([])
+  const [leaves, setLeaves] = useState<any[]>([])
   const [teamMember, setTeamMember]         = useState<any>(null)
   const [notes, setNotes]                   = useState<any[]>([])
   const [notesError, setNotesError]         = useState('')
@@ -382,13 +383,14 @@ export default function SportProfilePage() {
       medicalService.getMyCases(teamId, user.id),
       attendanceService.getActiveSuspensions(teamId, user.id),
       adminDecisionService.getAll(teamId),
+      leaveService.getMyLeaves(teamId, user.id),
       teamService.getMemberByUser(teamId, user.id),
       noteService.getMyNotes(teamId, user.id),
       measurementService.getPlayerMeasurements(teamId, user.id),
       fitnessService.getPlayerFitnessResults(teamId, user.id),
       pointsService.getPlayerTransactions(teamId, user.id),
       rewardService.getPlayerRewards(teamId, user.id),
-    ]).then(([att, fin, med, medCases, suspensions, decisions, member, notesResult, meas, fit, pts, rw]) => {
+    ]).then(([att, fin, med, medCases, suspensions, decisions, myLeaves, member, notesResult, meas, fit, pts, rw]) => {
       setAttendance(att)
       setFinance(fin)
       setMedical(med)
@@ -397,6 +399,7 @@ export default function SportProfilePage() {
       setAdminDecisions((decisions as any[]).filter(d =>
         d.target_type === 'all' || (d.target_user_ids || []).includes(user.id)
       ))
+      setLeaves(myLeaves)
       setTeamMember(member)
       if (notesResult.error) setNotesError(notesResult.error.message)
       else setNotes(notesResult.data)
@@ -536,6 +539,7 @@ export default function SportProfilePage() {
     medicalReports: medical,
     suspensions: activeSuspensions,
     adminDecisions,
+    leaves,
   })
 
   return (

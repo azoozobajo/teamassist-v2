@@ -463,6 +463,7 @@ export default function PlayersPage() {
       medicalCases: allMedicalCases as any[],
       suspensions: activeSuspensions as any[],
       adminDecisions: allDecisions as any[],
+      leaves: allLeaves as any[],
       today,
     }))
 
