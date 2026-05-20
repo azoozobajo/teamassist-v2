@@ -18,6 +18,7 @@ import {
   METRIC_KEYS, METRIC_LABELS, METRIC_UNITS,
   getMetricTimeSeries, getBMITimeSeries,
 } from '../../utils/measurementHelpers'
+import { NotesSummaryBox } from '../../components/player/NotesSummaryBox'
 import {
   getCurrentSeason, getSeasonOptions, getActiveIndicators,
   calcStrengthAvg, calcDevAvg, calcOverallAvg, calcImprovementRate,
@@ -869,30 +870,33 @@ export default function SportProfilePage() {
 
       {/* ── NOTES ── */}
       {tab === 'notes' && (
-        <div className="card">
-          <h3 className="font-bold text-sm mb-3">الملاحظات والتوجيهات</h3>
-          {notesError
-            ? <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">{notesError}</div>
-            : notes.length === 0
-              ? <p className="text-center text-slate-400 text-sm py-6">لا توجد ملاحظات موجهة لك</p>
-              : <div className="space-y-3">
-                  {notes.map(n => {
-                    const clr = NOTE_COLOR[n.note_type] || NOTE_COLOR['توجيه']
-                    return (
-                      <div key={n.id} className={`rounded-xl p-3 ${clr.bg}`}>
-                        <div className="flex justify-between items-center mb-1.5">
-                          <span className={`badge text-xs ${clr.tc} border border-current/20`}>{n.note_type}</span>
-                          <div className="text-right">
-                            {n.event_title && <span className="text-xs text-slate-400">{n.event_title} · </span>}
-                            <span className="text-xs text-slate-400">{formatDate(n.created_at)}</span>
+        <div className="space-y-3">
+          <NotesSummaryBox notes={notes} />
+          <div className="card">
+            <h3 className="font-bold text-sm mb-3">الملاحظات والتوجيهات</h3>
+            {notesError
+              ? <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">{notesError}</div>
+              : notes.length === 0
+                ? <p className="text-center text-slate-400 text-sm py-6">لا توجد ملاحظات موجهة لك</p>
+                : <div className="space-y-3">
+                    {notes.map(n => {
+                      const clr = NOTE_COLOR[n.note_type] || NOTE_COLOR['توجيه']
+                      return (
+                        <div key={n.id} className={`rounded-xl p-3 ${clr.bg}`}>
+                          <div className="flex justify-between items-center mb-1.5">
+                            <span className={`badge text-xs ${clr.tc} border border-current/20`}>{n.note_type}</span>
+                            <div className="text-right">
+                              {n.event_title && <span className="text-xs text-slate-400">{n.event_title} · </span>}
+                              <span className="text-xs text-slate-400">{formatDate(n.created_at)}</span>
+                            </div>
                           </div>
+                          <p className={`text-sm leading-relaxed ${clr.tc}`}>{n.content}</p>
+                          {n.coach && <div className="text-xs text-slate-400 mt-1.5">— {n.coach.full_name}</div>}
                         </div>
-                        <p className={`text-sm leading-relaxed ${clr.tc}`}>{n.content}</p>
-                        {n.coach && <div className="text-xs text-slate-400 mt-1.5">— {n.coach.full_name}</div>}
-                      </div>
-                    )
-                  })}
-                </div>}
+                      )
+                    })}
+                  </div>}
+          </div>
         </div>
       )}
 

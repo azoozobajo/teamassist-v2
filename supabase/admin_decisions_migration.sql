@@ -2,11 +2,14 @@
 
 ALTER TABLE leaves ADD COLUMN IF NOT EXISTS leave_type TEXT DEFAULT 'other';
 
+-- Injuries must be recorded from the medical module only.
+UPDATE leaves SET leave_type = 'other' WHERE leave_type = 'injury';
+
 DO $$
 BEGIN
   ALTER TABLE leaves DROP CONSTRAINT IF EXISTS leaves_leave_type_check;
   ALTER TABLE leaves ADD CONSTRAINT leaves_leave_type_check
-    CHECK (leave_type IN ('suspension','national_team','injury','penalty','rest','emergency','other'));
+    CHECK (leave_type IN ('suspension','national_team','penalty','rest','emergency','death','marriage','academic','family','private_event','other'));
 END $$;
 
 CREATE TABLE IF NOT EXISTS admin_decisions (
@@ -14,7 +17,7 @@ CREATE TABLE IF NOT EXISTS admin_decisions (
   team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   decision_type TEXT NOT NULL DEFAULT 'other'
-    CHECK (decision_type IN ('suspension','national_team','injury','penalty','rest','emergency','other')),
+    CHECK (decision_type IN ('suspension','national_team','penalty','rest','emergency','death','marriage','academic','family','private_event','other')),
   target_type TEXT NOT NULL DEFAULT 'specific'
     CHECK (target_type IN ('all','specific')),
   target_user_ids UUID[] DEFAULT '{}',
@@ -26,11 +29,14 @@ CREATE TABLE IF NOT EXISTS admin_decisions (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Injuries must be recorded from the medical module only.
+UPDATE admin_decisions SET decision_type = 'other' WHERE decision_type = 'injury';
+
 DO $$
 BEGIN
   ALTER TABLE admin_decisions DROP CONSTRAINT IF EXISTS admin_decisions_decision_type_check;
   ALTER TABLE admin_decisions ADD CONSTRAINT admin_decisions_decision_type_check
-    CHECK (decision_type IN ('suspension','national_team','injury','penalty','rest','emergency','other'));
+    CHECK (decision_type IN ('suspension','national_team','penalty','rest','emergency','death','marriage','academic','family','private_event','other'));
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_admin_decisions_team ON admin_decisions(team_id);

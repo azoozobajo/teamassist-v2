@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS leaves (
   user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
   reason TEXT NOT NULL,
   leave_type TEXT DEFAULT 'other'
-    CHECK (leave_type IN ('suspension','national_team','injury','penalty','rest','emergency','other')),
+    CHECK (leave_type IN ('suspension','national_team','penalty','rest','emergency','death','marriage','academic','family','private_event','other')),
   from_date DATE NOT NULL, to_date DATE NOT NULL,
   status TEXT DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','partial')),
   note TEXT, partial_days TEXT[],
@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS admin_decisions (
   team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   decision_type TEXT NOT NULL DEFAULT 'other'
-    CHECK (decision_type IN ('suspension','national_team','injury','penalty','rest','emergency','other')),
+    CHECK (decision_type IN ('suspension','national_team','penalty','rest','emergency','death','marriage','academic','family','private_event','other')),
   target_type TEXT NOT NULL DEFAULT 'specific'
     CHECK (target_type IN ('all','specific')),
   target_user_ids UUID[] DEFAULT '{}',
@@ -480,14 +480,18 @@ ALTER TABLE leaves
   ADD COLUMN IF NOT EXISTS appeal_attachment_url TEXT,
   ADD COLUMN IF NOT EXISTS appealed_at TIMESTAMPTZ;
 
+-- Injuries must be recorded from the medical module only.
+UPDATE leaves SET leave_type = 'other' WHERE leave_type = 'injury';
+UPDATE admin_decisions SET decision_type = 'other' WHERE decision_type = 'injury';
+
 DO $$
 BEGIN
   ALTER TABLE leaves DROP CONSTRAINT IF EXISTS leaves_leave_type_check;
   ALTER TABLE leaves ADD CONSTRAINT leaves_leave_type_check
-    CHECK (leave_type IN ('suspension','national_team','injury','penalty','rest','emergency','other'));
+    CHECK (leave_type IN ('suspension','national_team','penalty','rest','emergency','death','marriage','academic','family','private_event','other'));
   ALTER TABLE admin_decisions DROP CONSTRAINT IF EXISTS admin_decisions_decision_type_check;
   ALTER TABLE admin_decisions ADD CONSTRAINT admin_decisions_decision_type_check
-    CHECK (decision_type IN ('suspension','national_team','injury','penalty','rest','emergency','other'));
+    CHECK (decision_type IN ('suspension','national_team','penalty','rest','emergency','death','marriage','academic','family','private_event','other'));
 END $$;
 
 ALTER TABLE attendance ADD COLUMN IF NOT EXISTS excuse_reason TEXT;

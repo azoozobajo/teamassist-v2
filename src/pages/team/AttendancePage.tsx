@@ -104,6 +104,8 @@ export default function AttendancePage() {
   // { [eventId]: { present: N, absent: N, ... } }
   const [summary, setSummary] = useState<Record<string, Record<string, number>>>({})
   const [attendanceRecords, setAttendanceRecords] = useState<any[]>([])
+  const [matchLineups, setMatchLineups] = useState<any[]>([])
+  const [matchEventMap, setMatchEventMap] = useState<Record<string, string>>({})
 
   // Tabs: upcoming / past / report
   const [tab, setTab] = useState<'upcoming' | 'past' | 'report'>('upcoming')
@@ -147,10 +149,16 @@ export default function AttendancePage() {
       fetchSummary(teamId),
       fetchAttendanceRecords(teamId),
       pointsService.getAutoSettings(teamId),
-    ]).then(([evs, mems, role, sum, attRecords, autoS]) => {
+      supabase.from('match_lineup').select('match_id, players').eq('team_id', teamId),
+      supabase.from('matches').select('id, event_id').eq('team_id', teamId),
+    ]).then(([evs, mems, role, sum, attRecords, autoS, lineupRes, matchRes]) => {
       setEvents(evs); setMembers(mems); setMyRole(role || ''); setSummary(sum)
       setAttendanceRecords(attRecords)
       setAutoSettings(autoS)
+      setMatchLineups(lineupRes.data ?? [])
+      const nextMatchEventMap: Record<string, string> = {}
+      ;(matchRes.data ?? []).forEach((m: any) => { if (m.event_id) nextMatchEventMap[m.id] = m.event_id })
+      setMatchEventMap(nextMatchEventMap)
       setLoading(false)
     })
   }, [teamId, user])
@@ -349,6 +357,12 @@ export default function AttendancePage() {
     attendanceRecords.forEach(r => {
       attMap.set(`${r.event_id}:${r.user_id}`, r)
     })
+    const lineupMap = new Map<string, Record<string, string>>()
+    matchLineups.forEach((lineup: any) => {
+      const players: Record<string, string> = {}
+      ;(lineup.players ?? []).forEach((p: any) => { players[p.user_id] = p.role })
+      lineupMap.set(matchEventMap[lineup.match_id] || lineup.match_id, players)
+    })
 
     const rows = members
       .filter(m => m.role === 'player')
@@ -361,10 +375,15 @@ export default function AttendancePage() {
         let lateTotal = 0
 
         reportEvents.forEach(e => {
-          const eligible = getEligibleMembers(e).some(em => em.user_id === m.user_id)
+          const record = attMap.get(`${e.id}:${m.user_id}`)
+          let eligible = getEligibleMembers(e).some(em => em.user_id === m.user_id)
+          if (e.event_type === 'match') {
+            const role = lineupMap.get(e.id)?.[m.user_id]
+            eligible = role === 'starter' || role === 'sub'
+              || (record?.status === 'excused' && record?.locked_by_source)
+          }
           if (!eligible) return
 
-          const record = attMap.get(`${e.id}:${m.user_id}`)
           eventCount += 1
 
           if (!record) { absent++; return }
@@ -405,7 +424,7 @@ export default function AttendancePage() {
         : Number(aVal) - Number(bVal)
       return reportSortDir === 'asc' ? result : -result
     })
-  }, [attendanceRecords, members, reportEvents, reportSortKey, reportSortDir])
+  }, [attendanceRecords, members, reportEvents, reportSortKey, reportSortDir, matchLineups, matchEventMap])
 
   function toggleReportSort(key: ReportSortKey) {
     if (reportSortKey === key) {
@@ -443,12 +462,11 @@ export default function AttendancePage() {
   // Modal sections
   const mPresent   = modalAtt.filter(a => a.status === 'present')
   const mLate      = modalAtt.filter(a => a.status === 'late')
-  const mUncertain = modalAtt.filter(a => a.status === 'uncertain')
   const mAbsent    = modalAtt.filter(a => a.status === 'absent')
   const mExcused   = modalAtt.filter(a => a.status === 'excused')
   const eligibleMembers = getEligibleMembers(modalEv)
   const mNotRec    = eligibleMembers.filter(m => !modalAtt.find(a => a.user_id === m.user_id))
-  const mLists: Record<string, any[]> = { present: mPresent, late: mLate, excused: mExcused, uncertain: mUncertain, absent: mAbsent }
+  const mLists: Record<string, any[]> = { present: mPresent, late: mLate, excused: mExcused, absent: mAbsent }
 
   const EXCUSE_SOURCE_LABEL: Record<string, string> = {
     leave: 'إجازة معتمدة', admin_leave: 'إجازة إدارية',
@@ -484,6 +502,7 @@ export default function AttendancePage() {
             locked={false}
             compact
             includeExcused={!isLocked}
+            hideUncertain
             onSelect={s => {
               if (isLocked && s === 'absent') {
                 alert(`لا يمكن التغيير — ${lockLabel}`)
@@ -695,7 +714,7 @@ export default function AttendancePage() {
                 {/* 5 chips (only when no member filter) */}
                 {!filterMemberId && (
                   <div className="grid grid-cols-5 gap-1.5">
-                    {STATUS_CHIPS.map(chip => (
+                    {STATUS_CHIPS.filter(chip => chip.key !== 'uncertain').map(chip => (
                       <div key={chip.key} className={`${chip.cls} rounded-xl py-2 text-center`}>
                         <div className="text-lg font-black leading-none">{counts[chip.key] || 0}</div>
                         <div className="text-[10px] mt-0.5 font-bold opacity-75 leading-tight">{chip.label}</div>
@@ -719,7 +738,7 @@ export default function AttendancePage() {
               <div className="flex justify-center py-10"><Spinner/></div>
             ) : (
               <div className="space-y-3 max-h-[62vh] overflow-y-auto -mx-1 px-1">
-                {SECTIONS.map(sec => {
+                {SECTIONS.filter(sec => sec.key !== 'uncertain').map(sec => {
                   const list = mLists[sec.key]
                   if (!list?.length) return null
                   return (

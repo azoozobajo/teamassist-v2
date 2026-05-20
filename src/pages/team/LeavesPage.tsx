@@ -45,7 +45,9 @@ function getDayCount(from: string, to: string) {
 // ── Constants ────────────────────────────────────────────────────────
 const LEAVE_TYPE_LABEL: Record<string, string> = {
   suspension: 'إيقاف', national_team: 'استدعاء للمنتخب', injury: 'إصابة',
-  penalty: 'عقوبة', rest: 'راحة', emergency: 'طارئ', other: 'أخرى',
+  penalty: 'عقوبة', rest: 'راحة', emergency: 'طارئ',
+  death: 'حالة وفاة', marriage: 'زواج', academic: 'دراسة',
+  family: 'عائلي', private_event: 'مناسبة خاصة', other: 'أخرى',
 }
 
 const ABSENCE_TYPE_LABEL: Record<string, string> = {
@@ -484,6 +486,9 @@ export default function LeavesPage() {
     suspension: 'bg-red-100 text-red-700', national_team: 'bg-sky-100 text-sky-700',
     injury: 'bg-rose-100 text-rose-700', penalty: 'bg-orange-100 text-orange-700',
     rest: 'bg-emerald-100 text-emerald-700', emergency: 'bg-amber-100 text-amber-700',
+    death: 'bg-slate-200 text-slate-800', marriage: 'bg-pink-100 text-pink-700',
+    academic: 'bg-purple-100 text-purple-700', family: 'bg-teal-100 text-teal-700',
+    private_event: 'bg-fuchsia-100 text-fuchsia-700',
     other: 'bg-slate-100 text-slate-700',
   }
 
@@ -1169,7 +1174,11 @@ export default function LeavesPage() {
         <FormField label="تصنيف العذر" required>
           <select className="form-input" value={form.leave_type} onChange={e => set('leave_type', e.target.value)}>
             <option value="national_team">استدعاء للمنتخب</option>
-            <option value="injury">إصابة</option>
+            <option value="death">حالة وفاة</option>
+            <option value="marriage">زواج</option>
+            <option value="academic">دراسة</option>
+            <option value="family">عائلي</option>
+            <option value="private_event">مناسبة خاصة</option>
             <option value="penalty">عقوبة</option>
             <option value="emergency">طارئ</option>
             <option value="other">أخرى</option>
@@ -1209,7 +1218,11 @@ export default function LeavesPage() {
             <select className="form-input" value={decisionForm.decision_type} onChange={e => setDecision('decision_type', e.target.value)}>
               <option value="suspension">إيقاف</option>
               <option value="national_team">استدعاء للمنتخب</option>
-              <option value="injury">إصابة</option>
+              <option value="death">حالة وفاة</option>
+              <option value="marriage">زواج</option>
+              <option value="academic">دراسة</option>
+              <option value="family">عائلي</option>
+              <option value="private_event">مناسبة خاصة</option>
               <option value="penalty">عقوبة</option>
               <option value="rest">راحة</option>
               <option value="emergency">طارئ</option>
@@ -1518,8 +1531,12 @@ export default function LeavesPage() {
             <select className="form-input" value={adminGrantForm.leave_type} onChange={e => setGrant('leave_type', e.target.value)}>
               <option value="rest">راحة</option>
               <option value="national_team">استدعاء للمنتخب</option>
+              <option value="death">حالة وفاة</option>
+              <option value="marriage">زواج</option>
+              <option value="academic">دراسة</option>
+              <option value="family">عائلي</option>
+              <option value="private_event">مناسبة خاصة</option>
               <option value="emergency">طارئ</option>
-              <option value="injury">إصابة</option>
               <option value="other">أخرى</option>
             </select>
           </FormField>

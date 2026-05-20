@@ -19,6 +19,7 @@ import { NOTE_TYPES, canManageEvents, canManageTeam, formatDate, RIYAL } from '.
 import { getTestDef } from '../../utils/fitnessTestDefinitions'
 import { METRIC_KEYS, METRIC_LABELS, METRIC_UNITS, getMetricTimeSeries, getBMITimeSeries } from '../../utils/measurementHelpers'
 import { PositionBadges } from '../../components/sports/PositionBadges'
+import { NotesSummaryBox } from '../../components/player/NotesSummaryBox'
 
 const NOTE_COLOR: Record<string, { bg: string; tc: string }> = {
   مدح:   { bg: 'bg-emerald-50', tc: 'text-emerald-700' },
@@ -893,7 +894,9 @@ export default function PlayersPage() {
 
         {/* ── Notes Tab ── */}
         {detailTab === 'notes' && !loadingPlayerData && (
-          <div className="card">
+          <div className="space-y-3">
+            <NotesSummaryBox notes={playerNotes} showVisibilityBreakdown />
+            <div className="card">
             <div className="flex justify-between items-center mb-3">
               <div>
                 <h3 className="font-bold text-sm">الملاحظات</h3>
@@ -943,6 +946,7 @@ export default function PlayersPage() {
                     )
                   })}
                 </div>}
+            </div>
           </div>
         )}
 

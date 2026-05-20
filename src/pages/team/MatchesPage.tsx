@@ -66,6 +66,18 @@ export default function MatchesPage() {
   const [rulesForm, setRulesForm] = useState({ yellow_cards_limit: 5, yellow_suspension_matches: 1, double_yellow_suspension: 1, direct_red_suspension: 3 })
   const [loadingRules, setLoadingRules] = useState(false)
   const [savingRules, setSavingRules] = useState(false)
+  const [showSuspensionModal, setShowSuspensionModal] = useState<any>(null)
+  const [savingSuspension, setSavingSuspension] = useState(false)
+  const [suspensionForm, setSuspensionForm] = useState({
+    player_id: '',
+    tournament_ids: [] as string[],
+    reason: '',
+    suspension_type: 'matches',
+    matches_count: '1',
+    from_date: '',
+    to_date: '',
+    notes: '',
+  })
 
   const set = (k: string, v: any) => setForm((p: any) => ({ ...p, [k]: v }))
   const setTourn = (k: string, v: any) => setTournForm((p: any) => ({ ...p, [k]: v }))
@@ -127,6 +139,45 @@ export default function MatchesPage() {
     })
     setSavingRules(false)
     setShowRulesModal(null)
+  }
+
+  function openSuspensionModal(tournament: any) {
+    setShowSuspensionModal(tournament)
+    setSuspensionForm({
+      player_id: '',
+      tournament_ids: [tournament.id],
+      reason: '',
+      suspension_type: 'matches',
+      matches_count: '1',
+      from_date: '',
+      to_date: '',
+      notes: '',
+    })
+  }
+
+  async function saveManualSuspension() {
+    if (!teamId || !user || !showSuspensionModal || !suspensionForm.player_id) return
+    if (!suspensionForm.tournament_ids.length || !suspensionForm.reason.trim()) return
+    if (suspensionForm.suspension_type === 'dates' && (!suspensionForm.from_date || !suspensionForm.to_date)) return
+    setSavingSuspension(true)
+    for (const tournamentId of suspensionForm.tournament_ids) {
+      await attendanceService.createSuspension({
+        tournamentId,
+        teamId,
+        playerId: suspensionForm.player_id,
+        reason: 'custom',
+        suspensionType: suspensionForm.suspension_type as 'matches' | 'dates',
+        matchesCount: suspensionForm.suspension_type === 'matches' ? (parseInt(suspensionForm.matches_count) || 1) : undefined,
+        fromDate: suspensionForm.suspension_type === 'dates' ? suspensionForm.from_date : undefined,
+        toDate: suspensionForm.suspension_type === 'dates' ? suspensionForm.to_date : undefined,
+        notes: suspensionForm.notes
+          ? `${suspensionForm.reason.trim()} — ${suspensionForm.notes}`
+          : suspensionForm.reason.trim(),
+        createdBy: user.id,
+      })
+    }
+    setSavingSuspension(false)
+    setShowSuspensionModal(null)
   }
 
 
@@ -628,9 +679,14 @@ export default function MatchesPage() {
                         عرض المباريات
                       </button>
                       {canManage && (
+                        <>
                         <button onClick={() => openRulesModal(t)} className="btn btn-ghost btn-sm text-xs text-slate-400 hover:text-brand-600">
                           <Settings size={11}/> قوانين الإيقاف
                         </button>
+                        <button onClick={() => openSuspensionModal(t)} className="btn btn-ghost btn-sm text-xs text-red-500 hover:text-red-700">
+                          إيقاف يدوي
+                        </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -1034,6 +1090,79 @@ export default function MatchesPage() {
               </div>
             </>
           )}
+      </Modal>
+
+      <Modal open={!!showSuspensionModal} onClose={() => setShowSuspensionModal(null)}
+        title={`إيقاف يدوي — ${showSuspensionModal?.name || ''}`}>
+        <FormField label="اللاعب" required>
+          <select className="form-input" value={suspensionForm.player_id}
+            onChange={e => setSuspensionForm(p => ({ ...p, player_id: e.target.value }))}>
+            <option value="">اختر اللاعب...</option>
+            {members.filter((m: any) => m.role === 'player').map((m: any) => (
+              <option key={m.user_id} value={m.user_id}>{m.profile?.full_name || m.user_id}</option>
+            ))}
+          </select>
+        </FormField>
+        <FormField label="البطولات التي يطبق عليها القرار" required>
+          <div className="max-h-40 overflow-y-auto border border-slate-100 rounded-xl p-2 space-y-1">
+            {tournaments.map((t: any) => {
+              const checked = suspensionForm.tournament_ids.includes(t.id)
+              return (
+                <label key={t.id} className={`flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer ${checked ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
+                  <input type="checkbox" checked={checked}
+                    onChange={e => setSuspensionForm(p => ({
+                      ...p,
+                      tournament_ids: e.target.checked
+                        ? [...p.tournament_ids, t.id]
+                        : p.tournament_ids.filter(id => id !== t.id),
+                    }))}/>
+                  <span className="text-sm font-bold text-slate-700">{t.name}</span>
+                  {t.season && <span className="text-xs text-slate-400 mr-auto">{t.season}</span>}
+                </label>
+              )
+            })}
+          </div>
+        </FormField>
+        <FormField label="سبب العقوبة" required>
+          <input className="form-input" value={suspensionForm.reason}
+            onChange={e => setSuspensionForm(p => ({ ...p, reason: e.target.value }))}
+            placeholder="مثال: سلوك غير رياضي، مخالفة لائحة النادي..."/>
+        </FormField>
+        <FormField label="نوع الإيقاف">
+          <select className="form-input" value={suspensionForm.suspension_type}
+            onChange={e => setSuspensionForm(p => ({ ...p, suspension_type: e.target.value }))}>
+            <option value="matches">عدد مباريات</option>
+            <option value="dates">من تاريخ إلى تاريخ</option>
+          </select>
+        </FormField>
+        {suspensionForm.suspension_type === 'matches' ? (
+          <FormField label="عدد المباريات">
+            <input type="number" min={1} className="form-input" value={suspensionForm.matches_count}
+              onChange={e => setSuspensionForm(p => ({ ...p, matches_count: e.target.value }))}/>
+          </FormField>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="من">
+              <input type="date" className="form-input" value={suspensionForm.from_date}
+                onChange={e => setSuspensionForm(p => ({ ...p, from_date: e.target.value }))}/>
+            </FormField>
+            <FormField label="إلى">
+              <input type="date" className="form-input" value={suspensionForm.to_date}
+                onChange={e => setSuspensionForm(p => ({ ...p, to_date: e.target.value }))}/>
+            </FormField>
+          </div>
+        )}
+        <FormField label="ملاحظات">
+          <textarea className="form-input" rows={3} value={suspensionForm.notes}
+            onChange={e => setSuspensionForm(p => ({ ...p, notes: e.target.value }))}/>
+        </FormField>
+        <div className="flex gap-2 justify-end mt-4">
+          <button className="btn btn-ghost" onClick={() => setShowSuspensionModal(null)}>إلغاء</button>
+          <button className="btn btn-primary" onClick={saveManualSuspension}
+            disabled={savingSuspension || !suspensionForm.player_id || !suspensionForm.tournament_ids.length || !suspensionForm.reason.trim()}>
+            {savingSuspension ? <Spinner size="sm" /> : 'حفظ الإيقاف'}
+          </button>
+        </div>
       </Modal>
     </div>
   )
