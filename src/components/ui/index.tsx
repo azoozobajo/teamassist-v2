@@ -25,11 +25,12 @@ export function LoadingPage() {
 
 // ── Avatar ─────────────────────────────────────────────────────────────
 export function Avatar({
-  name, src, size = 'md', badge, className,
+  name, src, size = 'md', badge, className, availability = 'ready',
 }: {
   name: string; src?: string | null
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl'
   badge?: number; className?: string
+  availability?: 'ready' | 'injured' | 'suspended'
 }) {
   const sizes = {
     xs:  'w-6 h-6 text-[10px]',
@@ -39,6 +40,19 @@ export function Avatar({
     xl:  'w-14 h-14 text-lg',
     '2xl': 'w-20 h-20 text-2xl',
   }
+  const dotSizes = {
+    xs: 'w-2 h-2 border',
+    sm: 'w-2.5 h-2.5 border-2',
+    md: 'w-3 h-3 border-2',
+    lg: 'w-3.5 h-3.5 border-2',
+    xl: 'w-4 h-4 border-2',
+    '2xl': 'w-5 h-5 border-[3px]',
+  }
+  const availabilityClass = {
+    ready: 'bg-emerald-500',
+    injured: 'bg-red-500',
+    suspended: 'bg-slate-400',
+  }[availability]
   return (
     <div className={cn('relative flex-shrink-0', className)}>
       {src ? (
@@ -56,6 +70,14 @@ export function Avatar({
           {badge > 9 ? '9+' : badge}
         </span>
       )}
+      <span
+        className={cn(
+          'absolute bottom-0 right-0 rounded-full border-white shadow-sm',
+          dotSizes[size],
+          availabilityClass,
+        )}
+        title={availability === 'injured' ? 'مصاب' : availability === 'suspended' ? 'موقوف' : 'جاهز'}
+      />
     </div>
   )
 }

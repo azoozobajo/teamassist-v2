@@ -7,7 +7,7 @@ import {
   Ruler, Activity, Star, CheckSquare, DollarSign, Stethoscope, BookOpen, BarChart2
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService, matchStatsService, tournamentService, technicalEvalService, leaveService, adminDecisionService } from '../../services'
+import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService, matchStatsService, tournamentService, technicalEvalService, leaveService, adminDecisionService, attendanceService } from '../../services'
 import {
   getCurrentSeason, getSeasonOptions, getActiveIndicators,
   calcStrengthAvg, calcDevAvg, calcOverallAvg, calcImprovementRate,
@@ -18,8 +18,11 @@ import { Spinner, PageHeader, SearchBox, Avatar, Modal, FormField, EmptyState, P
 import { NOTE_TYPES, canManageEvents, canManageTeam, formatDate, RIYAL } from '../../utils/helpers'
 import { getTestDef } from '../../utils/fitnessTestDefinitions'
 import { METRIC_KEYS, METRIC_LABELS, METRIC_UNITS, getMetricTimeSeries, getBMITimeSeries } from '../../utils/measurementHelpers'
-import { PositionBadges } from '../../components/sports/PositionBadges'
+import { PositionBadges, getSecondaryPositions } from '../../components/sports/PositionBadges'
 import { NotesSummaryBox } from '../../components/player/NotesSummaryBox'
+import { MedicalSummaryBox } from '../../components/player/MedicalSummaryBox'
+import { AttendanceSummaryBox } from '../../components/player/AttendanceSummaryBox'
+import { buildAvailabilityMap, getPlayerAvailability } from '../../utils/playerAvailability'
 
 const NOTE_COLOR: Record<string, { bg: string; tc: string }> = {
   مدح:   { bg: 'bg-emerald-50', tc: 'text-emerald-700' },
@@ -328,6 +331,7 @@ export default function PlayersPage() {
   // Per-player stats (for sorting + display in list)
   const [playerStats, setPlayerStats] = useState<Record<string, PlayerStat>>({})
   const [loadingStats, setLoadingStats] = useState(false)
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, 'ready' | 'injured' | 'suspended'>>({})
 
   // Sort
   const [sortKey, setSortKey] = useState<SortKey>('join_desc')
@@ -337,6 +341,7 @@ export default function PlayersPage() {
   const [selPlayer, setSelPlayer] = useState<any>(null)
   const [playerNotes, setPlayerNotes] = useState<any[]>([])
   const [playerMedical, setPlayerMedical] = useState<any[]>([])
+  const [playerMedicalCases, setPlayerMedicalCases] = useState<any[]>([])
   const [playerFinance, setPlayerFinance] = useState<{ obligations: any[]; payments: any[] }>({ obligations: [], payments: [] })
   const [playerPts, setPlayerPts] = useState(0)
   const [detailTab, setDetailTab] = useState('matchstats')
@@ -418,11 +423,13 @@ export default function PlayersPage() {
     const today = new Date().toISOString().slice(0, 10)
 
     // Team-level data (single fetches)
-    const [{ lineups }, allMedical, allLeaves, allDecisions] = await Promise.all([
+    const [{ lineups }, allMedical, allMedicalCases, allLeaves, allDecisions, activeSuspensions] = await Promise.all([
       matchStatsService.getTeamMatchStats(teamId),
       medicalService.getReports(teamId),
+      medicalService.getCases(teamId),
       leaveService.getAll(teamId),
       adminDecisionService.getAll(teamId),
+      attendanceService.getActiveSuspensions(teamId),
     ])
 
     // Matches played count per player (starter or sub = actually played)
@@ -444,8 +451,20 @@ export default function PlayersPage() {
 
     // Active injury player IDs
     const activeInjuryIds = new Set(
-      (allMedical as any[]).filter(r => r.status === 'active' || r.status === 'monitoring').map(r => r.player_id)
+      [
+        ...(allMedical as any[]).filter(r => r.status === 'active' || r.status === 'monitoring').map(r => r.player_id),
+        ...(allMedicalCases as any[]).filter(r => r.case_type === 'injury' && (r.status === 'active' || r.status === 'monitoring')).map(r => r.player_id),
+      ]
     )
+
+    setAvailabilityMap(buildAvailabilityMap({
+      playerIds: players.map((p: any) => p.user_id),
+      medicalReports: allMedical as any[],
+      medicalCases: allMedicalCases as any[],
+      suspensions: activeSuspensions as any[],
+      adminDecisions: allDecisions as any[],
+      today,
+    }))
 
     // Leave-unavailable today
     const leaveUnavailable = new Set(
@@ -455,8 +474,12 @@ export default function PlayersPage() {
     // Admin decision unavailable today
     const decisionUnavailable = new Set<string>()
     for (const dec of (allDecisions as any[])) {
-      if (dec.from_date <= today && dec.to_date >= today) {
-        for (const uid of (dec.target_user_ids || [])) decisionUnavailable.add(uid)
+      if (dec.is_active !== false && dec.from_date <= today && dec.to_date >= today) {
+        if (dec.target_type === 'all') {
+          players.forEach((p: any) => decisionUnavailable.add(p.user_id))
+        } else {
+          for (const uid of (dec.target_user_ids || [])) decisionUnavailable.add(uid)
+        }
       }
     }
 
@@ -493,18 +516,19 @@ export default function PlayersPage() {
     setSelPlayer(m); setDetailTab('matchstats')
     setExpandedCaseId(null); setCaseNotes({})
     setNoteLoadError(''); setSaveNoteError('')
-    setPlayerAttendance([]); setPlayerMeasurements([])
+    setPlayerAttendance([]); setPlayerMeasurements([]); setPlayerMedicalCases([])
     setPlayerFitnessResults([]); setPlayerPointsTxs([]); setPlayerRewards([])
     setPlayerMatchStats(null); setStatsFilterTourn(''); setStatsFilterFrom(''); setStatsFilterTo('')
     setPlayerEvalData(null); setPlayerEvalSeason(getCurrentSeason())
     if (!teamId || !user) return
     setLoadingPlayerData(true)
     const isCoach = canManageEvents(myRole) || canManageTeam(myRole)
-    const [notesResult, medical, finance, att, meas, fit, pts, rw] = await Promise.all([
+    const [notesResult, medical, medicalCases, finance, att, meas, fit, pts, rw] = await Promise.all([
       isCoach
         ? noteService.getPlayerNotesForCoach(teamId, m.user_id, user.id)
         : noteService.getMyNotes(teamId, m.user_id),
       medicalService.getPlayerReports(teamId, m.user_id),
+      medicalService.getPlayerCases(teamId, m.user_id),
       financeService.getPlayerFinance(teamId, m.user_id),
       eventService.getMyAttendance(teamId, m.user_id),
       measurementService.getPlayerMeasurements(teamId, m.user_id),
@@ -518,6 +542,7 @@ export default function PlayersPage() {
       setPlayerNotes(notesResult.data)
     }
     setPlayerMedical(medical)
+    setPlayerMedicalCases(medicalCases)
     setPlayerFinance(finance)
     setPlayerAttendance(att)
     setPlayerMeasurements(meas)
@@ -717,8 +742,12 @@ export default function PlayersPage() {
     { key: 'inj_asc',   label: '🤕 الأقل إصابات' },
   ]
 
-  const injuryCases = playerMedical.filter(r => r.report_type === 'injury')
-  const activeInjuries = injuryCases.filter(r => r.status === 'active' || r.status === 'monitoring')
+    const structuredInjuries = playerMedicalCases.filter(r => r.case_type === 'injury')
+    const injuryCases = playerMedical.filter(r => r.report_type === 'injury')
+    const activeStructuredCases = playerMedicalCases.filter(r => r.status === 'active' || r.status === 'monitoring')
+    const activeInjuries = structuredInjuries.length
+      ? activeStructuredCases.filter(r => r.case_type === 'injury')
+      : injuryCases.filter(r => r.status === 'active' || r.status === 'monitoring')
 
   // ══════════════════════════════════════════
   // PLAYER DETAIL VIEW
@@ -726,6 +755,18 @@ export default function PlayersPage() {
   if (selPlayer) {
     const age = calcAge(selPlayer.profile?.date_of_birth)
     const stat = playerStats[selPlayer.user_id]
+    const secondaryPositions = getSecondaryPositions(selPlayer)
+    const birthDateText = selPlayer.profile?.date_of_birth
+      ? new Date(selPlayer.profile.date_of_birth).toLocaleDateString('ar-SA', { year: 'numeric', month: 'short', day: 'numeric' })
+      : ''
+    const medicalAvailability = getPlayerAvailability({
+      medicalCases: playerMedicalCases,
+      medicalReports: playerMedical,
+      suspensions: [],
+    })
+    const detailAvailability = medicalAvailability === 'injured'
+      ? 'injured'
+      : (availabilityMap[selPlayer.user_id] || medicalAvailability)
 
     // ── Attendance computed ──
     const plPresentCount  = playerAttendance.filter(a => a.status === 'present' || a.status === 'late').length
@@ -782,15 +823,15 @@ export default function PlayersPage() {
     const plFinancePct    = plTotalRequired > 0 ? Math.round(plTotalPaid / plTotalRequired * 100) : null
 
     // ── Health status ──
-    const plHealthStatus = playerMedical.some(r => r.status === 'active')
+    const plHealthStatus = playerMedicalCases.some(r => r.status === 'active') || playerMedical.some(r => r.status === 'active')
       ? { label: 'مصاب', color: 'text-red-300' }
-      : playerMedical.some(r => r.status === 'monitoring')
+      : playerMedicalCases.some(r => r.status === 'monitoring') || playerMedical.some(r => r.status === 'monitoring')
       ? { label: 'مراقبة', color: 'text-amber-300' }
       : { label: 'متعافي', color: 'text-emerald-300' }
 
     const DETAIL_TABS = [
       { key: 'notes',        icon: <BookOpen size={13}/>,    label: 'الملاحظات',       count: playerNotes.length },
-      { key: 'medical',      icon: <Stethoscope size={13}/>, label: 'التقارير الطبية', count: injuryCases.length },
+      { key: 'medical',      icon: <Stethoscope size={13}/>, label: 'التقارير الطبية', count: playerMedicalCases.length || injuryCases.length },
       { key: 'finance',      icon: <DollarSign size={13}/>,  label: 'المالية',         count: playerFinance.obligations.length },
       { key: 'measurements', icon: <Ruler size={13}/>,       label: 'القياسات',        count: plActiveMetrics.length + (plHasBMI ? 1 : 0) },
       { key: 'fitness',      icon: <Activity size={13}/>,    label: 'اللياقة',         count: Object.keys(plByTestKey).length },
@@ -811,13 +852,28 @@ export default function PlayersPage() {
         <div className="bg-gradient-to-l from-brand-600 to-brand-800 rounded-2xl p-5 text-white mb-4">
           <div className="flex items-center gap-4 mb-4">
             <Avatar name={selPlayer.profile?.full_name || '?'} src={selPlayer.profile?.avatar_url} size="xl"
+              availability={detailAvailability}
               className="ring-4 ring-white/30 flex-shrink-0"/>
             <div className="flex-1 min-w-0">
               <div className="text-xl font-bold">{selPlayer.profile?.full_name}</div>
               <div className="mt-2 flex items-center gap-2 flex-wrap">
                 <PositionBadges member={selPlayer} />
-                {age !== null && <span className="text-xs text-white/70">{age} سنة</span>}
+                {age !== null && (
+                  <span className="text-xs text-white/70">
+                    {age} سنة{birthDateText ? ` · ${birthDateText}` : ''}
+                  </span>
+                )}
               </div>
+              {secondaryPositions.length > 0 && (
+                <div className="mt-1.5 flex items-center gap-1 flex-wrap">
+                  <span className="text-[10px] text-white/50 font-bold">مراكز ثانوية:</span>
+                  {secondaryPositions.map(pos => (
+                    <span key={pos} className="text-[10px] bg-white/10 border border-white/15 rounded-lg px-2 py-0.5 text-white/80 font-bold">
+                      {pos}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="text-[11px] opacity-60 mt-0.5">انضم {formatFullDate(selPlayer.joined_at)}</div>
               {activeInjuries.length > 0 && (
                 <div className="inline-flex items-center gap-1 bg-red-500/30 border border-red-300/40 rounded-lg px-2 py-0.5 mt-1.5">
@@ -973,10 +1029,17 @@ export default function PlayersPage() {
               </div>
             </div>
 
-            {injuryCases.length === 0 ? (
+            {playerMedicalCases.length > 0 && <MedicalSummaryBox cases={playerMedicalCases} />}
+
+            {injuryCases.length === 0 && playerMedicalCases.length === 0 ? (
               <div className="card text-center py-8">
                 <div className="text-4xl mb-2">✅</div>
                 <div className="font-bold text-slate-600 text-sm">لا توجد إصابات مسجلة</div>
+              </div>
+            ) : injuryCases.length === 0 ? (
+              <div className="card text-center py-5">
+                <div className="font-bold text-slate-600 text-sm">التفاصيل الطبية محفوظة في نظام الحالات الجديد</div>
+                <div className="text-xs text-slate-400 mt-1">الملخص أعلاه يعرض وضع اللاعب، وافتح الملف الطبي الكامل لمراجعة كل حالة.</div>
               </div>
             ) : (
               injuryCases.map(cas => {
@@ -1259,50 +1322,7 @@ export default function PlayersPage() {
 
         {/* ── Attendance Tab ── */}
         {detailTab === 'attendance' && !loadingPlayerData && (
-          <div className="card">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-bold text-sm">سجل الحضور والغياب</h3>
-              <div className="flex flex-col items-end gap-1">
-                {plTotalEvents > 0 && (
-                  <span className={`badge text-xs font-bold ${plAttPct >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                    {plPresentCount}/{plEffDenom} · فعلي {plAttPct}%
-                  </span>
-                )}
-                {plExcusedCount > 0 && (
-                  <span className={`badge text-xs font-bold ${plEffAttPct >= 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
-                    لا تحتسب الأعذار في النسبة <span className="font-normal opacity-70">(بعذر: {plExcusedCount})</span>
-                  </span>
-                )}
-              </div>
-            </div>
-            {playerAttendance.length === 0
-              ? <p className="text-center text-slate-400 text-sm py-6">لا توجد سجلات حضور</p>
-              : <div className="space-y-2">
-                  {[...playerAttendance].sort((a, b) =>
-                    new Date(b.event?.start_time || b.created_at).getTime() -
-                    new Date(a.event?.start_datetime || a.created_at).getTime()
-                  ).map(a => {
-                    const st  = ATT_STATUS_LABELS[a.status] || { label: a.status, color: 'text-slate-600 bg-slate-100' }
-                    const dt  = fmtEventDateTime(a.event?.start_datetime)
-                    return (
-                      <div key={a.id} className="flex items-start justify-between rounded-xl bg-slate-50 px-3 py-2.5 gap-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="font-semibold text-sm text-slate-800 truncate">{a.event?.title || 'حدث'}</div>
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                            <span className="text-xs font-bold text-brand-700">{dt.day}</span>
-                            <span className="text-xs text-slate-500">{dt.date}</span>
-                            {dt.time && <span className="text-xs text-slate-400">· {dt.time}</span>}
-                          </div>
-                          {a.status === 'excused' && a.excuse_reason && (
-                            <div className="text-[11px] text-slate-500 mt-1 bg-slate-100 rounded px-2 py-0.5">العذر: {a.excuse_reason}</div>
-                          )}
-                        </div>
-                        <span className={`text-xs font-bold px-2.5 py-1 rounded-lg flex-shrink-0 ${st.color}`}>{st.label}</span>
-                      </div>
-                    )
-                  })}
-                </div>}
-          </div>
+          <AttendanceSummaryBox teamId={teamId} userId={selPlayer.user_id} audience="admin" />
         )}
 
         {/* ── Points Tab ── */}
@@ -2060,10 +2080,13 @@ export default function PlayersPage() {
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-2.5">
                       <div className="relative flex-shrink-0">
-                        <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="sm" badge={unreadNotes[m.user_id] || 0}/>
-                        {stat && (
-                          <span className={`absolute -bottom-0.5 -left-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${stat.isAvailable ? 'bg-emerald-500' : 'bg-red-500'}`}/>
-                        )}
+                        <Avatar
+                          name={m.profile?.full_name || '?'}
+                          src={m.profile?.avatar_url}
+                          size="sm"
+                          badge={unreadNotes[m.user_id] || 0}
+                          availability={availabilityMap[m.user_id] || 'ready'}
+                        />
                       </div>
                       <div className="min-w-0">
                         <div className="font-bold text-sm text-slate-800 truncate max-w-[120px]">{m.profile?.full_name || 'مجهول'}</div>

@@ -4,7 +4,6 @@ import { addDays, format, parseISO, getDay, eachDayOfInterval } from 'date-fns'
 const ADMIN_DECISION_LABELS: Record<string, string> = {
   suspension: 'إيقاف',
   national_team: 'استدعاء للمنتخب',
-  injury: 'إصابة',
   penalty: 'عقوبة',
   rest: 'راحة',
   emergency: 'طارئ',
@@ -26,7 +25,6 @@ const ATTENDANCE_ROLE_GROUPS: Record<string, string[]> = {
 const ADMIN_DECISION_ABSENCE_TYPE: Record<string, string> = {
   suspension: 'admin_suspension',
   national_team: 'national_team',
-  injury: 'injury',
   penalty: 'admin_suspension',
   rest: 'other',
   emergency: 'emergency',
@@ -964,6 +962,204 @@ export const attendanceService = {
     }
   },
 
+  async getPlayerAttendanceBreakdown(
+    teamId: string,
+    userId: string,
+    filters?: { fromDate?: string; toDate?: string; eventTypes?: string[] }
+  ) {
+    const nowIso = new Date().toISOString()
+    let toLimit = nowIso
+    if (filters?.toDate) {
+      const requestedTo = `${filters.toDate}T23:59:59`
+      toLimit = new Date(requestedTo).getTime() < new Date(nowIso).getTime() ? requestedTo : nowIso
+    }
+
+    let evQuery = supabase.from('events')
+      .select('id, title, event_type, start_datetime, att_member_ids, att_group')
+      .eq('team_id', teamId)
+      .lte('start_datetime', toLimit)
+      .order('start_datetime', { ascending: true })
+    if (filters?.fromDate) evQuery = evQuery.gte('start_datetime', `${filters.fromDate}T00:00:00`)
+    const { data: events } = await evQuery
+    const baseEvents = ((events ?? []) as any[]).filter(e =>
+      !filters?.eventTypes?.length || filters.eventTypes.includes(e.event_type)
+    )
+
+    const eventIds = baseEvents.map(e => e.id)
+    let attRecords: any[] = []
+    if (eventIds.length) {
+      const { data } = await supabase.from('attendance')
+        .select('id, event_id, status, absence_type, late_minutes, excuse_reason, admin_note, locked_by_source, source_type')
+        .eq('team_id', teamId)
+        .eq('user_id', userId)
+        .in('event_id', eventIds)
+      attRecords = data ?? []
+    }
+
+    const attMap = new Map<string, any>()
+    attRecords.forEach((r: any) => attMap.set(r.event_id, r))
+
+    const { data: members } = await supabase.from('team_members')
+      .select('user_id, role')
+      .eq('team_id', teamId)
+      .eq('status', 'active')
+      .is('removed_at', null)
+
+    const { data: lineupRecords } = await supabase.from('match_lineup')
+      .select('match_id, players')
+      .eq('team_id', teamId)
+    const { data: matchRows } = await supabase.from('matches')
+      .select('id, event_id')
+      .eq('team_id', teamId)
+
+    const matchEventMap: Record<string, string> = {}
+    ;(matchRows ?? []).forEach((m: any) => { if (m.event_id) matchEventMap[m.id] = m.event_id })
+
+    const matchLineupMap = new Map<string, string>()
+    ;(lineupRecords ?? []).forEach((lr: any) => {
+      const found = (lr.players ?? []).find((p: any) => p.user_id === userId)
+      if (found) matchLineupMap.set(matchEventMap[lr.match_id] || lr.match_id, found.role)
+    })
+
+    const emptyBucket = () => ({
+      totalEvents: 0,
+      present: 0,
+      late: 0,
+      lateMinutesTotal: 0,
+      lateAvgMinutes: 0,
+      absent: 0,
+      excused: 0,
+      generalRate: 0,
+      effectiveRate: 0,
+    })
+    const byEventType: Record<string, any> = {
+      match: emptyBucket(),
+      training: emptyBucket(),
+      meeting: emptyBucket(),
+      assessment: emptyBucket(),
+      camp: emptyBucket(),
+      other: emptyBucket(),
+    }
+    const summary = emptyBucket()
+    const excusedBreakdown = {
+      leave: 0,
+      injury: 0,
+      nationalTeam: 0,
+      adminSuspension: 0,
+      cards: 0,
+      emergency: 0,
+      academic: 0,
+      family: 0,
+      other: 0,
+    }
+
+    const normalizedExcuseKey = (type: string | null | undefined) => {
+      if (type === 'leave' || type === 'admin_leave') return 'leave'
+      if (type === 'injury') return 'injury'
+      if (type === 'national_team') return 'nationalTeam'
+      if (type === 'admin_suspension') return 'adminSuspension'
+      if (type === 'cards') return 'cards'
+      if (type === 'emergency') return 'emergency'
+      if (type === 'academic') return 'academic'
+      if (type === 'family') return 'family'
+      return 'other'
+    }
+
+    const displayEvents: any[] = []
+    let notCalledMatches = 0
+
+    for (const event of baseEvents) {
+      const type = byEventType[event.event_type] ? event.event_type : 'other'
+      const att = attMap.get(event.id)
+      let counts = false
+      let notCalled = false
+
+      if (event.event_type === 'match') {
+        const lineupRole = matchLineupMap.get(event.id)
+        counts = lineupRole === 'starter' || lineupRole === 'sub' || (att?.status === 'excused' && att?.locked_by_source)
+        notCalled = !counts
+      } else {
+        const eligibleIds = getEligibleIdsNew(event, members ?? [])
+        counts = eligibleIds.includes(userId)
+      }
+
+      if (!counts) {
+        if (event.event_type === 'match' && notCalled) {
+          notCalledMatches++
+          displayEvents.push({
+            event,
+            eventId: event.id,
+            eventType: event.event_type,
+            counted: false,
+            status: 'not_called',
+            label: 'غير مستدعى',
+          })
+        }
+        continue
+      }
+
+      const bucket = byEventType[type]
+      summary.totalEvents++
+      bucket.totalEvents++
+
+      const status = att?.status || 'absent'
+      const row: any = {
+        event,
+        eventId: event.id,
+        eventType: event.event_type,
+        counted: true,
+        status,
+        absenceType: att?.absence_type || (status === 'absent' ? 'unexcused' : null),
+        lateMinutes: Number(att?.late_minutes) || 0,
+        excuseReason: att?.excuse_reason || att?.admin_note || null,
+      }
+
+      if (status === 'present') {
+        summary.present++; bucket.present++
+      } else if (status === 'late') {
+        summary.present++; summary.late++
+        bucket.present++; bucket.late++
+        summary.lateMinutesTotal += row.lateMinutes
+        bucket.lateMinutesTotal += row.lateMinutes
+      } else if (status === 'excused') {
+        summary.excused++; bucket.excused++
+        const key = normalizedExcuseKey(att?.absence_type)
+        ;(excusedBreakdown as any)[key]++
+      } else {
+        summary.absent++; bucket.absent++
+        row.status = 'absent'
+      }
+
+      displayEvents.push(row)
+    }
+
+    const finalize = (bucket: any) => {
+      bucket.lateAvgMinutes = bucket.late > 0 ? Math.round(bucket.lateMinutesTotal / bucket.late) : 0
+      bucket.generalRate = bucket.totalEvents > 0
+        ? Math.round((bucket.present / bucket.totalEvents) * 1000) / 10
+        : 0
+      const effectiveDenom = bucket.totalEvents - bucket.excused
+      bucket.effectiveRate = effectiveDenom > 0
+        ? Math.round((bucket.present / effectiveDenom) * 1000) / 10
+        : 0
+      bucket.effectiveDenominator = effectiveDenom
+      return bucket
+    }
+    finalize(summary)
+    Object.values(byEventType).forEach(finalize)
+
+    return {
+      summary,
+      byEventType,
+      excusedBreakdown,
+      events: displayEvents.sort((a, b) =>
+        new Date(b.event?.start_datetime || '').getTime() - new Date(a.event?.start_datetime || '').getTime()
+      ),
+      notCalledMatches,
+      filters: { fromDate: filters?.fromDate || '', toDate: filters?.toDate || '', cappedAt: nowIso },
+    }
+  },
+
   // ── إحصاء كل أعضاء الفريق (للتقارير) ────────────────────────────
   async getTeamStats(
     teamId: string,
@@ -1332,6 +1528,28 @@ export const adminDecisionService = {
         .gte('start_datetime', `${data.from_date}T00:00:00`)
         .lte('start_datetime', `${data.to_date}T23:59:59`)
       await applyAdminDecisionsToEvents(data.team_id, events ?? [], data.created_by)
+    }
+    return result
+  },
+  async update(id: string, data: any) {
+    const result = await supabase.from('admin_decisions')
+      .update(data)
+      .eq('id', id)
+      .select()
+      .single()
+    if (result.data) {
+      await supabase.from('attendance')
+        .delete()
+        .eq('source_type', 'absence')
+        .eq('source_id', id)
+
+      if (result.data.is_active !== false) {
+        const { data: events } = await supabase.from('events').select('*')
+          .eq('team_id', result.data.team_id)
+          .gte('start_datetime', `${result.data.from_date}T00:00:00`)
+          .lte('start_datetime', `${result.data.to_date}T23:59:59`)
+        await applyAdminDecisionsToEvents(result.data.team_id, events ?? [], data.updated_by || data.created_by)
+      }
     }
     return result
   },
@@ -2162,7 +2380,100 @@ export const medicalService = {
     } catch (e: any) {
       return { url: null, error: e?.message || 'فشل رفع الملف' }
     }
-  }
+  },
+
+  // ── medical_cases (new structured system) ──────────────────────────────
+
+  async getCases(teamId: string) {
+    const { data } = await supabase.from('medical_cases')
+      .select('*, player:profiles!player_id(id, full_name, avatar_url), submitter:profiles!submitted_by(full_name)')
+      .eq('team_id', teamId).order('created_at', { ascending: false })
+    return data ?? []
+  },
+
+  async getMyCases(teamId: string, userId: string) {
+    const { data } = await supabase.from('medical_cases')
+      .select('*').eq('team_id', teamId).eq('player_id', userId)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+
+  async getPlayerCases(teamId: string, playerId: string) {
+    const { data } = await supabase.from('medical_cases')
+      .select('*, player:profiles!player_id(id, full_name, avatar_url), submitter:profiles!submitted_by(full_name)')
+      .eq('team_id', teamId).eq('player_id', playerId)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+
+  async createCase(data: any) {
+    return supabase.from('medical_cases').insert(data).select().single()
+  },
+
+  async updateCase(id: string, data: any) {
+    return supabase.from('medical_cases')
+      .update({ ...data, updated_at: new Date().toISOString() }).eq('id', id)
+  },
+
+  async logAudit(entries: Array<{ case_id: string; team_id: string; changed_by: string; field_name: string; old_value: string | null; new_value: string | null }>) {
+    if (!entries.length) return
+    await supabase.from('medical_case_audit_logs').insert(entries)
+  },
+
+  async checkRecurrence(playerId: string, bodyRegion: string, bodySide: string, detailedDiagnosis: string, excludeId?: string) {
+    let query = supabase.from('medical_cases')
+      .select('id, onset_date, status, body_region, body_side, body_location, tissue_type, detailed_diagnosis, created_at')
+      .eq('player_id', playerId)
+      .eq('case_type', 'injury')
+      .order('created_at', { ascending: false })
+      .limit(10)
+    if (bodyRegion) query = (query as any).eq('body_region', bodyRegion)
+    if (excludeId) query = (query as any).neq('id', excludeId)
+    const { data } = await query
+    const all = (data ?? []) as any[]
+    return all.filter((c: any) =>
+      (!bodySide || c.body_side === bodySide) &&
+      (!detailedDiagnosis || c.detailed_diagnosis === detailedDiagnosis)
+    )
+  },
+
+  async getCaseNotes(caseId: string) {
+    const { data } = await supabase.from('medical_case_notes')
+      .select('*, author:profiles!author_id(full_name, avatar_url)')
+      .eq('case_id', caseId).order('created_at', { ascending: true })
+    return data ?? []
+  },
+
+  async addCaseNote(data: any) {
+    return supabase.from('medical_case_notes').insert(data).select().single()
+  },
+
+  async deleteCase(id: string) {
+    return supabase.from('medical_cases').delete().eq('id', id)
+  },
+
+  async getCaseStats(teamId: string) {
+    const { data } = await supabase.from('medical_cases')
+      .select('id, case_type, status, is_recurrence, onset_date, actual_return_date, absence_days')
+      .eq('team_id', teamId)
+    const cases = (data ?? []) as any[]
+    const thisMonth = new Date().toISOString().slice(0, 7)
+    return {
+      total: cases.length,
+      active: cases.filter(c => c.status === 'active').length,
+      monitoring: cases.filter(c => c.status === 'monitoring').length,
+      recovered: cases.filter(c => c.status === 'recovered').length,
+      injuries: cases.filter(c => c.case_type === 'injury').length,
+      illness: cases.filter(c => c.case_type === 'illness').length,
+      recurrences: cases.filter(c => c.is_recurrence).length,
+      recoveredThisMonth: cases.filter(c =>
+        c.status === 'recovered' && (c.actual_return_date || '').startsWith(thisMonth)
+      ).length,
+      avgAbsenceDays: cases.length > 0
+        ? Math.round(cases.reduce((s, c) => s + (c.absence_days || 0), 0) / cases.length)
+        : 0,
+    }
+  },
 }
 
 // ── PLATFORM ADMIN ─────────────────────────────────────────────────────

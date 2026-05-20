@@ -7,9 +7,10 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import {
-  eventService, financeService, medicalService,
+  eventService, financeService, medicalService, attendanceService,
   noteService, measurementService, fitnessService, pointsService, rewardService,
   matchStatsService, tournamentService, technicalEvalService, teamService,
+  adminDecisionService,
 } from '../../services'
 import { Avatar, Spinner } from '../../components/ui'
 import { formatDate, RIYAL } from '../../utils/helpers'
@@ -19,6 +20,10 @@ import {
   getMetricTimeSeries, getBMITimeSeries,
 } from '../../utils/measurementHelpers'
 import { NotesSummaryBox } from '../../components/player/NotesSummaryBox'
+import { MedicalSummaryBox } from '../../components/player/MedicalSummaryBox'
+import { AttendanceSummaryBox } from '../../components/player/AttendanceSummaryBox'
+import { getSecondaryPositions } from '../../components/sports/PositionBadges'
+import { getPlayerAvailability } from '../../utils/playerAvailability'
 import {
   getCurrentSeason, getSeasonOptions, getActiveIndicators,
   calcStrengthAvg, calcDevAvg, calcOverallAvg, calcImprovementRate,
@@ -308,6 +313,10 @@ export default function SportProfilePage() {
   const [attendance, setAttendance]         = useState<any[]>([])
   const [finance, setFinance]               = useState<{ obligations: any[]; payments: any[] }>({ obligations: [], payments: [] })
   const [medical, setMedical]               = useState<any[]>([])
+  const [medicalCases, setMedicalCases]     = useState<any[]>([])
+  const [activeSuspensions, setActiveSuspensions] = useState<any[]>([])
+  const [adminDecisions, setAdminDecisions] = useState<any[]>([])
+  const [teamMember, setTeamMember]         = useState<any>(null)
   const [notes, setNotes]                   = useState<any[]>([])
   const [notesError, setNotesError]         = useState('')
   const [measurements, setMeasurements]     = useState<any[]>([])
@@ -370,15 +379,25 @@ export default function SportProfilePage() {
       eventService.getMyAttendance(teamId, user.id),
       financeService.getPlayerFinance(teamId, user.id),
       medicalService.getPlayerReports(teamId, user.id),
+      medicalService.getMyCases(teamId, user.id),
+      attendanceService.getActiveSuspensions(teamId, user.id),
+      adminDecisionService.getAll(teamId),
+      teamService.getMemberByUser(teamId, user.id),
       noteService.getMyNotes(teamId, user.id),
       measurementService.getPlayerMeasurements(teamId, user.id),
       fitnessService.getPlayerFitnessResults(teamId, user.id),
       pointsService.getPlayerTransactions(teamId, user.id),
       rewardService.getPlayerRewards(teamId, user.id),
-    ]).then(([att, fin, med, notesResult, meas, fit, pts, rw]) => {
+    ]).then(([att, fin, med, medCases, suspensions, decisions, member, notesResult, meas, fit, pts, rw]) => {
       setAttendance(att)
       setFinance(fin)
       setMedical(med)
+      setMedicalCases(medCases)
+      setActiveSuspensions(suspensions)
+      setAdminDecisions((decisions as any[]).filter(d =>
+        d.target_type === 'all' || (d.target_user_ids || []).includes(user.id)
+      ))
+      setTeamMember(member)
       if (notesResult.error) setNotesError(notesResult.error.message)
       else setNotes(notesResult.data)
       setMeasurements(meas)
@@ -404,9 +423,9 @@ export default function SportProfilePage() {
   }, 0)
 
   // Health status
-  const healthStatus = medical.some(r => r.status === 'active')
+  const healthStatus = medicalCases.some(r => r.status === 'active') || medical.some(r => r.status === 'active')
     ? { label: 'مصاب', color: 'text-red-300' }
-    : medical.some(r => r.status === 'monitoring')
+    : medicalCases.some(r => r.status === 'monitoring') || medical.some(r => r.status === 'monitoring')
     ? { label: 'مراقبة', color: 'text-amber-300' }
     : { label: 'متعافي', color: 'text-emerald-300' }
 
@@ -460,7 +479,7 @@ export default function SportProfilePage() {
   const tabs = [
     { key: 'attendance'   as Tab, icon: <CheckSquare size={14}/>, label: 'الحضور',    count: attendance.length },
     { key: 'finance'      as Tab, icon: <DollarSign size={14}/>,  label: 'المالية',   count: finance.obligations.length + playerRewards.length },
-    { key: 'medical'      as Tab, icon: <Stethoscope size={14}/>, label: 'الطبية',    count: medical.length },
+    { key: 'medical'      as Tab, icon: <Stethoscope size={14}/>, label: 'الطبية',    count: medicalCases.length || medical.length },
     { key: 'notes'        as Tab, icon: <BookOpen size={14}/>,    label: 'الملاحظات', count: notes.length },
     { key: 'measurements' as Tab, icon: <Ruler size={14}/>,       label: 'القياسات',  count: activeMetrics.length + (hasBMI ? 1 : 0) },
     { key: 'fitness'      as Tab, icon: <Activity size={14}/>,    label: 'اللياقة',   count: Object.keys(byTestKey).length },
@@ -510,16 +529,43 @@ export default function SportProfilePage() {
 
   if (loading) return <div className="flex justify-center py-20"><Spinner/></div>
 
+  const birthDateText = dobFormatted || ''
+  const secondaryPositions = getSecondaryPositions(teamMember)
+  const availability = getPlayerAvailability({
+    medicalCases,
+    medicalReports: medical,
+    suspensions: activeSuspensions,
+    adminDecisions,
+  })
+
   return (
     <div dir="rtl">
       {/* ── Header card ── */}
       <div className="bg-gradient-to-l from-brand-600 to-brand-800 rounded-2xl p-5 text-white mb-4">
         <div className="flex items-center gap-4 mb-4">
           <Avatar name={profile?.full_name || '?'} src={profile?.avatar_url} size="xl"
+            availability={availability}
             className="ring-4 ring-white/30 flex-shrink-0"/>
           <div className="flex-1 min-w-0">
             <h2 className="text-xl font-bold">{profile?.full_name}</h2>
-            <p className="text-sm opacity-75">ملفي الرياضي</p>
+            <div className="mt-1 flex items-center gap-2 flex-wrap">
+              <p className="text-sm opacity-75">ملفي الرياضي</p>
+              {age !== null && (
+                <span className="text-xs text-white/70">
+                  {age} سنة{birthDateText ? ` · ${birthDateText}` : ''}
+                </span>
+              )}
+            </div>
+            {secondaryPositions.length > 0 && (
+              <div className="mt-1.5 flex items-center gap-1 flex-wrap">
+                <span className="text-[10px] text-white/50 font-bold">مراكز ثانوية:</span>
+                {secondaryPositions.map(pos => (
+                  <span key={pos} className="text-[10px] bg-white/10 border border-white/15 rounded-lg px-2 py-0.5 text-white/80 font-bold">
+                    {pos}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -613,50 +659,7 @@ export default function SportProfilePage() {
 
       {/* ── ATTENDANCE ── */}
       {tab === 'attendance' && (
-        <div className="card">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-bold text-sm">سجل الحضور والغياب</h3>
-            <div className="flex flex-col items-end gap-1">
-              <span className={`badge text-xs font-bold ${attPct >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                {presentCount}/{effectiveDenom} · فعلي {attPct}%
-              </span>
-              {excusedCount > 0 && (
-                <span className={`badge text-xs font-bold ${effectiveAttPct >= 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
-                  لا تحتسب الأعذار في النسبة <span className="font-normal opacity-70">(بعذر: {excusedCount})</span>
-                </span>
-              )}
-            </div>
-          </div>
-          {attendance.length === 0
-            ? <p className="text-center text-slate-400 text-sm py-6">لا توجد سجلات حضور</p>
-            : <div className="space-y-2">
-                {[...attendance].sort((a, b) =>
-                  new Date(b.event?.start_time || b.created_at).getTime() -
-                  new Date(a.event?.start_datetime || a.created_at).getTime()
-                ).map(a => {
-                  const st  = STATUS_LABELS[a.status] || { label: a.status, color: 'text-slate-600 bg-slate-100' }
-                  const dt  = fmtEventDateTime(a.event?.start_datetime)
-                  return (
-                    <div key={a.id} className="flex items-start justify-between rounded-xl bg-slate-50 px-3 py-2.5 gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-sm text-slate-800 truncate">{a.event?.title || 'حدث'}</div>
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                          <span className="text-xs font-bold text-brand-700">{dt.day}</span>
-                          <span className="text-xs text-slate-500">{dt.date}</span>
-                          {dt.time && <span className="text-xs text-slate-400">· {dt.time}</span>}
-                        </div>
-                        {a.status === 'excused' && a.excuse_reason && (
-                          <div className="text-[11px] text-slate-500 mt-1 bg-slate-100 rounded px-2 py-0.5">
-                            العذر: {a.excuse_reason}
-                          </div>
-                        )}
-                      </div>
-                      <span className={`text-xs font-bold px-2.5 py-1 rounded-lg flex-shrink-0 ${st.color}`}>{st.label}</span>
-                    </div>
-                  )
-                })}
-              </div>}
-        </div>
+        <AttendanceSummaryBox teamId={teamId} userId={user?.id} audience="player" />
       )}
 
       {/* ── FINANCE ── */}
@@ -737,11 +740,17 @@ export default function SportProfilePage() {
       {tab === 'medical' && (
         <div className="space-y-3">
           <h3 className="font-bold text-sm text-slate-800 px-1">التقارير الطبية</h3>
-          {medical.length === 0
+          {medicalCases.length > 0 && <MedicalSummaryBox cases={medicalCases} />}
+          {medical.length === 0 && medicalCases.length === 0
             ? <div className="card text-center py-8">
                 <div className="text-3xl mb-2">✅</div>
                 <div className="font-bold text-slate-600 text-sm">لا توجد تقارير طبية</div>
               </div>
+            : medical.length === 0
+              ? <div className="card text-center py-5">
+                  <div className="font-bold text-slate-600 text-sm">التفاصيل الطبية محفوظة في نظام الحالات الجديد</div>
+                  <div className="text-xs text-slate-400 mt-1">الملخص أعلاه يعرض وضعك الطبي الحالي والموسمي.</div>
+                </div>
             : medical.map(r => {
                 const isOpen = expandedCase === r.id
                 const rNotes = reportNotes[r.id] ?? []

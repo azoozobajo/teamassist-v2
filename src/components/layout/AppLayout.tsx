@@ -4,7 +4,7 @@ import {
   Home, Users, Calendar, CheckSquare, MessageCircle, Bell, Swords, Star as StarIcon,
   DollarSign, FileText, Mail, Settings, Star,
   Umbrella, Trophy, LogOut, Menu, ChevronDown, Shield, UserCircle,
-  Plus, LogIn, Archive, Baby, BookOpen, Stethoscope, Ruler, Inbox, ClipboardList
+  Plus, LogIn, Archive, Baby, BookOpen, Stethoscope, Ruler, Inbox, ClipboardList, Gavel
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { Avatar } from '../ui'
@@ -143,6 +143,7 @@ export default function AppLayout() {
     { to: `/team/${teamId}/matches`,      icon: Trophy,        label: 'المباريات' },
     { to: `/team/${teamId}/attendance`,   icon: CheckSquare,   label: 'الحضور',             coachOnly: true },
     { to: `/team/${teamId}/leaves`,       icon: Umbrella,      label: 'الإجازات',           parentHide: true },
+    { to: `/team/${teamId}/admin-decisions`, icon: Gavel,      label: 'القرارات الإدارية',   adminOnly: true },
     { to: `/team/${teamId}/players`,      icon: Trophy,        label: 'اللاعبون',           coachOnly: true },
     { to: `/team/${teamId}/measurements`, icon: Ruler,         label: 'القياسات والمتابعة', coachOnly: true },
     { to: `/team/${teamId}/points`,       icon: Star,          label: 'النقاط' },

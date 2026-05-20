@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import {
   Plus, Umbrella, AlertCircle, Paperclip, FileText, Image, X, Gavel,
   UserX, ChevronUp, ChevronDown, BarChart2, CalendarOff, ShieldCheck,
@@ -44,7 +44,7 @@ function getDayCount(from: string, to: string) {
 
 // ── Constants ────────────────────────────────────────────────────────
 const LEAVE_TYPE_LABEL: Record<string, string> = {
-  suspension: 'إيقاف', national_team: 'استدعاء للمنتخب', injury: 'إصابة',
+  suspension: 'إيقاف', national_team: 'استدعاء للمنتخب',
   penalty: 'عقوبة', rest: 'راحة', emergency: 'طارئ',
   death: 'حالة وفاة', marriage: 'زواج', academic: 'دراسة',
   family: 'عائلي', private_event: 'مناسبة خاصة', other: 'أخرى',
@@ -107,6 +107,7 @@ const ROLE_LABEL: Record<string, string> = {
 // ── Component ────────────────────────────────────────────────────────
 export default function LeavesPage() {
   const { teamId } = useParams()
+  const navigate = useNavigate()
   const { user, profile } = useAuth()
 
   // ── Existing leaves state ──
@@ -484,7 +485,7 @@ export default function LeavesPage() {
   const decisionTypeLabel = LEAVE_TYPE_LABEL
   const decisionTypeStyle: Record<string, string> = {
     suspension: 'bg-red-100 text-red-700', national_team: 'bg-sky-100 text-sky-700',
-    injury: 'bg-rose-100 text-rose-700', penalty: 'bg-orange-100 text-orange-700',
+    penalty: 'bg-orange-100 text-orange-700',
     rest: 'bg-emerald-100 text-emerald-700', emergency: 'bg-amber-100 text-amber-700',
     death: 'bg-slate-200 text-slate-800', marriage: 'bg-pink-100 text-pink-700',
     academic: 'bg-purple-100 text-purple-700', family: 'bg-teal-100 text-teal-700',
@@ -643,6 +644,9 @@ export default function LeavesPage() {
               <>
                 {isAdmin && (
                   <>
+                    <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/team/${teamId}/admin-decisions`)}>
+                      <FileText size={14}/> صفحة القرارات
+                    </button>
                     <button className="btn btn-primary btn-sm" onClick={() => { setSubmitError(''); setShowDecision(true) }}>
                       <Gavel size={14}/> قرار إداري
                     </button>

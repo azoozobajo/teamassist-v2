@@ -15,6 +15,7 @@ import MembersPage from './pages/team/MembersPage'
 import EventsPage from './pages/team/EventsPage'
 import AttendancePage from './pages/team/AttendancePage'
 import LeavesPage from './pages/team/LeavesPage'
+import AdminDecisionsPage from './pages/team/AdminDecisionsPage'
 import AnnouncementsPage from './pages/team/AnnouncementsPage'
 import FinancePage from './pages/team/FinancePage'
 import ReportsPage from './pages/team/ReportsPage'
@@ -80,6 +81,7 @@ export default function App() {
               <Route path="/team/:teamId/events" element={<EventsPage/>}/>
               <Route path="/team/:teamId/attendance" element={<AttendancePage/>}/>
               <Route path="/team/:teamId/leaves" element={<LeavesPage/>}/>
+              <Route path="/team/:teamId/admin-decisions" element={<AdminDecisionsPage/>}/>
               <Route path="/team/:teamId/players" element={<PlayersPage/>}/>
               <Route path="/team/:teamId/points" element={<PointsPage/>}/>
               <Route path="/team/:teamId/chat" element={<ChatPage/>}/>
