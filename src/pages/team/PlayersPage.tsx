@@ -4,7 +4,7 @@ import {
   Plus, Trophy, ChevronDown, ChevronUp, Send, ExternalLink,
   Paperclip, ArrowUpDown, ChevronRight,
   X, AlertCircle, Image, FileText,
-  Ruler, Activity, Star, CheckSquare, DollarSign, Stethoscope, BookOpen, BarChart2
+  Ruler, Activity, Star, CheckSquare, DollarSign, Stethoscope, BookOpen, BarChart2, GraduationCap
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { teamService, noteService, notificationService, medicalService, financeService, pointsService, eventService, measurementService, fitnessService, rewardService, matchStatsService, tournamentService, technicalEvalService, leaveService, adminDecisionService, attendanceService } from '../../services'
@@ -22,6 +22,7 @@ import { PositionBadges, getSecondaryPositions } from '../../components/sports/P
 import { NotesSummaryBox } from '../../components/player/NotesSummaryBox'
 import { MedicalSummaryBox } from '../../components/player/MedicalSummaryBox'
 import { AttendanceSummaryBox } from '../../components/player/AttendanceSummaryBox'
+import { EducationSummaryBox } from '../../components/player/EducationSummaryBox'
 import { buildAvailabilityMap, getPlayerAvailability } from '../../utils/playerAvailability'
 
 const NOTE_COLOR: Record<string, { bg: string; tc: string }> = {
@@ -837,6 +838,7 @@ export default function PlayersPage() {
       { key: 'measurements', icon: <Ruler size={13}/>,       label: 'القياسات',        count: plActiveMetrics.length + (plHasBMI ? 1 : 0) },
       { key: 'fitness',      icon: <Activity size={13}/>,    label: 'اللياقة',         count: Object.keys(plByTestKey).length },
       { key: 'attendance',   icon: <CheckSquare size={13}/>, label: 'الحضور',          count: plTotalEvents },
+      { key: 'education',    icon: <GraduationCap size={13}/>, label: 'التعليم',        count: undefined },
       { key: 'points',       icon: <Star size={13}/>,        label: 'النقاط',          count: playerPointsTxs.length },
       { key: 'matchstats',   icon: <BarChart2 size={13}/>,   label: 'إحصائيات',        count: undefined },
       { key: 'techeval',     icon: <Star size={13}/>,        label: 'التقييمات الفنية', count: undefined },
@@ -1324,6 +1326,11 @@ export default function PlayersPage() {
         {/* ── Attendance Tab ── */}
         {detailTab === 'attendance' && !loadingPlayerData && (
           <AttendanceSummaryBox teamId={teamId} userId={selPlayer.user_id} audience="admin" />
+        )}
+
+        {/* ── Education Tab ── */}
+        {detailTab === 'education' && !loadingPlayerData && (
+          <EducationSummaryBox teamId={teamId} userId={selPlayer.user_id} audience="admin" />
         )}
 
         {/* ── Points Tab ── */}

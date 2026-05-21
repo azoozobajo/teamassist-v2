@@ -6,7 +6,7 @@ import { inviteService, teamService } from '../../services'
 import { Spinner, PageHeader, Modal, FormField, EmptyState } from '../../components/ui'
 import { ROLE_LABELS, formatDate } from '../../utils/helpers'
 
-const ALL_ROLES = ['head_coach','assistant_coach','player','administrator','media','medical','parent','guest']
+const ALL_ROLES = ['head_coach','assistant_coach','player','administrator','media','medical','scout','parent','guest']
 
 function getInviteLink(token: string) {
   return `${window.location.origin}/join-team?invite=${token}`

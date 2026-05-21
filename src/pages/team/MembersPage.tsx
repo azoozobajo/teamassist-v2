@@ -2,12 +2,13 @@ import React, { useEffect, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { UserPlus, Edit2, Trash2, CheckCircle, XCircle, Shield, Save, Check, Link, MessageSquare, Search, Plus, Snowflake, LogOut, AlertTriangle } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { teamService, inviteService, notificationService, permissionService, memberFreezeService } from '../../services'
+import { teamService, inviteService, notificationService, permissionService, memberFreezeService, playerAvailabilityService } from '../../services'
+import type { PlayerAvailability } from '../../utils/playerAvailability'
 import { Spinner, PageHeader, SearchBox, Avatar, Modal, FormField, ConfirmDialog, EmptyState, Tabs } from '../../components/ui'
 import { ROLE_LABELS, canManageEvents, canManageTeam, formatDate, PERMISSIONS } from '../../utils/helpers'
 import { PLAYER_POSITIONS, PositionBadges, getPrimaryPosition, getSecondaryPositions } from '../../components/sports/PositionBadges'
 
-const ALL_ROLES = ['owner','head_coach','assistant_coach','player','administrator','media','medical','parent','guest']
+const ALL_ROLES = ['owner','head_coach','assistant_coach','player','administrator','media','medical','scout','parent','guest']
 const ROLES_NO_OWNER = ALL_ROLES.filter(r => r !== 'owner')
 const ROLE_GROUPS = [
   { label: '👥 الأعضاء والمواعيد', keys: ['invite_members','add_training','add_matches','add_tournaments'] },
@@ -23,7 +24,8 @@ const roleColor: Record<string, string> = {
   owner:'bg-emerald-100 text-emerald-800', head_coach:'bg-blue-100 text-blue-800',
   assistant_coach:'bg-sky-100 text-sky-800', player:'bg-slate-100 text-slate-600',
   administrator:'bg-purple-100 text-purple-800', media:'bg-amber-100 text-amber-700',
-  medical:'bg-red-100 text-red-700', parent:'bg-pink-100 text-pink-700', guest:'bg-gray-100 text-gray-500'
+  medical:'bg-red-100 text-red-700', scout:'bg-indigo-100 text-indigo-700',
+  parent:'bg-pink-100 text-pink-700', guest:'bg-gray-100 text-gray-500'
 }
 
 export default function MembersPage() {
@@ -31,6 +33,7 @@ export default function MembersPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [members, setMembers] = useState<any[]>([])
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, PlayerAvailability>>({})
   const [requests, setRequests] = useState<any[]>([])
   const [allPerms, setAllPerms] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
@@ -110,7 +113,10 @@ export default function MembersPage() {
       grouped[p.user_id].push(p.permission)
     })
     setAllPerms(grouped)
-    setMembers(m); setRequests(r); setLoading(false)
+    setMembers(m); setRequests(r)
+    const playerIds = m.filter((x: any) => x.role === 'player').map((x: any) => x.user_id)
+    setAvailabilityMap(await playerAvailabilityService.getTeamMap(teamId, playerIds))
+    setLoading(false)
   }
 
   // ── Open edit modal ──
@@ -397,7 +403,8 @@ export default function MembersPage() {
                         .filter(Boolean)
                       return (
                         <div key={m.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50/70 transition-colors">
-                          <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md"/>
+                          <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md"
+                            availability={m.role === 'player' ? (availabilityMap[m.user_id] || 'ready') : 'ready'}/>
                           <div className="flex-1 min-w-0">
                             <div className="font-extrabold text-sm text-slate-800 truncate">{m.profile?.full_name || 'مجهول'}</div>
                             <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
@@ -447,7 +454,8 @@ export default function MembersPage() {
                         {filteredFrozen.map(m => (
                           <div key={m.id} className="flex items-center gap-3 px-4 py-3 bg-cyan-50/50">
                             <div className="relative">
-                              <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md"/>
+                              <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="md"
+                                availability={m.role === 'player' ? (availabilityMap[m.user_id] || 'ready') : 'ready'}/>
                               <Snowflake size={12} className="absolute -bottom-1 -right-1 text-cyan-500 bg-white rounded-full p-0.5"/>
                             </div>
                             <div className="flex-1 min-w-0">
@@ -520,7 +528,8 @@ export default function MembersPage() {
                     return (
                       <button key={m.id} onClick={() => selectPermMember(m)}
                         className={`w-full flex items-center gap-2.5 p-2.5 rounded-xl border text-right transition-all ${permSelMember?.id === m.id ? 'bg-brand-50 border-brand-400' : 'bg-white border-slate-100 hover:border-slate-200'}`}>
-                        <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="sm"/>
+                        <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="sm"
+                          availability={m.role === 'player' ? (availabilityMap[m.user_id] || 'ready') : 'ready'}/>
                         <div className="flex-1 min-w-0">
                           <div className="text-xs font-bold truncate">{m.profile?.full_name}</div>
                           <div className="text-xs text-slate-400">{ROLE_LABELS[m.role] || m.role}</div>
@@ -546,7 +555,8 @@ export default function MembersPage() {
                 <div className="card">
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-3">
-                      <Avatar name={permSelMember.profile?.full_name || '?'} src={permSelMember.profile?.avatar_url} size="md"/>
+                      <Avatar name={permSelMember.profile?.full_name || '?'} src={permSelMember.profile?.avatar_url} size="md"
+                        availability={permSelMember.role === 'player' ? (availabilityMap[permSelMember.user_id] || 'ready') : 'ready'}/>
                       <div>
                         <div className="font-bold text-sm">{permSelMember.profile?.full_name}</div>
                         <div className="text-xs text-slate-400">{ROLE_LABELS[permSelMember.role] || permSelMember.role}</div>
@@ -964,7 +974,8 @@ export default function MembersPage() {
                 <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all ${transferTarget === m.id ? 'bg-brand-500 border-brand-500' : 'border-slate-300'}`}>
                   {transferTarget === m.id && <Check size={11} className="text-white"/>}
                 </div>
-                <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="sm"/>
+                <Avatar name={m.profile?.full_name || '?'} src={m.profile?.avatar_url} size="sm"
+                  availability={m.role === 'player' ? (availabilityMap[m.user_id] || 'ready') : 'ready'}/>
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-sm text-slate-800 truncate">{m.profile?.full_name}</div>
                   <div className="text-xs text-slate-400">{ROLE_LABELS[m.role] || m.role}</div>

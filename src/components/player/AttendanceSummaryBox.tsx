@@ -6,11 +6,12 @@ import { EVENT_CONFIG } from '../../utils/helpers'
 
 type Audience = 'admin' | 'player'
 
-const EVENT_ORDER = ['match', 'training', 'meeting', 'assessment', 'camp', 'other']
+const EVENT_ORDER = ['match', 'training', 'education', 'meeting', 'assessment', 'camp', 'other']
 const EVENT_FALLBACK: Record<string, { label: string; icon: string }> = {
   match: { label: 'مباراة', icon: '🏆' },
   training: { label: 'تدريب', icon: '⚽' },
   meeting: { label: 'اجتماع', icon: '📋' },
+  education: { label: 'تعليم', icon: '🎓' },
   assessment: { label: 'اختبار', icon: '⏱️' },
   camp: { label: 'معسكر', icon: '🏕️' },
   other: { label: 'أخرى', icon: '📌' },

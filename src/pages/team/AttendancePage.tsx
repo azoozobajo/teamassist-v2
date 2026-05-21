@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { ChevronDown, ChevronUp, Lock, Search, X } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { eventService, teamService, pointsService, attendanceService } from '../../services'
+import { eventService, teamService, pointsService, attendanceService, playerAvailabilityService } from '../../services'
+import type { PlayerAvailability } from '../../utils/playerAvailability'
 import { Spinner, PageHeader, AttendanceButton, Modal, FormField, Avatar } from '../../components/ui'
 import { EVENT_CONFIG, formatDate, canManageEvents, isEventLocked } from '../../utils/helpers'
 import { supabase } from '../../lib/supabase'
@@ -36,14 +37,17 @@ const EVENT_TYPE_TRIGGER: Record<string, string> = {
   match:    'حضور المباراة',
   meeting:  'حضور الاجتماع',
   camp:     'حضور المعسكر',
+  education:'حضور التعليم',
 }
 
 const REPORT_EVENT_TYPES = [
   { key: 'all', label: 'كل المواعيد' },
   { key: 'match', label: 'المباريات' },
   { key: 'training', label: 'التمارين' },
+  { key: 'education', label: 'التعليم' },
   { key: 'camp', label: 'المعسكرات' },
   { key: 'meeting', label: 'الاجتماعات' },
+  { key: 'assessment', label: 'الاختبارات' },
   { key: 'other', label: 'أخرى' },
 ]
 
@@ -99,6 +103,7 @@ export default function AttendancePage() {
   const { user } = useAuth()
   const [events, setEvents]   = useState<any[]>([])
   const [members, setMembers] = useState<any[]>([])
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, PlayerAvailability>>({})
   const [myRole, setMyRole]   = useState('')
   const [loading, setLoading] = useState(true)
   // { [eventId]: { present: N, absent: N, ... } }
@@ -151,8 +156,10 @@ export default function AttendancePage() {
       pointsService.getAutoSettings(teamId),
       supabase.from('match_lineup').select('match_id, players').eq('team_id', teamId),
       supabase.from('matches').select('id, event_id').eq('team_id', teamId),
-    ]).then(([evs, mems, role, sum, attRecords, autoS, lineupRes, matchRes]) => {
+    ]).then(async ([evs, mems, role, sum, attRecords, autoS, lineupRes, matchRes]) => {
       setEvents(evs); setMembers(mems); setMyRole(role || ''); setSummary(sum)
+      const playerIds = (mems ?? []).filter((m: any) => m.role === 'player').map((m: any) => m.user_id)
+      setAvailabilityMap(await playerAvailabilityService.getTeamMap(teamId, playerIds))
       setAttendanceRecords(attRecords)
       setAutoSettings(autoS)
       setMatchLineups(lineupRes.data ?? [])
@@ -481,7 +488,8 @@ export default function AttendancePage() {
     const lockLabel = isLocked ? (EXCUSE_SOURCE_LABEL[a.source_type] || 'عذر رسمي') : null
     return (
       <div className="flex items-center gap-2 bg-white rounded-xl p-2 border border-slate-50">
-        <Avatar name={profile?.full_name || '?'} src={profile?.avatar_url} size="sm"/>
+        <Avatar name={profile?.full_name || '?'} src={profile?.avatar_url} size="sm"
+          availability={availabilityMap[userId] || 'ready'}/>
         <div className="flex-1 min-w-0">
           <div className="text-xs font-bold truncate">{profile?.full_name}</div>
           {a?.status === 'late' && a?.late_minutes > 0 && (
@@ -630,7 +638,8 @@ export default function AttendancePage() {
                   <tr key={row.userId} className="hover:bg-slate-50/70 transition-colors">
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-2">
-                        <Avatar name={row.name || '?'} src={row.avatarUrl} size="sm" />
+                        <Avatar name={row.name || '?'} src={row.avatarUrl} size="sm"
+                          availability={availabilityMap[row.userId] || 'ready'} />
                         <span className="font-extrabold text-slate-700">{row.name || 'بدون اسم'}</span>
                       </div>
                     </td>

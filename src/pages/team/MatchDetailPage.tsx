@@ -2,11 +2,12 @@ import React, { useEffect, useLayoutEffect, useState, useCallback, useRef } from
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowRight, Edit2, Trash2, Save, Calendar, MapPin, Users, ChevronDown } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { matchService, matchLineupService, matchEventsService, matchNotesService, medicalService, teamService, eventService, tournamentService, leaveService, adminDecisionService, matchStatsService, attendanceService, notificationService } from '../../services'
-import { Spinner, FormField, Tabs, ConfirmDialog } from '../../components/ui'
+import { matchService, matchLineupService, matchEventsService, matchNotesService, medicalService, teamService, eventService, tournamentService, leaveService, adminDecisionService, matchStatsService, attendanceService, notificationService, playerAvailabilityService } from '../../services'
+import { Spinner, FormField, Tabs, ConfirmDialog, Avatar } from '../../components/ui'
 import { canManageEvents, formatDate } from '../../utils/helpers'
 import { getPrimaryPosition, getSecondaryPositions } from '../../components/sports/PositionBadges'
 import type { FootballFormation, LineupPlayer, MatchEventType } from '../../types/database'
+import type { PlayerAvailability } from '../../utils/playerAvailability'
 
 // ── Formation definitions ──────────────────────────────────────────────
 // Portrait coordinates: x% = lateral (0=top, 100=bottom), y% = depth (0=opponent goal, 100=our goal)
@@ -138,6 +139,7 @@ export default function MatchDetailPage() {
   const [team, setTeam] = useState<any>(null)
   const [tournament, setTournament] = useState<any>(null)
   const [members, setMembers] = useState<any[]>([])
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, PlayerAvailability>>({})
   const [myRole, setMyRole] = useState('')
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('lineup')
@@ -236,6 +238,8 @@ export default function MatchDetailPage() {
     setTeam(teamData)
     setMyRole(role || '')
     setMembers(mems.filter((x: any) => x.role !== 'parent'))
+    const playerIds = mems.filter((x: any) => x.role === 'player').map((x: any) => x.user_id)
+    setAvailabilityMap(await playerAvailabilityService.getTeamMap(teamId, playerIds))
 
     if (m?.tournament_id) {
       const all = await tournamentService.getAll(teamId)
@@ -728,18 +732,15 @@ export default function MatchDetailPage() {
                         {groupPlayers.map(mem => {
                           const inLineup = lineupPlayers.find(p => p.user_id === mem.user_id)
                           const pStats = playerStatsMap[mem.user_id]
-                          const isInjured = injuredPlayerIds.has(mem.user_id)
+                          const availability = availabilityMap[mem.user_id] || (injuredPlayerIds.has(mem.user_id) ? 'injured' : unavailableIds.has(mem.user_id) ? 'suspended' : 'ready')
+                          const isInjured = availability === 'injured'
                           const injDetail = injuredDetails[mem.user_id]
-                          const isUnavailable = unavailableIds.has(mem.user_id)
+                          const isUnavailable = availability === 'suspended'
                           const primaryPos = getPrimaryPosition(mem)
                           const secondaryPos = getSecondaryPositions(mem)
                           return (
                             <div key={mem.id} className={`flex items-start gap-1.5 p-1.5 rounded-lg mb-1 ${inLineup ? 'bg-blue-50 border border-blue-100' : 'hover:bg-slate-50'}`}>
-                              <div className="w-7 h-7 rounded-full overflow-hidden flex-shrink-0 bg-slate-100 border border-slate-200">
-                                {mem.profile?.avatar_url
-                                  ? <img src={mem.profile.avatar_url} className="w-full h-full object-cover" alt="" />
-                                  : <div className="w-full h-full flex items-center justify-center font-bold text-slate-400 text-[9px]">{(mem.profile?.full_name || '?')[0]}</div>}
-                              </div>
+                              <Avatar name={mem.profile?.full_name || '?'} src={mem.profile?.avatar_url} size="xs" availability={availability}/>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-1 flex-wrap">
                                   <span className="font-semibold text-slate-700 text-[10px] leading-tight">{mem.profile?.full_name}</span>
@@ -810,7 +811,11 @@ export default function MatchDetailPage() {
                     const jersey = assigned?.jersey_number
                     const memberData = assigned ? members.find(m => m.user_id === assigned.user_id) : null
                     const isCaptain = assigned?.user_id === captainId && !!captainId
-                    const isInjured = assigned ? injuredPlayerIds.has(assigned.user_id) : false
+                    const availability = assigned
+                      ? (availabilityMap[assigned.user_id] || (injuredPlayerIds.has(assigned.user_id) ? 'injured' : unavailableIds.has(assigned.user_id) ? 'suspended' : 'ready'))
+                      : 'ready'
+                    const availabilityClass = availability === 'injured' ? 'bg-red-500' : availability === 'suspended' ? 'bg-slate-400' : 'bg-emerald-500'
+                    const availabilityTitle = availability === 'injured' ? 'مصاب' : availability === 'suspended' ? 'موقوف' : 'جاهز'
                     const avatarUrl = memberData?.profile?.avatar_url
                     const displayText = assigned
                       ? (jersey ? String(jersey) : (memberData?.profile?.full_name?.[0] || pos.label))
@@ -859,8 +864,8 @@ export default function MatchDetailPage() {
                           {isCaptain && (
                             <span className="absolute -top-1.5 -left-1.5 bg-yellow-400 text-yellow-900 text-[8px] font-extrabold rounded-full w-3.5 h-3.5 flex items-center justify-center leading-none pointer-events-none">C</span>
                           )}
-                          {isInjured && (
-                            <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-red-500 border border-white pointer-events-none animate-pulse" title="مصاب" />
+                          {assigned && (
+                            <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ${availabilityClass} border border-white pointer-events-none ${availability === 'injured' ? 'animate-pulse' : ''}`} title={availabilityTitle} />
                           )}
                         </div>
                         {assigned && memberData && (

@@ -1,16 +1,26 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2, Tag, CalendarDays } from 'lucide-react'
+import { Plus, MapPin, Clock, Repeat, Trash2, Users, X, Check, Trophy, Edit2, Tag, CalendarDays, GraduationCap } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
-import { eventService, teamService, notificationService, calendarMarkerService, matchService, attendanceService } from '../../services'
+import { eventService, teamService, notificationService, calendarMarkerService, matchService, attendanceService, educationService } from '../../services'
 import { Spinner, PageHeader, EmptyState, Modal, FormField, Tabs, AttendanceButton } from '../../components/ui'
 import { EVENT_CONFIG, WEEK_DAYS, canManageEvents, formatDate, isEventLocked } from '../../utils/helpers'
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay } from 'date-fns'
 import { arSA } from 'date-fns/locale'
 
-const EVENT_TYPES = ['training','meeting','camp','assessment','other']
+const EVENT_TYPES = ['training','education','meeting','camp','assessment','other']
 const ATT_GROUPS = ['الكل','اللاعبون فقط','المدربون فقط','اللاعبون والمدربون','الإداريون فقط','مجموعة مخصصة']
 const HOME_AWAY_LABEL: Record<string, string> = { home: '🏟️ ملعبنا', away: '🚌 ملعب المنافس', neutral: '⚖️ أرض محايدة' }
+const EDUCATION_TYPES = [
+  ['lecture', 'محاضرة'], ['course', 'دورة'], ['workshop', 'ورشة عمل'],
+  ['training', 'تدريب'], ['awareness', 'توعية'], ['meeting', 'لقاء'],
+  ['quiz', 'اختبار'], ['other', 'أخرى'],
+]
+const EDUCATION_CATEGORIES = [
+  ['psychological', 'نفسي'], ['medical', 'طبي'], ['media', 'إعلامي'],
+  ['discipline', 'انضباط'], ['nutrition', 'تغذية'], ['tactical', 'تكتيكي'],
+  ['legal', 'قانوني'], ['professional', 'احترافي'], ['social', 'اجتماعي'], ['other', 'أخرى'],
+]
 
 const MARKER_COLORS = [
   { label: 'أزرق',   value: '#3B82F6' },
@@ -28,6 +38,7 @@ export default function EventsPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [events, setEvents] = useState<any[]>([])
+  const [educationByEventId, setEducationByEventId] = useState<Record<string, any>>({})
   const [members, setMembers] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [myRole, setMyRole] = useState('')
@@ -70,7 +81,9 @@ export default function EventsPage() {
     title: '', event_type: 'training', start_datetime: '', end_datetime: '',
     location: '', map_url: '', att_group: 'اللاعبون فقط', description: '',
     selectedMembers: [] as string[],
-    opponent: '', home_away: 'home', match_category: 'friendly', tournament_name: ''
+    opponent: '', home_away: 'home', match_category: 'friendly', tournament_name: '',
+    presenter_name: '', provider_type: 'club', provider_name: '', education_type: 'lecture',
+    education_category: 'professional', location_detail: '', online_url: '', attachment_url: ''
   }
   const [form, setForm] = useState(defaultForm)
   const setF = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }))
@@ -79,7 +92,9 @@ export default function EventsPage() {
     title: '', event_type: 'training', days_of_week: [] as number[],
     start_date: '', end_date: '', start_time: '18:00', end_time: '20:00',
     location: '', map_url: '', att_group: 'اللاعبون فقط',
-    selectedMembers: [] as string[]
+    selectedMembers: [] as string[],
+    presenter_name: '', provider_type: 'club', provider_name: '', education_type: 'lecture',
+    education_category: 'professional', location_detail: '', online_url: '', attachment_url: ''
   }
   const [recurForm, setRecurForm] = useState(defaultRecur)
   const setR = (k: string, v: any) => setRecurForm(p => ({ ...p, [k]: v }))
@@ -101,7 +116,13 @@ export default function EventsPage() {
   async function load() {
     if (!teamId) return
     setLoading(true)
-    const e = await eventService.getTeamEvents(teamId)
+    const [e, educationRows] = await Promise.all([
+      eventService.getTeamEvents(teamId),
+      educationService.getAll(teamId),
+    ])
+    const educationMap: Record<string, any> = {}
+    educationRows.forEach((row: any) => { educationMap[row.event_id] = row })
+    setEducationByEventId(educationMap)
     setEvents(e); setLoading(false)
   }
 
@@ -111,6 +132,23 @@ export default function EventsPage() {
     setMarkers(m)
   }
 
+  function educationPayload(eventId: string, data: any) {
+    return {
+      event_id: eventId,
+      team_id: teamId,
+      presenter_name: data.presenter_name || null,
+      provider_type: data.provider_type || 'club',
+      provider_name: data.provider_name || null,
+      education_type: data.education_type || 'lecture',
+      education_category: data.education_category || 'professional',
+      location_detail: data.location_detail || data.location || null,
+      online_url: data.online_url || null,
+      description: data.description || null,
+      attachment_url: data.attachment_url || null,
+      created_by: user?.id || null,
+    }
+  }
+
   async function addEvent() {
     if (!form.title.trim() || !form.start_datetime || !teamId) return
     setSaving(true)
@@ -118,7 +156,7 @@ export default function EventsPage() {
     const attGroup = isPlayerOnly ? 'اللاعبون فقط' : form.att_group
     const memberIds = attGroup === 'مجموعة مخصصة' && form.selectedMembers.length > 0
       ? form.selectedMembers : null
-    await eventService.createEvent({
+    const result = await eventService.createEvent({
       title: form.title, event_type: form.event_type,
       start_datetime: form.start_datetime, end_datetime: form.end_datetime || null,
       location: form.location, map_url: form.map_url,
@@ -131,6 +169,9 @@ export default function EventsPage() {
         tournament_name: form.match_category === 'tournament' ? (form.tournament_name || null) : null
       } : {})
     })
+    if (result.data?.id && form.event_type === 'education') {
+      await educationService.upsertForEvent(educationPayload(result.data.id, form))
+    }
     await notificationService.createForTeam(teamId, `موعد جديد: ${form.title}`, formatDate(form.start_datetime), 'event', user!.id)
     await load()
     setShowAdd(false); setForm(defaultForm); setSaving(false)
@@ -146,6 +187,11 @@ export default function EventsPage() {
     const payload = { ...recurForm, att_group: attGroup, att_member_ids: memberIds }
     const result = await eventService.createRecurringEvents(payload, user!.id, teamId)
     if (!result.error) {
+      if (recurForm.event_type === 'education' && result.events?.length) {
+        await Promise.all(result.events.map((ev: any) =>
+          educationService.upsertForEvent(educationPayload(ev.id, recurForm))
+        ))
+      }
       await notificationService.createForTeam(teamId, `جدول متكرر: ${recurForm.title}`, '', 'event', user!.id)
       await load()
       setShowRecurring(false); setRecurForm(defaultRecur)
@@ -174,6 +220,7 @@ export default function EventsPage() {
   }
 
   function openEdit(ev: any) {
+    const edu = educationByEventId[ev.id] || {}
     setEditEvent(ev)
     setEditForm({
       title: ev.title,
@@ -188,6 +235,14 @@ export default function EventsPage() {
       home_away: ev.home_away || 'home',
       match_category: ev.match_category || 'friendly',
       tournament_name: ev.tournament_name || '',
+      presenter_name: edu.presenter_name || '',
+      provider_type: edu.provider_type || 'club',
+      provider_name: edu.provider_name || '',
+      education_type: edu.education_type || 'lecture',
+      education_category: edu.education_category || 'professional',
+      location_detail: edu.location_detail || '',
+      online_url: edu.online_url || '',
+      attachment_url: edu.attachment_url || '',
     })
     setShowDetail(null)
   }
@@ -213,6 +268,9 @@ export default function EventsPage() {
         tournament_name: editForm.match_category === 'tournament' ? (editForm.tournament_name || null) : null
       } : {})
     })
+    if (editForm.event_type === 'education') {
+      await educationService.upsertForEvent(educationPayload(editEvent.id, editForm))
+    }
     await notificationService.createForTeam(teamId, `تم تعديل الموعد: ${editForm.title}`, editForm.start_datetime, 'event', user.id)
     await load()
     setEditEvent(null); setSaving(false)
@@ -402,9 +460,52 @@ export default function EventsPage() {
     </div>
   )
 
+  const EducationFields = ({ values, setValue }: { values: any; setValue: (k: string, v: any) => void }) => (
+    <div className="bg-teal-50/70 border border-teal-100 rounded-2xl p-3 space-y-3">
+      <div className="flex items-center gap-2 text-sm font-extrabold text-teal-800">
+        <GraduationCap size={16}/> بيانات التعليم
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <FormField label="نوع النشاط">
+          <select className="form-input" value={values.education_type} onChange={e => setValue('education_type', e.target.value)}>
+            {EDUCATION_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </FormField>
+        <FormField label="التصنيف">
+          <select className="form-input" value={values.education_category} onChange={e => setValue('education_category', e.target.value)}>
+            {EDUCATION_CATEGORIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </FormField>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <FormField label="المقدم">
+          <input className="form-input" value={values.presenter_name} onChange={e => setValue('presenter_name', e.target.value)} placeholder="اسم مقدم الدورة"/>
+        </FormField>
+        <FormField label="الجهة المقدمة">
+          <input className="form-input" value={values.provider_name} onChange={e => setValue('provider_name', e.target.value)} placeholder="النادي أو اسم الجهة"/>
+        </FormField>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <FormField label="مصدر الجهة">
+          <select className="form-input" value={values.provider_type} onChange={e => setValue('provider_type', e.target.value)}>
+            <option value="club">من النادي</option>
+            <option value="external">جهة خارجية</option>
+          </select>
+        </FormField>
+        <FormField label="مكان النشاط">
+          <input className="form-input" value={values.location_detail} onChange={e => setValue('location_detail', e.target.value)} placeholder="قاعة، ملعب، أونلاين..."/>
+        </FormField>
+      </div>
+      <FormField label="رابط المادة أو البث">
+        <input className="form-input" value={values.online_url} onChange={e => setValue('online_url', e.target.value)} placeholder="https://..."/>
+      </FormField>
+    </div>
+  )
+
   // Att group selector — hidden for training/match (forced to players only)
-  const AttGroupField = ({ type, val, onChange, selectedMembers, onMemberToggle }: {
+  const AttGroupField = ({ type, val, onChange, selectedMembers, picker, onMemberToggle }: {
     type: string; val: string; onChange: (v: string) => void; selectedMembers: string[]
+    picker: 'form' | 'recur'
     onMemberToggle: (uid: string) => void
   }) => {
     if (type === 'training' || type === 'assessment') {
@@ -424,7 +525,7 @@ export default function EventsPage() {
         </FormField>
         {val === 'مجموعة مخصصة' && (
           <FormField label="الأعضاء المدعوون">
-            <MemberPicker which={type === 'form' as any ? 'form' : 'recur'}/>
+            <MemberPicker which={picker}/>
             {selectedMembers.length === 0 && (
               <p className="text-xs text-amber-600 mt-1">⚠️ اختر عضواً واحداً على الأقل</p>
             )}
@@ -726,7 +827,7 @@ export default function EventsPage() {
         <FormField label="النوع">
           <EventTypeSelector val={form.event_type} onChange={v => {
             setF('event_type', v)
-            if (v === 'training' || v === 'match') setF('att_group', 'اللاعبون فقط')
+            if (v === 'training' || v === 'assessment') setF('att_group', 'اللاعبون فقط')
           }}/>
         </FormField>
 
@@ -745,9 +846,12 @@ export default function EventsPage() {
         <FormField label="رابط Google Maps">
           <input className="form-input" value={form.map_url} onChange={e => setF('map_url',e.target.value)} placeholder="https://maps.google.com/..."/>
         </FormField>
+        {form.event_type === 'education' && (
+          <EducationFields values={form} setValue={setF} />
+        )}
         <AttGroupField
           type={form.event_type} val={form.att_group} onChange={v => setF('att_group', v)}
-          selectedMembers={form.selectedMembers} onMemberToggle={uid => toggleMember(uid, 'form')}
+          selectedMembers={form.selectedMembers} picker="form" onMemberToggle={uid => toggleMember(uid, 'form')}
         />
         <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowAdd(false)}>إلغاء</button>
@@ -770,7 +874,7 @@ export default function EventsPage() {
         <FormField label="النوع">
           <EventTypeSelector val={recurForm.event_type} onChange={v => {
             setR('event_type', v)
-            if (v === 'training' || v === 'match') setR('att_group', 'اللاعبون فقط')
+            if (v === 'training' || v === 'assessment') setR('att_group', 'اللاعبون فقط')
           }}/>
         </FormField>
         <FormField label="أيام التكرار" required>
@@ -805,9 +909,12 @@ export default function EventsPage() {
         <FormField label="رابط Google Maps">
           <input className="form-input" value={recurForm.map_url} onChange={e => setR('map_url',e.target.value)} placeholder="https://maps.google.com/..."/>
         </FormField>
+        {recurForm.event_type === 'education' && (
+          <EducationFields values={recurForm} setValue={setR} />
+        )}
         <AttGroupField
           type={recurForm.event_type} val={recurForm.att_group} onChange={v => setR('att_group', v)}
-          selectedMembers={recurForm.selectedMembers} onMemberToggle={uid => toggleMember(uid, 'recur')}
+          selectedMembers={recurForm.selectedMembers} picker="recur" onMemberToggle={uid => toggleMember(uid, 'recur')}
         />
         <div className="flex gap-2 justify-end mt-4">
           <button className="btn btn-ghost" onClick={() => setShowRecurring(false)}>إلغاء</button>
@@ -883,7 +990,7 @@ export default function EventsPage() {
             <FormField label="النوع">
               <EventTypeSelector val={editForm.event_type} onChange={v => setEditForm((p: any) => ({
                 ...p, event_type: v,
-                att_group: v === 'training' ? 'اللاعبون فقط' : p.att_group
+                att_group: (v === 'training' || v === 'assessment') ? 'اللاعبون فقط' : p.att_group
               }))}/>
             </FormField>
             <div className="grid grid-cols-2 gap-3">
@@ -900,7 +1007,10 @@ export default function EventsPage() {
             <FormField label="رابط خريطة">
               <input className="form-input" value={editForm.map_url} onChange={e => setEditForm((p: any) => ({ ...p, map_url: e.target.value }))} placeholder="https://maps.google.com/..."/>
             </FormField>
-            {editForm.event_type !== 'training' ? (
+            {editForm.event_type === 'education' && (
+              <EducationFields values={editForm} setValue={(k, v) => setEditForm((p: any) => ({ ...p, [k]: v }))} />
+            )}
+            {editForm.event_type !== 'training' && editForm.event_type !== 'assessment' ? (
               <FormField label="من يسجل الحضور؟">
                 <select className="form-input" value={editForm.att_group} onChange={e => setEditForm((p: any) => ({ ...p, att_group: e.target.value }))}>
                   {ATT_GROUPS.map(g => <option key={g}>{g}</option>)}
@@ -909,7 +1019,7 @@ export default function EventsPage() {
             ) : (
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-2.5 text-xs text-blue-700 flex items-center gap-1.5">
                 <Users size={12}/>
-                التمارين تظهر للاعبين فقط بشكل تلقائي
+                التمارين والاختبارات تظهر للاعبين فقط بشكل تلقائي
               </div>
             )}
             <div className="flex gap-2 justify-end mt-4">

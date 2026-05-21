@@ -224,10 +224,10 @@ export default function PermissionsPage() {
                 <div className="mb-4 p-3 bg-slate-50 rounded-xl border border-slate-100">
                   <p className="text-xs font-bold text-slate-500 mb-2">تغيير المنصب</p>
                   <div className="flex flex-wrap gap-1.5">
-                    {['head_coach','assistant_coach','player','administrator','media','medical','parent','guest'].map(r => (
+                    {['head_coach','assistant_coach','player','administrator','media','medical','scout','parent','guest'].map(r => (
                       <button key={r} onClick={() => { setSelRole(r); setSaved(false) }}
                         className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all border ${selRole === r ? 'bg-brand-500 text-white border-brand-500' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}>
-                        {({'head_coach':'مدرب رئيسي','assistant_coach':'مدرب مساعد','player':'لاعب','administrator':'إداري','media':'إعلامي','medical':'طبي','parent':'ولي أمر','guest':'ضيف'} as any)[r]}
+                        {({'head_coach':'مدرب رئيسي','assistant_coach':'مدرب مساعد','player':'لاعب','administrator':'إداري','media':'إعلامي','medical':'طبي','scout':'كشاف','parent':'ولي أمر','guest':'ضيف'} as any)[r]}
                       </button>
                     ))}
                   </div>

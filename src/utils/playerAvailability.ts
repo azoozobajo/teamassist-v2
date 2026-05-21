@@ -27,8 +27,8 @@ export function getPlayerAvailability(params: {
 
   const hasActiveLeave = leaves.some(l => {
     if (!['approved', 'partial'].includes(l.status)) return false
-    if (l.status === 'partial' && Array.isArray(l.partial_days) && l.partial_days.length > 0) {
-      return l.partial_days.includes(today)
+    if (l.status === 'partial') {
+      return Array.isArray(l.partial_days) && l.partial_days.includes(today)
     }
     return l.from_date <= today && l.to_date >= today
   })

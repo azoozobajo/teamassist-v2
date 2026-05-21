@@ -4,13 +4,13 @@ import {
   Home, Users, Calendar, CheckSquare, MessageCircle, Bell, Swords, Star as StarIcon,
   DollarSign, FileText, Mail, Settings, Star,
   Umbrella, Trophy, LogOut, Menu, ChevronDown, Shield, UserCircle,
-  Plus, LogIn, Archive, Baby, BookOpen, Stethoscope, Ruler, Inbox, ClipboardList, Gavel
+  Plus, LogIn, Archive, Baby, BookOpen, Stethoscope, Ruler, Inbox, ClipboardList, Gavel, Search, GraduationCap, BriefcaseBusiness, Dumbbell
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { Avatar } from '../ui'
 import { supabase } from '../../lib/supabase'
 import { teamService, notificationService, dmService, adminService, mailService } from '../../services'
-import { cn, ROLE_LABELS, canManageTeam, canManageEvents, canViewReports, canManageFinance, isParent } from '../../utils/helpers'
+import { cn, ROLE_LABELS, canManageTeam, canManageEvents, canViewReports, canManageFinance, canManageContracts, canViewScouting, canViewEducation, canViewTraining, isParent } from '../../utils/helpers'
 
 export default function AppLayout() {
   const { user, profile, signOut } = useAuth()
@@ -144,12 +144,16 @@ export default function AppLayout() {
     { to: `/team/${teamId}/attendance`,   icon: CheckSquare,   label: 'الحضور',             coachOnly: true },
     { to: `/team/${teamId}/leaves`,       icon: Umbrella,      label: 'الإجازات',           parentHide: true },
     { to: `/team/${teamId}/admin-decisions`, icon: Gavel,      label: 'القرارات الإدارية',   adminOnly: true },
+    { to: `/team/${teamId}/education`,   icon: GraduationCap, label: 'التعليم',            educationNav: true },
     { to: `/team/${teamId}/players`,      icon: Trophy,        label: 'اللاعبون',           coachOnly: true },
+    { to: `/team/${teamId}/scouting`,     icon: Search,        label: 'قسم الكشافين',       scoutingNav: true },
+    { to: `/team/${teamId}/training`,     icon: Dumbbell,      label: 'الخطة التدريبية',    trainingNav: true },
     { to: `/team/${teamId}/measurements`, icon: Ruler,         label: 'القياسات والمتابعة', coachOnly: true },
     { to: `/team/${teamId}/points`,       icon: Star,          label: 'النقاط' },
     { to: `/team/${teamId}/chat`,         icon: MessageCircle, label: 'التواصل الداخلي',   badge: unreadDM },
     { to: `/team/${teamId}/announcements`,icon: Bell,          label: 'الإعلانات' },
     { to: `/team/${teamId}/finance`,      icon: DollarSign,    label: 'المالية' },
+    { to: `/team/${teamId}/contracts`,    icon: BriefcaseBusiness, label: 'العقود', contractsOnly: true },
     { to: `/team/${teamId}/reports`,      icon: Shield,        label: 'التقارير',           requireReports: true },
     { to: `/team/${teamId}/seasonal`,     icon: FileText,      label: 'تقرير الموسم',      parentHide: true },
     { to: `/team/${teamId}/best-player`,  icon: StarIcon,      label: 'أفضل لاعب',         parentHide: true },
@@ -168,9 +172,13 @@ export default function AppLayout() {
     if ((n as any).parentOnly && !parent) return false
     if (parent && (n as any).parentHide) return false
     if ((n as any).adminOnly && !canAdmin) return false
+    if ((n as any).contractsOnly && !canManageContracts(myRole)) return false
     if ((n as any).ownerOnly && myRole !== 'owner') return false
     if ((n as any).coachOnly && !canManageEvents(myRole)) return false
     if ((n as any).requireReports && !canReports) return false
+    if ((n as any).scoutingNav && !canViewScouting(myRole)) return false
+    if ((n as any).educationNav && !canViewEducation(myRole)) return false
+    if ((n as any).trainingNav && !canViewTraining(myRole)) return false
     // Medical nav: show for admin, medical role, or players (they submit their own)
     if ((n as any).medicalNav && !canAdmin && myRole !== 'medical' && myRole !== 'player') return false
     return true

@@ -16,8 +16,11 @@ import EventsPage from './pages/team/EventsPage'
 import AttendancePage from './pages/team/AttendancePage'
 import LeavesPage from './pages/team/LeavesPage'
 import AdminDecisionsPage from './pages/team/AdminDecisionsPage'
+import ScoutingPage from './pages/team/ScoutingPage'
+import EducationPage from './pages/team/EducationPage'
 import AnnouncementsPage from './pages/team/AnnouncementsPage'
 import FinancePage from './pages/team/FinancePage'
+import ContractsPage from './pages/team/ContractsPage'
 import ReportsPage from './pages/team/ReportsPage'
 import PlayersPage from './pages/team/PlayersPage'
 import PointsPage from './pages/team/PointsPage'
@@ -27,6 +30,7 @@ import ChatPage from './pages/team/ChatPage'
 import InvitePage from './pages/team/InvitePage'
 import TeamSettingsPage from './pages/team/TeamSettingsPage'
 import MatchesPage from './pages/team/MatchesPage'
+import TrainingPage from './pages/team/TrainingPage'
 import MatchDetailPage from './pages/team/MatchDetailPage'
 import BestPlayerPage from './pages/team/BestPlayerPage'
 import PermissionsPage from './pages/team/PermissionsPage'
@@ -82,12 +86,15 @@ export default function App() {
               <Route path="/team/:teamId/attendance" element={<AttendancePage/>}/>
               <Route path="/team/:teamId/leaves" element={<LeavesPage/>}/>
               <Route path="/team/:teamId/admin-decisions" element={<AdminDecisionsPage/>}/>
+              <Route path="/team/:teamId/scouting" element={<ScoutingPage/>}/>
+              <Route path="/team/:teamId/education" element={<EducationPage/>}/>
               <Route path="/team/:teamId/players" element={<PlayersPage/>}/>
               <Route path="/team/:teamId/points" element={<PointsPage/>}/>
               <Route path="/team/:teamId/chat" element={<ChatPage/>}/>
               <Route path="/team/:teamId/dm" element={<DMPage/>}/>
               <Route path="/team/:teamId/announcements" element={<AnnouncementsPage/>}/>
               <Route path="/team/:teamId/finance" element={<FinancePage/>}/>
+              <Route path="/team/:teamId/contracts" element={<ContractsPage/>}/>
               <Route path="/team/:teamId/reports" element={<ReportsPage/>}/>
               <Route path="/team/:teamId/seasonal" element={<SeasonalPage/>}/>
               <Route path="/team/:teamId/invite" element={<InvitePage/>}/>
@@ -103,6 +110,7 @@ export default function App() {
               <Route path="/team/:teamId/measurements" element={<MeasurementsPage/>}/>
               <Route path="/team/:teamId/mail" element={<MailPage/>}/>
               <Route path="/team/:teamId/sport-profile" element={<SportProfilePage/>}/>
+              <Route path="/team/:teamId/training" element={<TrainingPage/>}/>
             </Route>
           </Route>
           <Route path="/join/:code" element={<JoinViaLink/>}/>

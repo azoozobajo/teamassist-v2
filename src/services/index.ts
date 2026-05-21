@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase'
 import { addDays, format, parseISO, getDay, eachDayOfInterval } from 'date-fns'
+import { buildAvailabilityMap, type PlayerAvailability } from '../utils/playerAvailability'
 
 const ADMIN_DECISION_LABELS: Record<string, string> = {
   suspension: 'إيقاف',
@@ -360,7 +361,7 @@ export const eventService = {
     if (!error && createdEvents?.length) {
       await applyAdminDecisionsToEvents(teamId, createdEvents, userId)
     }
-    return { error, count: createdEvents?.length ?? events.length }
+    return { error, count: createdEvents?.length ?? events.length, events: createdEvents ?? [] }
   },
   async updateEvent(id: string, data: any) {
     const result = await supabase.from('events')
@@ -492,6 +493,181 @@ function getEligibleIdsNew(event: any, members: any[]): string[] {
   const roles = ATTENDANCE_ROLE_GROUPS_NEW[event.att_group]
   if (roles) return members.filter(m => roles.includes(m.role)).map(m => m.user_id)
   return members.map(m => m.user_id)
+}
+
+// ── EDUCATION ─────────────────────────────────────────────────────────
+export const educationService = {
+  async getAll(teamId: string) {
+    const { data } = await supabase.from('education_events')
+      .select('*, event:events(*)')
+      .eq('team_id', teamId)
+    return (data ?? []).sort((a: any, b: any) =>
+      new Date(a.event?.start_datetime || '').getTime() - new Date(b.event?.start_datetime || '').getTime()
+    )
+  },
+
+  async getByEventId(eventId: string) {
+    const { data } = await supabase.from('education_events')
+      .select('*')
+      .eq('event_id', eventId)
+      .maybeSingle()
+    return data
+  },
+
+  async upsertForEvent(payload: any) {
+    return supabase.from('education_events')
+      .upsert({ ...payload, updated_at: new Date().toISOString() }, { onConflict: 'event_id' })
+      .select()
+      .single()
+  },
+
+  async updateCourse(eventId: string, eventData: any, educationData: any) {
+    const eventResult = await eventService.updateEvent(eventId, eventData)
+    if (eventResult.error) return { error: eventResult.error, data: null }
+    const educationResult = await educationService.upsertForEvent({
+      ...educationData,
+      event_id: eventId,
+      team_id: eventResult.data?.team_id || educationData.team_id,
+    })
+    return { error: educationResult.error, data: { event: eventResult.data, education: educationResult.data } }
+  },
+
+  async deleteCourse(eventId: string) {
+    return eventService.deleteEvent(eventId)
+  },
+
+  async createCourse(teamId: string, userId: string, eventData: any, educationData: any) {
+    const eventResult = await eventService.createEvent({
+      ...eventData,
+      team_id: teamId,
+      created_by: userId,
+      event_type: 'education',
+    })
+    if (eventResult.error || !eventResult.data) return { error: eventResult.error, data: null }
+    const educationResult = await educationService.upsertForEvent({
+      ...educationData,
+      event_id: eventResult.data.id,
+      team_id: teamId,
+      created_by: userId,
+    })
+    return { error: educationResult.error, data: { event: eventResult.data, education: educationResult.data } }
+  },
+
+  async createFromTemplate(teamId: string, userId: string, template: any, eventData: any) {
+    return educationService.createCourse(teamId, userId, eventData, {
+      source_template_id: template.id,
+      presenter_name: template.presenter_names?.[0] || null,
+      presenter_names: template.presenter_names || [],
+      provider_type: template.provider_type || 'club',
+      provider_name: template.provider_name || null,
+      education_type: template.education_type || 'lecture',
+      education_category: template.education_category || 'professional',
+      location_detail: template.location_detail || null,
+      online_url: template.online_url || null,
+      content_text: template.content_text || null,
+      content_url: template.content_url || null,
+      content_notes: template.content_notes || null,
+      description: template.description || null,
+      created_by: userId,
+    })
+  },
+
+  async getTemplates(teamId: string) {
+    const { data } = await supabase.from('education_course_templates')
+      .select('*')
+      .eq('team_id', teamId)
+      .order('created_at', { ascending: false })
+    return data ?? []
+  },
+
+  async saveTemplate(payload: any) {
+    return supabase.from('education_course_templates')
+      .insert(payload)
+      .select()
+      .single()
+  },
+
+  async updateContent(eventId: string, patch: any) {
+    return supabase.from('education_events')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('event_id', eventId)
+  },
+
+  async getCertificatePlayers(eventId: string) {
+    const { data } = await supabase.from('attendance')
+      .select('user_id, status, profile:profiles!user_id(id, full_name, avatar_url)')
+      .eq('event_id', eventId)
+      .in('status', ['present', 'late'])
+      .order('created_at', { ascending: true })
+    return data ?? []
+  },
+
+  async getPlayerSummary(teamId: string, userId: string) {
+    const nowIso = new Date().toISOString()
+    const { data: events } = await supabase.from('events')
+      .select('id, title, event_type, start_datetime, location, att_group, att_member_ids')
+      .eq('team_id', teamId)
+      .eq('event_type', 'education')
+      .order('start_datetime', { ascending: false })
+
+    const educationEvents = events ?? []
+    const eventIds = educationEvents.map((e: any) => e.id)
+
+    const [{ data: details }, { data: attendance }, { data: members }] = await Promise.all([
+      eventIds.length
+        ? supabase.from('education_events').select('*').eq('team_id', teamId).in('event_id', eventIds)
+        : Promise.resolve({ data: [] } as any),
+      eventIds.length
+        ? supabase.from('attendance').select('*').eq('team_id', teamId).eq('user_id', userId).in('event_id', eventIds)
+        : Promise.resolve({ data: [] } as any),
+      supabase.from('team_members').select('user_id, role').eq('team_id', teamId).eq('status', 'active').is('removed_at', null),
+    ])
+
+    const detailMap = new Map<string, any>()
+    ;(details ?? []).forEach((d: any) => detailMap.set(d.event_id, d))
+    const attMap = new Map<string, any>()
+    ;(attendance ?? []).forEach((a: any) => attMap.set(a.event_id, a))
+
+    const rows = educationEvents
+      .filter((event: any) => getEligibleIdsNew(event, members ?? []).includes(userId))
+      .map((event: any) => {
+        const att = attMap.get(event.id)
+        const status = att?.status || 'absent'
+        const isPast = new Date(event.start_datetime).getTime() <= new Date(nowIso).getTime()
+        return {
+          event,
+          education: detailMap.get(event.id) || null,
+          status,
+          lateMinutes: Number(att?.late_minutes) || 0,
+          absenceType: att?.absence_type || null,
+          hasAttendance: !!att,
+          isPast,
+        }
+      })
+
+    const countedRows = rows.filter((r: any) => r.isPast || r.hasAttendance)
+    const summary = {
+      total: countedRows.length,
+      completed: countedRows.filter(r => r.status === 'present' || r.status === 'late').length,
+      present: countedRows.filter(r => r.status === 'present').length,
+      late: countedRows.filter(r => r.status === 'late').length,
+      absent: countedRows.filter(r => r.status === 'absent' || r.status === 'uncertain').length,
+      excused: countedRows.filter(r => r.status === 'excused').length,
+      lateMinutesTotal: countedRows.reduce((sum, r) => sum + r.lateMinutes, 0),
+      upcoming: rows.filter((r: any) => !r.isPast && !r.hasAttendance).length,
+    }
+
+    const byCategory: Record<string, number> = {}
+    const byType: Record<string, number> = {}
+    countedRows.forEach((row: any) => {
+      const category = row.education?.education_category || 'other'
+      const type = row.education?.education_type || 'other'
+      byCategory[category] = (byCategory[category] || 0) + 1
+      byType[type] = (byType[type] || 0) + 1
+    })
+
+    return { summary, byCategory, byType, rows }
+  },
 }
 
 export const attendanceService = {
@@ -1036,6 +1212,7 @@ export const attendanceService = {
       match: emptyBucket(),
       training: emptyBucket(),
       meeting: emptyBucket(),
+      education: emptyBucket(),
       assessment: emptyBucket(),
       camp: emptyBucket(),
       other: emptyBucket(),
@@ -1427,6 +1604,190 @@ export const notificationService = {
       }))
     if (notifs.length) await supabase.from('notifications').insert(notifs)
   }
+}
+
+// ── CONTRACTS ─────────────────────────────────────────────────────────
+export const contractService = {
+  async getAll(teamId: string) {
+    const [{ data: contracts }, { data: benefits }, { data: payments }, { data: loans }] = await Promise.all([
+      supabase.from('contracts')
+        .select('*, member:profiles!member_user_id(id, full_name, avatar_url)')
+        .eq('team_id', teamId)
+        .order('created_at', { ascending: false }),
+      supabase.from('contract_benefits').select('*').eq('team_id', teamId),
+      supabase.from('contract_payments').select('*').eq('team_id', teamId).order('due_date', { ascending: true }),
+      supabase.from('contract_loans').select('*').eq('team_id', teamId).order('created_at', { ascending: false }),
+    ])
+
+    const benefitMap: Record<string, any[]> = {}
+    ;(benefits ?? []).forEach((b: any) => {
+      if (!benefitMap[b.contract_id]) benefitMap[b.contract_id] = []
+      benefitMap[b.contract_id].push(b)
+    })
+    const paymentMap: Record<string, any[]> = {}
+    ;(payments ?? []).forEach((p: any) => {
+      if (!paymentMap[p.contract_id]) paymentMap[p.contract_id] = []
+      paymentMap[p.contract_id].push(p)
+    })
+    const loanMap: Record<string, any[]> = {}
+    ;(loans ?? []).forEach((l: any) => {
+      if (!loanMap[l.contract_id]) loanMap[l.contract_id] = []
+      loanMap[l.contract_id].push(l)
+    })
+
+    return (contracts ?? []).map((c: any) => ({
+      ...c,
+      benefits: benefitMap[c.id] ?? [],
+      payments: paymentMap[c.id] ?? [],
+      loans: loanMap[c.id] ?? [],
+    }))
+  },
+
+  async getJobTitles(teamId: string) {
+    const { data } = await supabase.from('contract_job_titles')
+      .select('*')
+      .eq('team_id', teamId)
+      .eq('is_active', true)
+      .order('name', { ascending: true })
+    return data ?? []
+  },
+
+  async createJobTitle(record: any) {
+    return supabase.from('contract_job_titles')
+      .insert(record)
+      .select()
+      .single()
+  },
+
+  async createContract(record: any, benefits: any[] = []) {
+    const { data, error } = await supabase.from('contracts').insert(record).select().single()
+    if (error || !data) return { data, error }
+    if (benefits.length) {
+      await supabase.from('contract_benefits').insert(benefits.map(b => ({
+        ...b,
+        contract_id: data.id,
+        team_id: data.team_id,
+      })))
+    }
+    await supabase.from('contract_status_logs').insert({
+      contract_id: data.id,
+      team_id: data.team_id,
+      old_status: null,
+      new_status: data.contract_status,
+      note: 'إنشاء عقد',
+      changed_by: record.created_by,
+    })
+    return { data, error }
+  },
+
+  async updateContract(id: string, patch: any, oldStatus?: string, changedBy?: string) {
+    const { data, error } = await supabase.from('contracts')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single()
+    if (!error && data && patch.contract_status && oldStatus && patch.contract_status !== oldStatus) {
+      await supabase.from('contract_status_logs').insert({
+        contract_id: id,
+        team_id: data.team_id,
+        old_status: oldStatus,
+        new_status: patch.contract_status,
+        note: patch.status_note || null,
+        changed_by: changedBy || patch.updated_by || null,
+      })
+    }
+    return { data, error }
+  },
+
+  async deleteContract(id: string) {
+    return supabase.from('contracts').delete().eq('id', id)
+  },
+
+  async addBenefit(record: any) {
+    return supabase.from('contract_benefits').insert(record).select().single()
+  },
+
+  async replaceBenefits(contractId: string, teamId: string, benefits: any[] = []) {
+    const { error } = await supabase.from('contract_benefits').delete().eq('contract_id', contractId)
+    if (error) return { error }
+    if (!benefits.length) return { error: null }
+    return supabase.from('contract_benefits').insert(benefits.map(b => ({
+      ...b,
+      contract_id: contractId,
+      team_id: teamId,
+    })))
+  },
+
+  async addPayment(record: any) {
+    const status = Number(record.amount_paid || 0) >= Number(record.amount_due || 0)
+      ? 'paid'
+      : Number(record.amount_paid || 0) > 0
+        ? 'partial'
+        : (record.payment_status || 'due')
+    return supabase.from('contract_payments')
+      .insert({ ...record, payment_status: status })
+      .select()
+      .single()
+  },
+
+  async updatePayment(id: string, patch: any) {
+    const next: any = { ...patch, updated_at: new Date().toISOString() }
+    if (patch.amount_paid !== undefined || patch.amount_due !== undefined) {
+      const paid = Number(patch.amount_paid || 0)
+      const due = Number(patch.amount_due || 0)
+      next.payment_status = paid >= due && due > 0 ? 'paid' : paid > 0 ? 'partial' : 'due'
+    }
+    return supabase.from('contract_payments').update(next).eq('id', id)
+  },
+
+  async addLoan(record: any) {
+    return supabase.from('contract_loans').insert(record).select().single()
+  },
+
+  async updateLoan(id: string, patch: any) {
+    return supabase.from('contract_loans')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', id)
+  },
+}
+
+// ── PLAYER AVAILABILITY ───────────────────────────────────────────────
+export const playerAvailabilityService = {
+  async getTeamMap(teamId: string, playerIds?: string[]): Promise<Record<string, PlayerAvailability>> {
+    const today = new Date().toISOString().slice(0, 10)
+    const { data: members } = await supabase.from('team_members')
+      .select('user_id, role')
+      .eq('team_id', teamId)
+      .eq('status', 'active')
+      .is('removed_at', null)
+      .eq('role', 'player')
+    const ids = playerIds?.length ? playerIds : (members ?? []).map((m: any) => m.user_id)
+    if (!ids.length) return {}
+
+    const [
+      { data: medicalReports },
+      { data: medicalCases },
+      { data: leaves },
+      { data: adminDecisions },
+      { data: suspensions },
+    ] = await Promise.all([
+      supabase.from('medical_reports').select('*').eq('team_id', teamId).in('player_id', ids),
+      supabase.from('medical_cases').select('*').eq('team_id', teamId).in('player_id', ids),
+      supabase.from('leaves').select('*').eq('team_id', teamId).in('user_id', ids),
+      supabase.from('admin_decisions').select('*').eq('team_id', teamId),
+      supabase.from('tournament_suspensions').select('*').eq('team_id', teamId).in('player_id', ids).eq('is_completed', false),
+    ])
+
+    return buildAvailabilityMap({
+      playerIds: ids,
+      medicalReports: medicalReports ?? [],
+      medicalCases: medicalCases ?? [],
+      leaves: leaves ?? [],
+      adminDecisions: adminDecisions ?? [],
+      suspensions: suspensions ?? [],
+      today,
+    })
+  },
 }
 
 // ── ANNOUNCEMENTS ─────────────────────────────────────────────────────
@@ -2473,6 +2834,343 @@ export const medicalService = {
         ? Math.round(cases.reduce((s, c) => s + (c.absence_days || 0), 0) / cases.length)
         : 0,
     }
+  },
+}
+
+// ── SCOUTING ──────────────────────────────────────────────────────────
+export const scoutService = {
+  async getPlayers(teamId: string) {
+    const { data, error } = await supabase.from('scout_players')
+      .select('*, assigned_scout:profiles!assigned_scout_id(id, full_name, avatar_url), added_by_profile:profiles!added_by(id, full_name)')
+      .eq('team_id', teamId)
+      .order('updated_at', { ascending: false })
+    if (error) { console.error('[scoutService.getPlayers]', error); return [] }
+    return data ?? []
+  },
+
+  async getReports(teamId: string) {
+    const { data, error } = await supabase.from('scout_reports')
+      .select('*, scout:profiles!scout_id(id, full_name, avatar_url), player:scout_players(id, full_name, primary_position, status)')
+      .eq('team_id', teamId)
+      .order('watch_date', { ascending: false })
+    if (error) { console.error('[scoutService.getReports]', error); return [] }
+    return data ?? []
+  },
+
+  async getMedia(teamId: string) {
+    const { data, error } = await supabase.from('scout_player_media')
+      .select('*, uploader:profiles!uploaded_by(id, full_name), player:scout_players(id, full_name)')
+      .eq('team_id', teamId)
+      .order('created_at', { ascending: false })
+    if (error) { console.error('[scoutService.getMedia]', error); return [] }
+    return data ?? []
+  },
+
+  async getTrials(teamId: string) {
+    const { data, error } = await supabase.from('scout_trials')
+      .select('*, player:scout_players(id, full_name, primary_position, status), assigned_scout:profiles!assigned_scout_id(id, full_name), evaluator:profiles!evaluator_id(id, full_name), event:events(id, title, start_datetime, event_type)')
+      .eq('team_id', teamId)
+      .order('trial_datetime', { ascending: false })
+    if (error) { console.error('[scoutService.getTrials]', error); return [] }
+    return data ?? []
+  },
+
+  async getLogs(teamId: string) {
+    const { data, error } = await supabase.from('scout_status_logs')
+      .select('*, changer:profiles!changed_by(id, full_name), player:scout_players(id, full_name)')
+      .eq('team_id', teamId)
+      .order('created_at', { ascending: false })
+    if (error) { console.error('[scoutService.getLogs]', error); return [] }
+    return data ?? []
+  },
+
+  async createPlayer(data: any) {
+    const result = await supabase.from('scout_players').insert(data).select().single()
+    if (result.data) {
+      await supabase.from('scout_status_logs').insert({
+        team_id: result.data.team_id,
+        scout_player_id: result.data.id,
+        old_status: null,
+        new_status: result.data.status,
+        note: 'إضافة لاعب مرشح',
+        changed_by: data.added_by,
+      })
+    }
+    return result
+  },
+
+  async updatePlayer(id: string, data: any, oldStatus?: string, changedBy?: string) {
+    const result = await supabase.from('scout_players')
+      .update({ ...data, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single()
+    if (result.data && oldStatus && data.status && oldStatus !== data.status) {
+      await supabase.from('scout_status_logs').insert({
+        team_id: result.data.team_id,
+        scout_player_id: id,
+        old_status: oldStatus,
+        new_status: data.status,
+        note: data.status_note || null,
+        changed_by: changedBy || data.assigned_scout_id || null,
+      })
+    }
+    return result
+  },
+
+  async createReport(data: any) {
+    const result = await supabase.from('scout_reports').insert(data).select().single()
+    if (result.data) {
+      await supabase.from('scout_players')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', result.data.scout_player_id)
+    }
+    return result
+  },
+
+  async createMedia(data: any) {
+    return supabase.from('scout_player_media').insert(data).select().single()
+  },
+
+  async createTrial(data: any) {
+    const result = await supabase.from('scout_trials').insert(data).select().single()
+    if (result.data) {
+      await supabase.from('scout_players')
+        .update({
+          status: data.status === 'scheduled' ? 'trial_scheduled' : 'in_trial',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', result.data.scout_player_id)
+    }
+    return result
+  },
+
+  async updateTrial(id: string, data: any) {
+    return supabase.from('scout_trials')
+      .update({ ...data, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single()
+  },
+
+  async getNeeds(teamId: string) {
+    const { data, error } = await supabase.from('scout_needs')
+      .select('*')
+      .eq('team_id', teamId)
+      .order('created_at', { ascending: false })
+    if (error) { console.error('[scoutService.getNeeds]', error); return [] }
+    return data ?? []
+  },
+
+  async createNeed(data: any) {
+    return supabase.from('scout_needs').insert(data).select().single()
+  },
+
+  async updateNeed(id: string, data: any) {
+    return supabase.from('scout_needs')
+      .update({ ...data, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single()
+  },
+
+  async deleteNeed(id: string) {
+    return supabase.from('scout_needs').delete().eq('id', id)
+  },
+}
+
+// ── TRAINING ───────────────────────────────────────────────────────────
+export const trainingService = {
+  // ─ Phases ─
+  async getPhases(teamId: string) {
+    const { data, error } = await supabase.from('training_phases')
+      .select('*').eq('team_id', teamId).order('sort_order').order('start_date')
+    if (error) { console.error('[trainingService.getPhases]', error); return [] }
+    return data ?? []
+  },
+  async createPhase(data: any) {
+    return supabase.from('training_phases').insert(data).select().single()
+  },
+  async updatePhase(id: string, data: any) {
+    return supabase.from('training_phases').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id).select().single()
+  },
+  async deletePhase(id: string) {
+    return supabase.from('training_phases').delete().eq('id', id)
+  },
+
+  // ─ Phase Goals ─
+  async getPhaseGoals(phaseId: string) {
+    const { data, error } = await supabase.from('training_phase_goals')
+      .select('*, approved_by_profile:profiles!approved_by(id, full_name)')
+      .eq('phase_id', phaseId).order('sort_order')
+    if (error) { console.error('[trainingService.getPhaseGoals]', error); return [] }
+    return data ?? []
+  },
+  async createPhaseGoal(data: any) {
+    return supabase.from('training_phase_goals').insert(data).select().single()
+  },
+  async updatePhaseGoal(id: string, data: any) {
+    return supabase.from('training_phase_goals').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id).select().single()
+  },
+  async deletePhaseGoal(id: string) {
+    return supabase.from('training_phase_goals').delete().eq('id', id)
+  },
+
+  // ─ Themes ─
+  async getThemes(teamId: string) {
+    const { data, error } = await supabase.from('training_themes')
+      .select('*').eq('team_id', teamId).order('week_start_date')
+    if (error) { console.error('[trainingService.getThemes]', error); return [] }
+    return data ?? []
+  },
+  async upsertTheme(data: any) {
+    return supabase.from('training_themes').upsert(data, { onConflict: 'team_id,week_start_date' }).select().single()
+  },
+  async deleteTheme(id: string) {
+    return supabase.from('training_themes').delete().eq('id', id)
+  },
+
+  // ─ Exercises ─
+  async getExercises(teamId: string) {
+    const { data, error } = await supabase.from('training_exercises')
+      .select('*, creator:profiles!created_by(id, full_name)')
+      .eq('team_id', teamId).eq('is_active', true)
+      .order('created_at', { ascending: false })
+    if (error) { console.error('[trainingService.getExercises]', error); return [] }
+    return data ?? []
+  },
+  async createExercise(data: any) {
+    return supabase.from('training_exercises').insert(data).select().single()
+  },
+  async updateExercise(id: string, data: any) {
+    return supabase.from('training_exercises').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id).select().single()
+  },
+  async deleteExercise(id: string) {
+    return supabase.from('training_exercises').update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', id)
+  },
+  async uploadExerciseImage(file: File, teamId: string): Promise<{ url: string | null; error: string | null }> {
+    try {
+      const ext = file.name.split('.').pop()
+      const path = `training/${teamId}/exercises/${Date.now()}.${ext}`
+      const { data, error } = await supabase.storage.from('medical-files').upload(path, file, { upsert: true })
+      if (error) return { url: null, error: error.message }
+      const { data: { publicUrl } } = supabase.storage.from('medical-files').getPublicUrl(data.path)
+      return { url: publicUrl, error: null }
+    } catch (e: any) { return { url: null, error: e?.message || 'فشل رفع الصورة' } }
+  },
+  async getExerciseComments(exerciseId: string) {
+    const { data, error } = await supabase.from('training_exercise_comments')
+      .select('*, author:profiles!author_id(id, full_name, avatar_url)')
+      .eq('exercise_id', exerciseId).order('created_at')
+    if (error) { console.error('[trainingService.getExerciseComments]', error); return [] }
+    return data ?? []
+  },
+  async addExerciseComment(data: any) {
+    return supabase.from('training_exercise_comments').insert(data).select('*, author:profiles!author_id(id, full_name, avatar_url)').single()
+  },
+  async updateExerciseComment(id: string, comment: string) {
+    return supabase.from('training_exercise_comments').update({ comment, updated_at: new Date().toISOString() }).eq('id', id)
+  },
+  async deleteExerciseComment(id: string) {
+    return supabase.from('training_exercise_comments').delete().eq('id', id)
+  },
+
+  // ─ Sessions ─
+  async getSessions(teamId: string) {
+    const { data, error } = await supabase.from('training_sessions')
+      .select('*, phase:training_phases(id, name, color), theme:training_themes(id, title, color), creator:profiles!created_by(id, full_name), blocks:training_session_blocks(id)')
+      .eq('team_id', teamId).order('date', { ascending: false })
+    if (error) { console.error('[trainingService.getSessions]', error); return [] }
+    return (data ?? []).map((s: any) => ({ ...s, block_count: s.blocks?.length ?? 0 }))
+  },
+  async createSession(data: any) {
+    return supabase.from('training_sessions').insert(data).select().single()
+  },
+  async updateSession(id: string, data: any) {
+    return supabase.from('training_sessions').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id).select().single()
+  },
+  async deleteSession(id: string) {
+    return supabase.from('training_sessions').delete().eq('id', id)
+  },
+
+  // ─ Session Blocks ─
+  async getSessionBlocks(sessionId: string) {
+    // Try with author joins (requires training_block_authors_patch.sql to have run)
+    try {
+      const { data, error } = await supabase.from('training_session_blocks')
+        .select('*, author_hc:profiles!authored_hc(id, full_name), author_fc:profiles!authored_fc(id, full_name), author_gkt:profiles!authored_gkt(id, full_name)')
+        .eq('session_id', sessionId).order('order_index')
+      if (error) throw error
+      return data ?? []
+    } catch {
+      const { data } = await supabase.from('training_session_blocks')
+        .select('*').eq('session_id', sessionId).order('order_index')
+      return data ?? []
+    }
+  },
+  async createBlock(data: any) {
+    return supabase.from('training_session_blocks').insert(data).select().single()
+  },
+  async updateBlock(id: string, data: any) {
+    return supabase.from('training_session_blocks').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id)
+  },
+  async deleteBlock(id: string) {
+    return supabase.from('training_session_blocks').delete().eq('id', id)
+  },
+
+  // ─ Individual Assignments ─
+  async getIndividualAssignments(blockId: string) {
+    try {
+      const { data, error } = await supabase.from('training_individual_assignments')
+        .select('*, player:profiles!player_id(id, full_name, avatar_url), supervisor:profiles!supervisor_id(id, full_name)')
+        .eq('block_id', blockId).order('created_at')
+      if (error) throw error
+      return data ?? []
+    } catch {
+      const { data } = await supabase.from('training_individual_assignments')
+        .select('*, player:profiles!player_id(id, full_name, avatar_url)')
+        .eq('block_id', blockId).order('created_at')
+      return data ?? []
+    }
+  },
+  async addIndividualAssignment(data: any) {
+    return supabase.from('training_individual_assignments').insert(data).select('*, player:profiles!player_id(id, full_name, avatar_url)').single()
+  },
+  async removeIndividualAssignment(id: string) {
+    return supabase.from('training_individual_assignments').delete().eq('id', id)
+  },
+
+  // ─ Block Exercises ─
+  async getBlockExercises(sessionId: string) {
+    const { data, error } = await supabase.from('training_block_exercises')
+      .select('*, exercise:training_exercises(id, name, section, category, location, image_url, duration_min, player_count_min, description, technical_points, variables, equipment)')
+      .eq('session_id', sessionId).order('order_index')
+    if (error) { console.error('[trainingService.getBlockExercises]', error); return [] }
+    return data ?? []
+  },
+  async addBlockExercise(data: any) {
+    return supabase.from('training_block_exercises').insert(data).select('*, exercise:training_exercises(id, name, section, category, location, image_url, duration_min, player_count_min, description, technical_points, variables, equipment)').single()
+  },
+  async removeBlockExercise(id: string) {
+    return supabase.from('training_block_exercises').delete().eq('id', id)
+  },
+
+  // ─ Session Comments ─
+  async getSessionComments(sessionId: string) {
+    const { data, error } = await supabase.from('training_session_comments')
+      .select('*, author:profiles!author_id(id, full_name, avatar_url)')
+      .eq('session_id', sessionId).order('created_at')
+    if (error) { console.error('[trainingService.getSessionComments]', error); return [] }
+    return data ?? []
+  },
+  async addSessionComment(data: any) {
+    return supabase.from('training_session_comments').insert(data).select('*, author:profiles!author_id(id, full_name, avatar_url)').single()
+  },
+  async updateSessionComment(id: string, comment: string) {
+    return supabase.from('training_session_comments').update({ comment, updated_at: new Date().toISOString() }).eq('id', id)
+  },
+  async deleteSessionComment(id: string) {
+    return supabase.from('training_session_comments').delete().eq('id', id)
   },
 }
 

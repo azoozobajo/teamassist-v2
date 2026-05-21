@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom'
 import {
   CheckSquare, DollarSign, Stethoscope, BookOpen,
   Ruler, Activity, ChevronDown, ChevronUp, Star, Paperclip, Send, X,
-  Trophy, BarChart2, Filter,
+  Trophy, BarChart2, Filter, GraduationCap,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import {
@@ -22,6 +22,7 @@ import {
 import { NotesSummaryBox } from '../../components/player/NotesSummaryBox'
 import { MedicalSummaryBox } from '../../components/player/MedicalSummaryBox'
 import { AttendanceSummaryBox } from '../../components/player/AttendanceSummaryBox'
+import { EducationSummaryBox } from '../../components/player/EducationSummaryBox'
 import { getSecondaryPositions } from '../../components/sports/PositionBadges'
 import { getPlayerAvailability } from '../../utils/playerAvailability'
 import {
@@ -31,7 +32,7 @@ import {
   getStatusLabel, getStatusColorClass,
 } from '../../utils/technicalEvalHelpers'
 
-type Tab = 'attendance' | 'finance' | 'medical' | 'notes' | 'measurements' | 'fitness' | 'points' | 'matches' | 'evaluations'
+type Tab = 'attendance' | 'finance' | 'medical' | 'notes' | 'measurements' | 'fitness' | 'points' | 'matches' | 'evaluations' | 'education'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const NOTE_COLOR: Record<string, { bg: string; tc: string }> = {
@@ -481,6 +482,7 @@ export default function SportProfilePage() {
 
   const tabs = [
     { key: 'attendance'   as Tab, icon: <CheckSquare size={14}/>, label: 'الحضور',    count: attendance.length },
+    { key: 'education'    as Tab, icon: <GraduationCap size={14}/>, label: 'التعليم',  count: undefined },
     { key: 'finance'      as Tab, icon: <DollarSign size={14}/>,  label: 'المالية',   count: finance.obligations.length + playerRewards.length },
     { key: 'medical'      as Tab, icon: <Stethoscope size={14}/>, label: 'الطبية',    count: medicalCases.length || medical.length },
     { key: 'notes'        as Tab, icon: <BookOpen size={14}/>,    label: 'الملاحظات', count: notes.length },
@@ -664,6 +666,11 @@ export default function SportProfilePage() {
       {/* ── ATTENDANCE ── */}
       {tab === 'attendance' && (
         <AttendanceSummaryBox teamId={teamId} userId={user?.id} audience="player" />
+      )}
+
+      {/* ── EDUCATION ── */}
+      {tab === 'education' && (
+        <EducationSummaryBox teamId={teamId} userId={user?.id} audience="player" />
       )}
 
       {/* ── FINANCE ── */}

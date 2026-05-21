@@ -36,7 +36,14 @@ export const isCoach = (role: string) => ['owner', 'head_coach', 'assistant_coac
 export const canManageTeam = (role: string) => ['owner', 'administrator'].includes(role)
 export const canManageEvents = (role: string) => ['owner', 'head_coach', 'assistant_coach', 'administrator'].includes(role)
 export const canManageFinance = (role: string) => ['owner', 'administrator', 'head_coach'].includes(role)
+export const canManageContracts = (role: string) => ['owner', 'administrator'].includes(role)
 export const canViewReports = (role: string) => ['owner', 'head_coach', 'assistant_coach', 'administrator'].includes(role)
+export const canManageScouting = (role: string) => ['owner', 'administrator', 'scout'].includes(role)
+export const canViewScouting = (role: string) => ['owner', 'administrator', 'head_coach', 'assistant_coach', 'scout'].includes(role)
+export const canManageTraining = (role: string) => ['owner', 'administrator', 'head_coach', 'assistant_coach'].includes(role)
+export const canViewTraining = (role: string) => ['owner', 'administrator', 'head_coach', 'assistant_coach', 'medical', 'scout'].includes(role)
+export const canManageEducation = (role: string) => ['owner', 'administrator', 'head_coach', 'assistant_coach', 'medical'].includes(role)
+export const canViewEducation = (role: string) => ['owner', 'administrator', 'head_coach', 'assistant_coach', 'medical', 'player'].includes(role)
 export const isParent = (role: string) => role === 'parent'
 
 // Labels
@@ -44,14 +51,14 @@ export const ROLE_LABELS: Record<string, string> = {
   owner: 'مالك', head_coach: 'مدرب رئيسي',
   assistant_coach: 'مساعد مدرب', player: 'لاعب',
   administrator: 'إداري', media: 'إعلام',
-  medical: 'طبي', parent: 'ولي أمر', guest: 'ضيف'
+  medical: 'طبي', scout: 'كشاف', parent: 'ولي أمر', guest: 'ضيف'
 }
 
 export const ROLE_COLORS: Record<string, string> = {
   owner: 'badge-green', head_coach: 'badge-blue',
   assistant_coach: 'badge-blue', player: 'badge-gray',
   administrator: 'badge-purple', media: 'badge-amber',
-  medical: 'badge-red', parent: 'badge-amber', guest: 'badge-gray'
+  medical: 'badge-red', scout: 'badge-blue', parent: 'badge-amber', guest: 'badge-gray'
 }
 
 export const EVENT_CONFIG: Record<EventType, { label: string; color: string; bg: string; icon: string; borderClass: string }> = {
@@ -60,6 +67,7 @@ export const EVENT_CONFIG: Record<EventType, { label: string; color: string; bg:
   meeting:    { label: 'اجتماع',  color: '#92400E', bg: '#FEF3C7', icon: '📋',  borderClass: 'border-amber-600' },
   camp:       { label: 'معسكر',   color: '#6D28D9', bg: '#EDE9FE', icon: '🏕️', borderClass: 'border-purple-600' },
   assessment: { label: 'اختبار',  color: '#C2410C', bg: '#FFF7ED', icon: '⏱️', borderClass: 'border-orange-600' },
+  education:  { label: 'تعليم',   color: '#0F766E', bg: '#CCFBF1', icon: '🎓',  borderClass: 'border-teal-600' },
   other:      { label: 'أخرى',    color: '#475569', bg: '#F1F5F9', icon: '📌',  borderClass: 'border-slate-500' }
 }
 
@@ -109,6 +117,9 @@ export const PERMISSIONS = [
   { key: 'view_parent_chat',        label: 'رؤية شات أولياء الأمور' },
   { key: 'view_medical',            label: 'عرض التقارير الطبية (طبيب)' },
   { key: 'manage_medical',          label: 'إدارة التقارير الطبية (طبيب)' },
+  { key: 'manage_scouting',         label: 'إدارة قسم الكشافين' },
+  { key: 'manage_education',        label: 'إدارة التعليم والدورات' },
+  { key: 'manage_contracts',         label: 'إدارة العقود والرواتب' },
 ] as const
 
 export type PermissionKey = typeof PERMISSIONS[number]['key']
