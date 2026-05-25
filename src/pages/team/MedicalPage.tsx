@@ -501,6 +501,10 @@ export default function MedicalPage() {
   const [loading, setLoading]   = useState(true)
   const [stats, setStats]       = useState<any>(null)
   const [showOldReports, setShowOldReports] = useState(false)
+  const [wellbeingRows, setWellbeingRows] = useState<any[]>([])
+  const [wellbeingLoading, setWellbeingLoading] = useState(false)
+  const [wellbeingFrom, setWellbeingFrom] = useState('')
+  const [wellbeingTo, setWellbeingTo] = useState('')
 
   // Tabs & filters
   const [tab, setTab]             = useState('all')
@@ -559,6 +563,7 @@ export default function MedicalPage() {
     || hasPermission(myPerms, myRole, 'manage_medical' as any)
     || hasPermission(myPerms, myRole, 'view_medical' as any)
   const canWrite = isAdminUser || isDoctor
+  const canViewTeamWellbeing = canWrite || ['head_coach', 'assistant_coach'].includes(myRole)
 
   // ── Load ─────────────────────────────────────────────────────────────────
 
@@ -579,14 +584,16 @@ export default function MedicalPage() {
         || (perms as string[]).includes('view_medical')
       setLoading(true)
       try {
-        const [caseData, repData, statsData] = await Promise.all([
+        const [caseData, repData, statsData, wellbeingData] = await Promise.all([
           adm || doc ? medicalService.getCases(teamId) : medicalService.getMyCases(teamId, user.id),
           adm || doc ? medicalService.getReports(teamId) : medicalService.getMyReports(teamId, user.id),
           medicalService.getCaseStats(teamId),
+          (adm || doc || ['head_coach', 'assistant_coach'].includes(r)) ? medicalService.getTeamWellbeing(teamId) : Promise.resolve([]),
         ])
         setCases(caseData)
         setOldReports(repData)
         setStats(statsData)
+        setWellbeingRows(wellbeingData)
       } catch { setCases([]); setOldReports([]) }
       setLoading(false)
     })
@@ -604,6 +611,14 @@ export default function MedicalPage() {
       setCases(caseData)
       setStats(statsData)
     } catch {}
+  }
+
+  async function loadWellbeing() {
+    if (!teamId || !canViewTeamWellbeing) return
+    setWellbeingLoading(true)
+    const rows = await medicalService.getTeamWellbeing(teamId, wellbeingFrom || undefined, wellbeingTo || undefined)
+    setWellbeingRows(rows)
+    setWellbeingLoading(false)
   }
 
   // ── Roster computed data ─────────────────────────────────────────────────
@@ -660,6 +675,56 @@ export default function MedicalPage() {
       byTissue, maxTissue: maxVal(byTissue),
     }
   }, [cases])
+
+  const wellbeingDashboard = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10)
+    const players = members.map((m: any) => {
+      const entries = wellbeingRows
+        .filter((e: any) => e.player_id === m.user_id)
+        .sort((a: any, b: any) => String(b.entry_date).localeCompare(String(a.entry_date)))
+      const todayEntry = entries.find((e: any) => e.entry_date === today)
+      const latest = todayEntry || entries[0] || null
+      const avgScore = entries.length
+        ? Math.round(entries.reduce((s: number, e: any) => s + Number(e.readiness_score || 0), 0) / entries.length)
+        : null
+      const repeated: string[] = []
+      const last3 = entries.slice(0, 3)
+      if (last3.filter((e: any) => e.fatigue_level >= 4).length >= 2) repeated.push('إرهاق متكرر')
+      if (last3.filter((e: any) => e.sleep_quality <= 2).length >= 2) repeated.push('نوم منخفض')
+      if (last3.filter((e: any) => e.muscle_soreness >= 4).length >= 2) repeated.push('ألم عضلي متكرر')
+      if (last3.filter((e: any) => e.stress_level >= 4).length >= 2) repeated.push('ضغط مرتفع')
+      if (last3.length >= 3 && last3.every((e: any) => e.readiness_score < 72)) repeated.push('جاهزية منخفضة 3 قراءات')
+      return {
+        playerId: m.user_id,
+        name: m.profile?.full_name || 'لاعب',
+        avatar: m.profile?.avatar_url,
+        latest,
+        todayEntry,
+        entries,
+        avgScore,
+        repeated,
+      }
+    })
+    const withToday = players.filter(p => p.todayEntry)
+    const red = withToday.filter(p => p.todayEntry?.status === 'red')
+    const yellow = withToday.filter(p => p.todayEntry?.status === 'yellow')
+    const green = withToday.filter(p => p.todayEntry?.status === 'green')
+    const repeatedAlerts = players.filter(p => p.repeated.length > 0)
+    const avgToday = withToday.length
+      ? Math.round(withToday.reduce((s, p) => s + Number(p.todayEntry?.readiness_score || 0), 0) / withToday.length)
+      : 0
+    return {
+      today,
+      players,
+      withToday,
+      missing: players.filter(p => !p.todayEntry),
+      red,
+      yellow,
+      green,
+      repeatedAlerts,
+      avgToday,
+    }
+  }, [members, wellbeingRows])
 
   // ── Case detail / notes ──────────────────────────────────────────────────
 
@@ -1030,10 +1095,109 @@ export default function MedicalPage() {
         { key: 'active',     label: `🔴 نشط (${tabCounts.active})` },
         { key: 'monitoring', label: `🟡 مراقبة (${tabCounts.monitoring})` },
         { key: 'recovered',  label: `🟢 تعافٍ (${tabCounts.recovered})` },
+        ...(canViewTeamWellbeing ? [{ key: 'wellbeing', label: `جاهزية الفريق (${wellbeingDashboard.red.length + wellbeingDashboard.yellow.length})` }] : []),
         ...(canWrite ? [{ key: 'roster', label: '📋 كشف' }] : []),
       ]} active={tab} onChange={t => { setTab(t); if (t !== 'roster') { setRosterSearch(''); setRosterExpandedId(null) } else { setRosterSubTab('players') } }}/>
 
       {/* ── Roster / كشف ─────────────────────────────────────────────────── */}
+      {tab === 'wellbeing' && canViewTeamWellbeing && (
+        <div className="mt-3 space-y-4">
+          <div className="card">
+            <div className="flex flex-col lg:flex-row lg:items-end gap-3 justify-between">
+              <div>
+                <h3 className="font-extrabold text-slate-800">جاهزية الفريق والرفاهية</h3>
+                <p className="text-xs text-slate-400 mt-1">قراءة موجزة لجاهزية اللاعبين اليوم مع تنبيهات التكرار خلال الفترة المحددة.</p>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_auto] gap-2">
+                <FormField label="من تاريخ">
+                  <input className="form-input text-xs" type="date" value={wellbeingFrom} onChange={e => setWellbeingFrom(e.target.value)}/>
+                </FormField>
+                <FormField label="إلى تاريخ">
+                  <input className="form-input text-xs" type="date" value={wellbeingTo} onChange={e => setWellbeingTo(e.target.value)}/>
+                </FormField>
+                <button className="btn btn-primary btn-sm self-end" onClick={loadWellbeing} disabled={wellbeingLoading}>
+                  {wellbeingLoading ? <Spinner size="sm"/> : 'تطبيق'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="card p-3 bg-slate-900 text-white"><div className="text-2xl font-extrabold">{wellbeingDashboard.avgToday}%</div><div className="text-xs opacity-75 mt-1">متوسط جاهزية اليوم</div></div>
+            <div className="card p-3 bg-emerald-50 text-emerald-700 border-emerald-100"><div className="text-2xl font-extrabold">{wellbeingDashboard.green.length}</div><div className="text-xs font-bold opacity-75 mt-1">جاهز</div></div>
+            <div className="card p-3 bg-amber-50 text-amber-700 border-amber-100"><div className="text-2xl font-extrabold">{wellbeingDashboard.yellow.length}</div><div className="text-xs font-bold opacity-75 mt-1">يحتاج متابعة</div></div>
+            <div className="card p-3 bg-red-50 text-red-700 border-red-100"><div className="text-2xl font-extrabold">{wellbeingDashboard.red.length}</div><div className="text-xs font-bold opacity-75 mt-1">غير جاهز</div></div>
+            <div className="card p-3 bg-blue-50 text-blue-700 border-blue-100"><div className="text-2xl font-extrabold">{wellbeingDashboard.withToday.length}/{members.length}</div><div className="text-xs font-bold opacity-75 mt-1">أدخلوا قراءة اليوم</div></div>
+          </div>
+
+          {(wellbeingDashboard.red.length > 0 || wellbeingDashboard.repeatedAlerts.length > 0) && (
+            <div className="grid lg:grid-cols-2 gap-3">
+              <div className="card border-r-4 border-red-500">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-red-700 mb-2"><AlertCircle size={16}/> يحتاجون انتباه اليوم</div>
+                {wellbeingDashboard.red.length === 0 ? <p className="text-xs text-slate-400">لا توجد قراءات حمراء اليوم.</p> : (
+                  <div className="space-y-2">
+                    {wellbeingDashboard.red.map(p => (
+                      <div key={p.playerId} className="rounded-xl bg-red-50 border border-red-100 px-3 py-2">
+                        <div className="font-bold text-sm text-red-700">{p.name} - {p.latest?.readiness_score}%</div>
+                        <div className="text-xs text-red-600 mt-0.5">{[p.latest?.pain_area && `منطقة ألم: ${p.latest.pain_area}`, p.latest?.notes].filter(Boolean).join(' - ') || 'راجع مؤشرات النوم/الإرهاق/الألم'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="card border-r-4 border-amber-500">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-amber-700 mb-2"><RotateCcw size={16}/> تنبيهات تكرار المؤشرات</div>
+                {wellbeingDashboard.repeatedAlerts.length === 0 ? <p className="text-xs text-slate-400">لا توجد مؤشرات متكررة في الفترة الحالية.</p> : (
+                  <div className="space-y-2">
+                    {wellbeingDashboard.repeatedAlerts.slice(0, 8).map(p => (
+                      <div key={p.playerId} className="rounded-xl bg-amber-50 border border-amber-100 px-3 py-2">
+                        <div className="font-bold text-sm text-amber-800">{p.name}</div>
+                        <div className="text-xs text-amber-700 mt-0.5">{p.repeated.join('، ')}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="card p-0 overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+              <div><div className="font-extrabold text-sm text-slate-800">جدول جاهزية اللاعبين</div><div className="text-[11px] text-slate-400 mt-0.5">آخر قراءة داخل الفترة، مع تمييز قراءة اليوم والتنبيهات المتكررة.</div></div>
+              {wellbeingLoading && <Spinner size="sm"/>}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[980px] text-xs">
+                <thead><tr className="text-slate-400 border-b border-slate-100">
+                  <th className="text-right py-2 px-3">اللاعب</th><th className="text-right py-2">آخر تاريخ</th><th className="text-right py-2">الحالة</th><th className="text-right py-2">الجاهزية</th><th className="text-right py-2">النوم</th><th className="text-right py-2">الإرهاق</th><th className="text-right py-2">الألم</th><th className="text-right py-2">الضغط</th><th className="text-right py-2">تكرار</th><th className="text-right py-2 px-3">ملاحظة</th>
+                </tr></thead>
+                <tbody>
+                  {wellbeingDashboard.players.map(p => {
+                    const latest = p.latest
+                    const statusClass = latest?.status === 'red' ? 'bg-red-50 text-red-700' : latest?.status === 'yellow' ? 'bg-amber-50 text-amber-700' : latest?.status === 'green' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
+                    return (
+                      <tr key={p.playerId} className="border-b border-slate-50 hover:bg-slate-50/60">
+                        <td className="py-2 px-3 font-bold text-slate-800">{p.name}</td>
+                        <td className="py-2 text-slate-500">{latest ? latest.entry_date : 'لا يوجد'}</td>
+                        <td className="py-2"><span className={`rounded-lg px-2 py-0.5 font-bold ${statusClass}`}>{latest ? latest.status === 'red' ? 'غير جاهز' : latest.status === 'yellow' ? 'متابعة' : 'جاهز' : 'لم يدخل'}</span></td>
+                        <td className="py-2 font-extrabold text-slate-800">{latest ? `${latest.readiness_score}%` : '—'}</td>
+                        <td className="py-2">{latest ? `${latest.sleep_quality}/5` : '—'}</td>
+                        <td className="py-2">{latest ? `${latest.fatigue_level}/5` : '—'}</td>
+                        <td className="py-2">{latest ? `${latest.muscle_soreness}/5` : '—'}</td>
+                        <td className="py-2">{latest ? `${latest.stress_level}/5` : '—'}</td>
+                        <td className="py-2 max-w-[180px]">{p.repeated.length ? <span className="text-amber-700 font-bold">{p.repeated.join('، ')}</span> : <span className="text-slate-300">—</span>}</td>
+                        <td className="py-2 px-3 max-w-[240px] truncate text-slate-500">{latest ? ([latest.pain_area && `ألم: ${latest.pain_area}`, latest.notes].filter(Boolean).join(' - ') || '—') : 'لم يتم إدخال قراءة في الفترة'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {tab === 'roster' && canWrite && (
         <div className="mt-3">
           {/* Sub-tabs */}
@@ -1229,11 +1393,11 @@ export default function MedicalPage() {
       )}
 
       {/* ── Cases list (non-roster tabs) ────────────────────────────────────── */}
-      {tab !== 'roster' && loading ? (
+      {tab !== 'roster' && tab !== 'wellbeing' && loading ? (
         <div className="flex justify-center py-12"><Spinner/></div>
-      ) : tab !== 'roster' && filtered.length === 0 ? (
+      ) : tab !== 'roster' && tab !== 'wellbeing' && filtered.length === 0 ? (
         <div className="card mt-3"><EmptyState icon={<Stethoscope size={28}/>} title="لا توجد حالات طبية"/></div>
-      ) : tab !== 'roster' ? (
+      ) : tab !== 'roster' && tab !== 'wellbeing' ? (
         <div className="space-y-3 mt-3">
           {filtered.map(mc => {
             const stConf = STATUS_CONFIG[mc.status as keyof typeof STATUS_CONFIG]

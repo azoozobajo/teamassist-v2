@@ -23,6 +23,7 @@ import { NotesSummaryBox } from '../../components/player/NotesSummaryBox'
 import { MedicalSummaryBox } from '../../components/player/MedicalSummaryBox'
 import { AttendanceSummaryBox } from '../../components/player/AttendanceSummaryBox'
 import { EducationSummaryBox } from '../../components/player/EducationSummaryBox'
+import { WellbeingSummaryBox } from '../../components/player/WellbeingSummaryBox'
 import { buildAvailabilityMap, getPlayerAvailability } from '../../utils/playerAvailability'
 
 const NOTE_COLOR: Record<string, { bg: string; tc: string }> = {
@@ -343,6 +344,8 @@ export default function PlayersPage() {
   const [playerNotes, setPlayerNotes] = useState<any[]>([])
   const [playerMedical, setPlayerMedical] = useState<any[]>([])
   const [playerMedicalCases, setPlayerMedicalCases] = useState<any[]>([])
+  const [playerWellbeing, setPlayerWellbeing] = useState<any[]>([])
+  const [reviewingWellbeing, setReviewingWellbeing] = useState(false)
   const [playerFinance, setPlayerFinance] = useState<{ obligations: any[]; payments: any[] }>({ obligations: [], payments: [] })
   const [playerPts, setPlayerPts] = useState(0)
   const [detailTab, setDetailTab] = useState('matchstats')
@@ -518,19 +521,20 @@ export default function PlayersPage() {
     setSelPlayer(m); setDetailTab('matchstats')
     setExpandedCaseId(null); setCaseNotes({})
     setNoteLoadError(''); setSaveNoteError('')
-    setPlayerAttendance([]); setPlayerMeasurements([]); setPlayerMedicalCases([])
+    setPlayerAttendance([]); setPlayerMeasurements([]); setPlayerMedicalCases([]); setPlayerWellbeing([])
     setPlayerFitnessResults([]); setPlayerPointsTxs([]); setPlayerRewards([])
     setPlayerMatchStats(null); setStatsFilterTourn(''); setStatsFilterFrom(''); setStatsFilterTo('')
     setPlayerEvalData(null); setPlayerEvalSeason(getCurrentSeason())
     if (!teamId || !user) return
     setLoadingPlayerData(true)
     const isCoach = canManageEvents(myRole) || canManageTeam(myRole)
-    const [notesResult, medical, medicalCases, finance, att, meas, fit, pts, rw] = await Promise.all([
+    const [notesResult, medical, medicalCases, wellbeingRows, finance, att, meas, fit, pts, rw] = await Promise.all([
       isCoach
         ? noteService.getPlayerNotesForCoach(teamId, m.user_id, user.id)
         : noteService.getMyNotes(teamId, m.user_id),
       medicalService.getPlayerReports(teamId, m.user_id),
       medicalService.getPlayerCases(teamId, m.user_id),
+      medicalService.getPlayerWellbeing(teamId, m.user_id),
       financeService.getPlayerFinance(teamId, m.user_id),
       eventService.getMyAttendance(teamId, m.user_id),
       measurementService.getPlayerMeasurements(teamId, m.user_id),
@@ -545,6 +549,7 @@ export default function PlayersPage() {
     }
     setPlayerMedical(medical)
     setPlayerMedicalCases(medicalCases)
+    setPlayerWellbeing(wellbeingRows)
     setPlayerFinance(finance)
     setPlayerAttendance(att)
     setPlayerMeasurements(meas)
@@ -555,6 +560,18 @@ export default function PlayersPage() {
     setLoadingPlayerData(false)
     await noteService.markRead(m.user_id, teamId)
     setUnreadNotes(p => ({ ...p, [m.user_id]: 0 }))
+  }
+
+  async function reviewWellbeing(entryId: string, medicalNote: string) {
+    if (!teamId || !user || !selPlayer) return
+    setReviewingWellbeing(true)
+    await medicalService.reviewWellbeingEntry(entryId, {
+      reviewed_by: user.id,
+      medical_note: medicalNote,
+    })
+    const rows = await medicalService.getPlayerWellbeing(teamId, selPlayer.user_id)
+    setPlayerWellbeing(rows)
+    setReviewingWellbeing(false)
   }
 
   // Lazy-load match stats when stats tab is opened
@@ -705,6 +722,7 @@ export default function PlayersPage() {
 
   const isCoach = canManageEvents(myRole) || canManageTeam(myRole)
   const canWriteNote = isCoach
+  const canReviewWellbeing = canManageTeam(myRole) || myRole === 'medical'
 
   // ── Sort & filter ──
   const filtered = members.filter(m => m.profile?.full_name?.includes(q))
@@ -1033,6 +1051,13 @@ export default function PlayersPage() {
             </div>
 
             {playerMedicalCases.length > 0 && <MedicalSummaryBox cases={playerMedicalCases} />}
+            <WellbeingSummaryBox
+              entries={playerWellbeing}
+              audience="admin"
+              canReview={canReviewWellbeing}
+              reviewing={reviewingWellbeing}
+              onReview={reviewWellbeing}
+            />
 
             {injuryCases.length === 0 && playerMedicalCases.length === 0 ? (
               <div className="card text-center py-8">

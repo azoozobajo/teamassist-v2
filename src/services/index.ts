@@ -2835,6 +2835,53 @@ export const medicalService = {
         : 0,
     }
   },
+
+  // ── wellbeing / readiness monitoring ───────────────────────────────
+  async getPlayerWellbeing(teamId: string, playerId: string, limit = 30) {
+    const { data } = await supabase.from('player_wellbeing_entries')
+      .select('*, reviewer:profiles!reviewed_by(full_name, avatar_url)')
+      .eq('team_id', teamId)
+      .eq('player_id', playerId)
+      .order('entry_date', { ascending: false })
+      .limit(limit)
+    return data ?? []
+  },
+
+  async getTeamWellbeing(teamId: string, fromDate?: string, toDate?: string) {
+    let query = supabase.from('player_wellbeing_entries')
+      .select('*, player:profiles!player_id(id, full_name, avatar_url), reviewer:profiles!reviewed_by(full_name, avatar_url)')
+      .eq('team_id', teamId)
+      .order('entry_date', { ascending: false })
+    if (fromDate) query = query.gte('entry_date', fromDate)
+    if (toDate) query = query.lte('entry_date', toDate)
+    const { data } = await query
+    return data ?? []
+  },
+
+  async getMyWellbeing(teamId: string, playerId: string, limit = 30) {
+    const { data } = await supabase.from('player_wellbeing_entries')
+      .select('*')
+      .eq('team_id', teamId)
+      .eq('player_id', playerId)
+      .order('entry_date', { ascending: false })
+      .limit(limit)
+    return data ?? []
+  },
+
+  async saveWellbeingEntry(data: any) {
+    return supabase.from('player_wellbeing_entries')
+      .upsert({ ...data, updated_at: new Date().toISOString() }, { onConflict: 'team_id,player_id,entry_date' })
+      .select()
+      .single()
+  },
+
+  async reviewWellbeingEntry(id: string, data: any) {
+    return supabase.from('player_wellbeing_entries')
+      .update({ ...data, reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single()
+  },
 }
 
 // ── SCOUTING ──────────────────────────────────────────────────────────

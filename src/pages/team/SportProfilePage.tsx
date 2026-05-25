@@ -23,6 +23,7 @@ import { NotesSummaryBox } from '../../components/player/NotesSummaryBox'
 import { MedicalSummaryBox } from '../../components/player/MedicalSummaryBox'
 import { AttendanceSummaryBox } from '../../components/player/AttendanceSummaryBox'
 import { EducationSummaryBox } from '../../components/player/EducationSummaryBox'
+import { WellbeingSummaryBox } from '../../components/player/WellbeingSummaryBox'
 import { getSecondaryPositions } from '../../components/sports/PositionBadges'
 import { getPlayerAvailability } from '../../utils/playerAvailability'
 import {
@@ -315,6 +316,8 @@ export default function SportProfilePage() {
   const [finance, setFinance]               = useState<{ obligations: any[]; payments: any[] }>({ obligations: [], payments: [] })
   const [medical, setMedical]               = useState<any[]>([])
   const [medicalCases, setMedicalCases]     = useState<any[]>([])
+  const [wellbeing, setWellbeing]           = useState<any[]>([])
+  const [savingWellbeing, setSavingWellbeing] = useState(false)
   const [activeSuspensions, setActiveSuspensions] = useState<any[]>([])
   const [adminDecisions, setAdminDecisions] = useState<any[]>([])
   const [leaves, setLeaves] = useState<any[]>([])
@@ -382,6 +385,7 @@ export default function SportProfilePage() {
       financeService.getPlayerFinance(teamId, user.id),
       medicalService.getPlayerReports(teamId, user.id),
       medicalService.getMyCases(teamId, user.id),
+      medicalService.getMyWellbeing(teamId, user.id),
       attendanceService.getActiveSuspensions(teamId, user.id),
       adminDecisionService.getAll(teamId),
       leaveService.getMyLeaves(teamId, user.id),
@@ -391,11 +395,12 @@ export default function SportProfilePage() {
       fitnessService.getPlayerFitnessResults(teamId, user.id),
       pointsService.getPlayerTransactions(teamId, user.id),
       rewardService.getPlayerRewards(teamId, user.id),
-    ]).then(([att, fin, med, medCases, suspensions, decisions, myLeaves, member, notesResult, meas, fit, pts, rw]) => {
+    ]).then(([att, fin, med, medCases, wellbeingRows, suspensions, decisions, myLeaves, member, notesResult, meas, fit, pts, rw]) => {
       setAttendance(att)
       setFinance(fin)
       setMedical(med)
       setMedicalCases(medCases)
+      setWellbeing(wellbeingRows)
       setActiveSuspensions(suspensions)
       setAdminDecisions((decisions as any[]).filter(d =>
         d.target_type === 'all' || (d.target_user_ids || []).includes(user.id)
@@ -411,6 +416,21 @@ export default function SportProfilePage() {
       setLoading(false)
     })
   }, [teamId, user])
+
+  async function saveWellbeing(payload: any) {
+    if (!teamId || !user) return
+    setSavingWellbeing(true)
+    await medicalService.saveWellbeingEntry({
+      ...payload,
+      team_id: teamId,
+      player_id: user.id,
+      pain_area: payload.pain_area || null,
+      notes: payload.notes || null,
+    })
+    const rows = await medicalService.getMyWellbeing(teamId, user.id)
+    setWellbeing(rows)
+    setSavingWellbeing(false)
+  }
 
   // ── Computed ───────────────────────────────────────────────────────────────
   const presentCount  = attendance.filter(a => a.status === 'present' || a.status === 'late').length
@@ -751,6 +771,13 @@ export default function SportProfilePage() {
       {tab === 'medical' && (
         <div className="space-y-3">
           <h3 className="font-bold text-sm text-slate-800 px-1">التقارير الطبية</h3>
+          <WellbeingSummaryBox
+            entries={wellbeing}
+            audience="player"
+            canSubmit
+            submitting={savingWellbeing}
+            onSubmit={saveWellbeing}
+          />
           {medicalCases.length > 0 && <MedicalSummaryBox cases={medicalCases} />}
           {medical.length === 0 && medicalCases.length === 0
             ? <div className="card text-center py-8">
